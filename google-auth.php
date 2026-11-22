@@ -15,20 +15,20 @@ if (empty($clientId) || empty($clientSecret)) {
 
 $configuredRedirect = $_ENV['GOOGLE_REDIRECT_URI'] ?? getenv('GOOGLE_REDIRECT_URI');
 
-$protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? "https://" : "http://";
+$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+    || (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https')
+    || (isset($_SERVER['SERVER_PORT']) && $_SERVER['SERVER_PORT'] == 443);
+$protocol = $isHttps ? "https://" : "http://";
 $host = $_SERVER['HTTP_HOST'] ?? '';
 
 // Determine appropriate redirect URI
-if (!empty($configuredRedirect) && !empty($host) && strpos($configuredRedirect, $host) !== false) {
-    $redirectUri = $configuredRedirect;
-} elseif (!empty($configuredRedirect) && strpos($host, 'onrender.com') !== false) {
+if (!empty($configuredRedirect) && (strpos($host, 'onrender.com') !== false || strpos($configuredRedirect, $host) !== false)) {
+    // Always use the exact configured redirect URI on Render/production
     $redirectUri = $configuredRedirect;
 } else {
+    // Localhost or dynamic host
     $basePath = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'])), '/');
     $redirectUri = $protocol . $host . $basePath . '/google-oauth-callback.php';
-    if (!empty($configuredRedirect) && (strpos($host, 'localhost') === false && strpos($host, '127.0.0.1') === false)) {
-        $redirectUri = $configuredRedirect;
-    }
 }
 
 $_SESSION['google_oauth_redirect_uri'] = $redirectUri;
