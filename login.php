@@ -233,6 +233,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
                     $_SESSION['username']  = (string) $user['username'];
                     $_SESSION['full_name'] = (string) ($user['fullname'] ?? $user['username']);
                     $_SESSION['role']      = (string) $user['role'];
+                    $_SESSION['profile_image'] = (string) ($user['profile_image'] ?? '');
 
                     logAction(
                         $pdo,
@@ -497,6 +498,14 @@ try {
         .divider:not(:empty)::before { margin-right: 12px; }
         .divider:not(:empty)::after { margin-left: 12px; }
 
+        .user-dropdown-btn {
+            transition: background 0.2s ease;
+        }
+
+        .user-dropdown-btn:hover {
+            background: rgba(255, 255, 255, 0.12);
+        }
+
         .auth-input-group {
             position: relative;
         }
@@ -592,12 +601,50 @@ try {
                 <strong>R. Taipan Hardware</strong>
             </a>
 
-            <!-- Mobile View: Log in button sa labas at katabi mismo ng 3-line burger icon -->
+            <!-- Mobile View: User menu / Log in button katabi ng burger icon -->
             <div class="d-flex d-lg-none align-items-center gap-2">
                 <?php if ($isLoggedIn): ?>
-                    <a href="logout.php" class="btn btn-outline-light btn-sm fw-semibold">
-                        Logout
-                    </a>
+                    <div class="dropdown">
+                        <a href="#" class="d-flex align-items-center text-white text-decoration-none dropdown-toggle gap-1"
+                            id="userMobileDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                            <?php if (!empty($_SESSION['profile_image'])): ?>
+                                <img src="<?php echo htmlspecialchars($_SESSION['profile_image'], ENT_QUOTES, 'UTF-8'); ?>"
+                                    alt="Avatar" class="rounded-circle" style="width: 28px; height: 28px; object-fit: cover;">
+                            <?php else: ?>
+                                <div class="rounded-circle bg-white text-dark d-flex align-items-center justify-content-center"
+                                    style="width: 28px; height: 28px; font-size: 0.85rem;">
+                                    <i class="bi bi-person-fill text-secondary"></i>
+                                </div>
+                            <?php endif; ?>
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-end shadow border-0 mt-2" aria-labelledby="userMobileDropdown" style="border-radius: 12px; min-width: 175px;">
+                            <li class="px-3 py-2 border-bottom">
+                                <span class="d-block small text-muted">Signed in as</span>
+                                <strong class="small text-dark text-truncate d-block" style="max-width: 180px;">
+                                    <?php echo htmlspecialchars((string) ($_SESSION['full_name'] ?? $_SESSION['username'] ?? 'Account'), ENT_QUOTES, 'UTF-8'); ?>
+                                </strong>
+                            </li>
+                            <li>
+                                <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="customer/profile.php">
+                                    <i class="bi bi-person text-secondary"></i>
+                                    <span>My Account</span>
+                                </a>
+                            </li>
+                            <li>
+                                <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="customer/customerService.php">
+                                    <i class="bi bi-bag-check text-secondary"></i>
+                                    <span>My Purchase</span>
+                                </a>
+                            </li>
+                            <li><hr class="dropdown-divider my-1"></li>
+                            <li>
+                                <a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="logout.php">
+                                    <i class="bi bi-box-arrow-right"></i>
+                                    <span>Logout</span>
+                                </a>
+                            </li>
+                        </ul>
+                    </div>
                 <?php else: ?>
                     <button type="button" class="btn btn-warning btn-sm fw-semibold text-dark"
                         onclick="openAuthModal('login')">
@@ -663,15 +710,47 @@ try {
                         <?php } ?>
                     </a>
 
-                    <!-- Desktop View: Log in button sa navbar -->
-                    <div class="d-none d-lg-flex align-items-center gap-2">
+                    <!-- Desktop View: User Menu Dropdown (Shopee-style) -->
+                    <div class="d-none d-lg-flex align-items-center">
                         <?php if ($isLoggedIn): ?>
-                            <span class="text-light small text-nowrap">
-                                <?php echo htmlspecialchars((string) ($_SESSION['full_name'] ?? $_SESSION['username'] ?? 'Account'), ENT_QUOTES, 'UTF-8'); ?>
-                            </span>
-                            <a href="logout.php" class="btn btn-outline-light btn-sm fw-semibold text-nowrap">
-                                Logout
-                            </a>
+                            <div class="dropdown">
+                                <a href="#" class="d-flex align-items-center text-white text-decoration-none dropdown-toggle gap-2 px-2 py-1 rounded user-dropdown-btn"
+                                    id="userMenuDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                    <?php if (!empty($_SESSION['profile_image'])): ?>
+                                        <img src="<?php echo htmlspecialchars($_SESSION['profile_image'], ENT_QUOTES, 'UTF-8'); ?>"
+                                            alt="Profile" class="rounded-circle border border-light" style="width: 30px; height: 30px; object-fit: cover;">
+                                    <?php else: ?>
+                                        <div class="rounded-circle bg-white text-dark d-flex align-items-center justify-content-center"
+                                            style="width: 30px; height: 30px; font-size: 0.9rem;">
+                                            <i class="bi bi-person-fill text-secondary"></i>
+                                        </div>
+                                    <?php endif; ?>
+                                    <span class="small fw-semibold text-white">
+                                        <?php echo htmlspecialchars((string) ($_SESSION['full_name'] ?? $_SESSION['username'] ?? 'Account'), ENT_QUOTES, 'UTF-8'); ?>
+                                    </span>
+                                </a>
+                                <ul class="dropdown-menu dropdown-menu-end shadow border-0 mt-2" aria-labelledby="userMenuDropdown" style="border-radius: 12px; min-width: 175px;">
+                                    <li>
+                                        <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="customer/profile.php">
+                                            <i class="bi bi-person text-secondary fs-6"></i>
+                                            <span>My Account</span>
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="customer/customerService.php">
+                                            <i class="bi bi-bag-check text-secondary fs-6"></i>
+                                            <span>My Purchase</span>
+                                        </a>
+                                    </li>
+                                    <li><hr class="dropdown-divider my-1"></li>
+                                    <li>
+                                        <a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="logout.php">
+                                            <i class="bi bi-box-arrow-right fs-6"></i>
+                                            <span>Logout</span>
+                                        </a>
+                                    </li>
+                                </ul>
+                            </div>
                         <?php else: ?>
                             <button type="button" class="btn btn-outline-light btn-sm fw-semibold text-nowrap"
                                 onclick="openAuthModal('login')">
