@@ -542,14 +542,34 @@ foreach ($allOrders as $o) {
             flex-shrink: 0;
         }
 
+        /* Official POS Thermal Receipt Preview */
+        .thermal-preview {
+            width: 80mm;
+            max-width: 100%;
+            margin: auto;
+            padding: 18px 14px;
+            background: #fff;
+            font-family: 'Courier New', Courier, monospace;
+            border: 1px solid #eee;
+            color: #000;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            line-height: 1.35;
+        }
+
+        .thermal-preview .line {
+            border-top: 1px dashed #000;
+            margin: 8px 0;
+        }
+
         @media print {
             body * {
                 visibility: hidden;
             }
-            #orderDetailsModal, #orderDetailsModal * {
+            #orderDetailsModal, #orderDetailsModal *,
+            #receiptModal, #receiptModal * {
                 visibility: visible;
             }
-            #orderDetailsModal {
+            #orderDetailsModal, #receiptModal {
                 position: absolute;
                 left: 0;
                 top: 0;
@@ -817,7 +837,10 @@ foreach ($allOrders as $o) {
                                             <?php echo json_encode($order, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE); ?>
                                         </script>
                                         <button type="button" class="btn btn-navy btn-sm" onclick="openOrderModal(<?php echo (int)$order['id']; ?>)">
-                                            <i class="bi bi-receipt me-1"></i> Order Details
+                                            <i class="bi bi-info-circle me-1"></i> Order Details
+                                        </button>
+                                        <button type="button" class="btn btn-outline-dark btn-sm" onclick="openReceiptDirectly(<?php echo (int)$order['id']; ?>)">
+                                            <i class="bi bi-receipt me-1"></i> View Receipt
                                         </button>
                                     </div>
                                 </div>
@@ -949,10 +972,10 @@ foreach ($allOrders as $o) {
 
                 </div>
 
-                <!-- Footer with Print & Close -->
+                <!-- Footer with View Receipt & Close -->
                 <div class="modal-footer bg-light border-top py-2 px-4 d-flex justify-content-between">
-                    <button type="button" class="btn btn-outline-secondary btn-sm d-flex align-items-center gap-1" onclick="printReceipt()">
-                        <i class="bi bi-printer"></i> Print Receipt
+                    <button type="button" class="btn btn-warning btn-sm fw-semibold d-flex align-items-center gap-2 text-dark shadow-sm" onclick="viewThermalReceipt()">
+                        <i class="bi bi-receipt fs-6"></i> View Receipt
                     </button>
                     <button type="button" class="btn btn-navy btn-sm px-4" data-bs-dismiss="modal">Close</button>
                 </div>
@@ -960,8 +983,39 @@ foreach ($allOrders as $o) {
         </div>
     </div>
 
+    <!-- Official Thermal Receipt Modal -->
+    <div class="modal fade" id="receiptModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered" style="max-width: 440px;">
+            <div class="modal-content border-0 shadow-lg rounded-4 overflow-hidden">
+                <div class="modal-header border-0 bg-white py-3 px-4 d-flex justify-content-between align-items-center">
+                    <h5 class="modal-title fw-bold text-dark mb-0">Order Details</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body bg-dark py-4 text-center">
+                    <div class="thermal-preview text-start" id="thermalReceiptContent">
+                        <!-- Populated dynamically via JS -->
+                    </div>
+                </div>
+                <div class="modal-footer bg-white border-top py-2 px-3 d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center gap-2">
+                        <button type="button" class="btn btn-success btn-sm fw-semibold d-flex align-items-center gap-1 shadow-sm" id="btnDownloadReceipt" onclick="downloadThermalReceipt()">
+                            <i class="bi bi-download"></i> Download
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary btn-sm d-flex align-items-center gap-1" onclick="printThermalReceipt()">
+                            <i class="bi bi-printer"></i> Print
+                        </button>
+                    </div>
+                    <button type="button" class="btn btn-secondary btn-sm px-3" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
     <script>
+        let currentActiveOrder = null;
+
         function openOrderModal(orderId) {
             const jsonEl = document.getElementById('order-data-' + orderId);
             if (!jsonEl) return;
@@ -972,6 +1026,8 @@ foreach ($allOrders as $o) {
                 console.error("Failed to parse order JSON", e);
                 return;
             }
+
+            currentActiveOrder = order;
 
             // Header info
             document.getElementById('mdlOrderId').textContent = order.id;
@@ -1116,8 +1172,231 @@ foreach ($allOrders as $o) {
             modal.show();
         }
 
-        function printReceipt() {
-            window.print();
+        // Generate Thermal Receipt matching POS design
+        function generateThermalReceipt(order) {
+            const orderStatus = (order.status || 'pending').toUpperCase();
+            const items = Array.isArray(order.parsed_items) ? order.parsed_items : [];
+
+            let itemsHtml = '';
+            items.forEach(it => {
+                itemsHtml += `
+                    <tr>
+                        <td style="padding: 2px 0; vertical-align: top;">${it.name} (x${it.qty})</td>
+                        <td align="right" style="padding: 2px 0; vertical-align: top; white-space: nowrap;">₱${it.subtotal_formatted}</td>
+                    </tr>
+                `;
+            });
+
+            const paymentMethodName = (order.payment_method || 'COD').toUpperCase();
+            const paymentScheme = (order.payment_scheme || '').toLowerCase();
+            const totalAmt = parseFloat(order.total_amount || 0);
+            let paymentBreakdownHtml = '';
+
+            if (paymentMethodName === 'COD' || paymentMethodName === 'CASH ON DELIVERY (COD)') {
+                paymentBreakdownHtml = `
+                    <div class="d-flex justify-content-between small fw-bold mb-1">
+                        <span>TOTAL AMOUNT:</span>
+                        <span>₱${totalAmt.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                    </div>
+                `;
+            } else if (totalAmt >= 5000 && paymentScheme.includes('50')) {
+                const downpayment = parseFloat(order.paid_amount || (totalAmt * 0.5));
+                const balance = totalAmt - downpayment;
+                paymentBreakdownHtml = `
+                    <div class="d-flex justify-content-between small fw-bold mb-1">
+                        <span>TOTAL AMOUNT:</span>
+                        <span>₱${totalAmt.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                    </div>
+                    <div class="d-flex justify-content-between small fw-bold mb-1">
+                        <span>PAID VIA ${paymentMethodName}:</span>
+                        <span>₱${downpayment.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                    </div>
+                    <div class="line"></div>
+                    <div class="d-flex justify-content-between small fw-bold">
+                        <span>PAY UPON DELIVERY:</span>
+                        <span>₱${balance.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                    </div>
+                `;
+            } else if (paymentMethodName === 'GCASH' || paymentMethodName === 'MAYA') {
+                const paidAmount = parseFloat(order.paid_amount || totalAmt);
+                paymentBreakdownHtml = `
+                    <div class="d-flex justify-content-between small fw-bold mb-1">
+                        <span>TOTAL AMOUNT:</span>
+                        <span>₱${totalAmt.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                    </div>
+                    <div class="d-flex justify-content-between small fw-bold mb-1">
+                        <span>PAID VIA ${paymentMethodName}:</span>
+                        <span>₱${paidAmount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                    </div>
+                `;
+                if (order.ref_no) {
+                    paymentBreakdownHtml += `<div class="small mt-1">Ref No: <b>${order.ref_no}</b></div>`;
+                }
+            } else {
+                paymentBreakdownHtml = `
+                    <div class="d-flex justify-content-between small fw-bold">
+                        <span>TOTAL AMOUNT:</span>
+                        <span>₱${totalAmt.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                    </div>
+                `;
+            }
+
+            const customerName = `${order.fullname || ''} ${order.surname || ''}`.trim() || 'Customer';
+
+            const fullReceiptHtml = `
+                <div class="text-center mb-2">
+                    <h5 class="fw-bold my-0 text-uppercase" style="letter-spacing: 1px;">R. TAIPAN HARDWARE</h5>
+                    <small>190 Cabrera Rd. Sitio Burol Brgy.</small><br>
+                    <small>San Juan Taytay, Rizal</small><br>
+                    <small>Contact: 0907 456 5632</small>
+                    <div class="line"></div>
+                    <small><b>OFFICIAL RECEIPT (ONLINE ORDER)</b></small>
+                    <div class="line"></div>
+                </div>
+
+                <p class="small mb-1"><b>Order ID:</b> #${order.id}</p>
+                <p class="small mb-1"><b>Date:</b> ${order.order_date}</p>
+                <p class="small mb-1"><b>Customer:</b> ${customerName}</p>
+                <p class="small mb-1"><b>Contact:</b> ${order.contact_number || 'N/A'}</p>
+                <p class="small mb-1"><b>Address:</b> ${order.full_address || 'N/A'}</p>
+                <p class="small mb-2"><b>Landmark:</b> ${order.landmark || 'N/A'}</p>
+
+                <div class="line"></div>
+
+                <table width="100%" class="small mb-2">
+                    <tbody>
+                        ${itemsHtml}
+                    </tbody>
+                </table>
+
+                <div class="line"></div>
+
+                ${paymentBreakdownHtml}
+
+                <div class="line mt-2"></div>
+
+                <div class="text-start small"><b>Mode of Payment:</b> ${paymentMethodName}</div>
+
+                <div class="text-center mt-3">
+                    <small class="fw-bold">STATUS: ${orderStatus}</small>
+                </div>
+            `;
+
+            document.getElementById('thermalReceiptContent').innerHTML = fullReceiptHtml;
+        }
+
+        // Open Receipt from Order Details Modal
+        function viewThermalReceipt() {
+            if (!currentActiveOrder) return;
+            generateThermalReceipt(currentActiveOrder);
+
+            const orderModalEl = document.getElementById('orderDetailsModal');
+            const orderModal = bootstrap.Modal.getInstance(orderModalEl);
+            if (orderModal) {
+                orderModal.hide();
+            }
+
+            const receiptModal = new bootstrap.Modal(document.getElementById('receiptModal'));
+            receiptModal.show();
+        }
+
+        // Open Receipt directly from order card
+        function openReceiptDirectly(orderId) {
+            const jsonEl = document.getElementById('order-data-' + orderId);
+            if (!jsonEl) return;
+            let order;
+            try {
+                order = JSON.parse(jsonEl.textContent);
+            } catch(e) {
+                console.error("Failed to parse order JSON", e);
+                return;
+            }
+
+            currentActiveOrder = order;
+            generateThermalReceipt(order);
+
+            const receiptModal = new bootstrap.Modal(document.getElementById('receiptModal'));
+            receiptModal.show();
+        }
+
+        // Download receipt as PNG image
+        function downloadThermalReceipt() {
+            const receiptElement = document.getElementById('thermalReceiptContent');
+            if (!receiptElement) return;
+
+            const downloadBtn = document.getElementById('btnDownloadReceipt');
+            const originalContent = downloadBtn.innerHTML;
+            downloadBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Generating...';
+            downloadBtn.disabled = true;
+
+            html2canvas(receiptElement, {
+                scale: 3,
+                backgroundColor: '#ffffff',
+                useCORS: true,
+                logging: false
+            }).then(canvas => {
+                const orderId = (currentActiveOrder && currentActiveOrder.id) ? currentActiveOrder.id : 'order';
+                const link = document.createElement('a');
+                link.download = `RTaipan-Receipt-Order-#${orderId}.png`;
+                link.href = canvas.toDataURL('image/png');
+                link.click();
+
+                downloadBtn.innerHTML = originalContent;
+                downloadBtn.disabled = false;
+            }).catch(err => {
+                console.error("Receipt download failed:", err);
+                downloadBtn.innerHTML = originalContent;
+                downloadBtn.disabled = false;
+                alert("Generating image failed. Opening print/save dialog instead.");
+                printThermalReceipt();
+            });
+        }
+
+        // Print thermal receipt in 80mm format
+        function printThermalReceipt() {
+            const receiptElement = document.getElementById('thermalReceiptContent');
+            if (!receiptElement) return;
+            
+            const printWindow = window.open('', '_blank', 'width=450,height=650');
+            printWindow.document.write(`
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Official Receipt - Order #${currentActiveOrder ? currentActiveOrder.id : ''}</title>
+                    <style>
+                        @page { margin: 0; size: 80mm auto; }
+                        body {
+                            margin: 0;
+                            padding: 8px;
+                            background: #fff;
+                            color: #000;
+                            font-family: 'Courier New', Courier, monospace;
+                            width: 78mm;
+                            margin: auto;
+                        }
+                        .thermal-preview { width: 100% !important; border: none !important; padding: 0 !important; box-shadow: none !important; }
+                        .line { border-top: 1px dashed #000; margin: 8px 0; }
+                        .text-center { text-align: center; }
+                        .text-start { text-align: left; }
+                        .text-end { text-align: right; }
+                        .fw-bold { font-weight: bold; }
+                        .small { font-size: 12px; }
+                        table { width: 100%; font-size: 12px; border-collapse: collapse; }
+                        td { padding: 2px 0; }
+                    </style>
+                </head>
+                <body>
+                    ${receiptElement.outerHTML}
+                    <script>
+                        window.onload = function() {
+                            window.print();
+                            setTimeout(() => window.close(), 500);
+                        };
+                    <\/script>
+                </body>
+                </html>
+            `);
+            printWindow.document.close();
         }
     </script>
 </body>
