@@ -29,11 +29,11 @@ $protocol = $isHttps ? "https://" : "http://";
 $host = $_SERVER['HTTP_HOST'] ?? '';
 
 // Determine appropriate redirect URI
-if (!empty($configuredRedirect) && (strpos($host, 'onrender.com') !== false || strpos($configuredRedirect, $host) !== false)) {
-    // Always use the exact configured redirect URI on Render/production
+if (!empty($configuredRedirect) && strpos($configuredRedirect, $host) !== false) {
+    // Exact configured redirect matching current domain
     $redirectUri = $configuredRedirect;
 } else {
-    // Localhost or dynamic host
+    // Automatically use current active host & protocol
     $basePath = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'])), '/');
     $redirectUri = $protocol . $host . $basePath . '/google-oauth-callback.php';
 }
