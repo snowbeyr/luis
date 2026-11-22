@@ -27,6 +27,9 @@ try {
     die("Database error occurred.");
 }
 
+$customerName = trim((string) ($user['fullname'] ?? $user['username']));
+$profileImage = $user['profile_image'] ?? '';
+
 // Handle Profile Update
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
     $fullname = trim((string) ($_POST['fullname'] ?? ''));
@@ -79,6 +82,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
                 $user['fullname'] = $fullname;
                 $user['phone_number'] = $phone_number;
                 $user['profile_image'] = $profile_image;
+                $customerName = $fullname;
+                $profileImage = $profile_image;
 
                 $message = "Profile updated successfully!";
                 $msg_type = "success";
@@ -100,12 +105,82 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
     <style>
-        body { background: #f8f9fa; }
-        .navbar-custom { background: #051c3c; padding: 12px 0; }
-        .profile-card { border: none; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.06); background: #fff; }
-        .avatar-lg { width: 100px; height: 100px; object-fit: cover; border-radius: 50%; border: 3px solid #dee2e6; }
-        .btn-primary-navy { background: #051c3c; color: #fff; font-weight: 600; }
-        .btn-primary-navy:hover { background: #0b3267; color: #fff; }
+        body {
+            background-color: #f6f7fb;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+
+        .navbar-custom { background: #051c3c; padding: 14px 0; }
+        
+        /* Shopee-style Sidebar */
+        .sidebar-card {
+            background: #fff;
+            border-radius: 14px;
+            border: 1px solid #eef0f4;
+            padding: 24px 20px;
+        }
+
+        .user-avatar-sm {
+            width: 48px;
+            height: 48px;
+            object-fit: cover;
+            border-radius: 50%;
+            border: 2px solid #e2e8f0;
+        }
+
+        .sidebar-menu-link {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 14px;
+            border-radius: 8px;
+            color: #4b5563;
+            text-decoration: none;
+            font-size: 0.92rem;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+
+        .sidebar-menu-link:hover {
+            background-color: #f1f5f9;
+            color: #051c3c;
+        }
+
+        .sidebar-menu-link.active {
+            background-color: #051c3c;
+            color: #fff;
+            font-weight: 600;
+        }
+
+        .sidebar-menu-link.active i {
+            color: #ffc107;
+        }
+
+        .profile-content-card {
+            border: 1px solid #eef0f4;
+            border-radius: 14px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+            background: #fff;
+        }
+
+        .avatar-lg {
+            width: 90px;
+            height: 90px;
+            object-fit: cover;
+            border-radius: 50%;
+            border: 3px solid #dee2e6;
+        }
+
+        .btn-navy {
+            background: #051c3c;
+            color: #fff;
+            font-weight: 600;
+        }
+
+        .btn-navy:hover {
+            background: #0b3267;
+            color: #fff;
+        }
     </style>
 </head>
 <body>
@@ -116,28 +191,74 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
                 <img src="../assets/logo.jpg" style="width:36px; height:36px; border-radius:50%; border:2px solid white;">
                 <strong>R. Taipan Hardware</strong>
             </a>
-            <div class="ms-auto d-flex align-items-center gap-2">
+            <div class="ms-auto d-flex align-items-center gap-3">
+                <a href="cart.php" class="btn btn-warning btn-sm position-relative fw-semibold">
+                    🛒 Cart
+                    <?php
+                    $cartCount = isset($_SESSION['cart']) ? count($_SESSION['cart']) : 0;
+                    if ($cartCount > 0) {
+                        echo '<span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">' . $cartCount . '</span>';
+                    }
+                    ?>
+                </a>
                 <a href="../login.php" class="btn btn-outline-light btn-sm fw-semibold">
                     <i class="bi bi-arrow-left me-1"></i> Back to Shop
-                </a>
-                <a href="../logout.php" class="btn btn-danger btn-sm fw-semibold">
-                    <i class="bi bi-box-arrow-right me-1"></i> Logout
                 </a>
             </div>
         </div>
     </nav>
 
-    <div class="container py-5">
-        <div class="row justify-content-center">
-            <div class="col-lg-8 col-md-10">
-                <div class="profile-card p-4 p-md-5">
+    <!-- Main Container -->
+    <div class="container py-4">
+        <div class="row g-4">
+            <!-- Left Sidebar -->
+            <div class="col-lg-3 col-md-4">
+                <div class="sidebar-card">
+                    <!-- User Profile Info -->
+                    <div class="d-flex align-items-center gap-3 pb-3 mb-3 border-bottom">
+                        <?php if (!empty($profileImage)): ?>
+                            <img src="<?php echo htmlspecialchars($profileImage, ENT_QUOTES, 'UTF-8'); ?>"
+                                alt="Avatar" class="user-avatar-sm" id="sidebarAvatar">
+                        <?php else: ?>
+                            <div class="user-avatar-sm bg-light text-secondary d-flex align-items-center justify-content-center fs-4" id="sidebarAvatar">
+                                <i class="bi bi-person-fill"></i>
+                            </div>
+                        <?php endif; ?>
+
+                        <div class="overflow-hidden">
+                            <h6 class="fw-bold mb-0 text-truncate"><?php echo htmlspecialchars($customerName, ENT_QUOTES, 'UTF-8'); ?></h6>
+                            <span class="text-muted small">Customer Account</span>
+                        </div>
+                    </div>
+
+                    <!-- Navigation Links -->
+                    <div class="d-flex flex-column gap-1">
+                        <a href="profile.php" class="sidebar-menu-link active">
+                            <i class="bi bi-person fs-5"></i>
+                            <span>My Account</span>
+                        </a>
+                        <a href="my_purchases.php" class="sidebar-menu-link">
+                            <i class="bi bi-bag-check fs-5"></i>
+                            <span>My Purchase</span>
+                        </a>
+                        <a href="../logout.php" class="sidebar-menu-link text-danger mt-2">
+                            <i class="bi bi-box-arrow-right fs-5"></i>
+                            <span>Logout</span>
+                        </a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Profile Content -->
+            <div class="col-lg-9 col-md-8">
+                <div class="profile-content-card p-4 p-md-5">
                     <div class="d-flex align-items-center justify-content-between mb-4 pb-3 border-bottom">
                         <div>
-                            <h3 class="fw-bold mb-1">My Account</h3>
-                            <p class="text-muted small mb-0">Manage your profile details and personal information.</p>
+                            <h4 class="fw-bold mb-1 text-dark">My Profile</h4>
+                            <p class="text-muted small mb-0">Manage and protect your account information.</p>
                         </div>
-                        <a href="customerService.php" class="btn btn-outline-primary btn-sm fw-semibold">
-                            <i class="bi bi-bag-check me-1"></i> My Purchases
+                        <a href="my_purchases.php" class="btn btn-outline-primary btn-sm fw-semibold">
+                            <i class="bi bi-bag-check me-1"></i> View Purchases
                         </a>
                     </div>
 
@@ -197,7 +318,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
 
                         <div class="d-flex justify-content-end gap-2">
                             <a href="../login.php" class="btn btn-light px-4">Cancel</a>
-                            <button type="submit" name="update_profile" value="1" class="btn btn-primary-navy px-4">
+                            <button type="submit" name="update_profile" value="1" class="btn btn-navy px-4">
                                 <i class="bi bi-check2-circle me-1"></i> Save Changes
                             </button>
                         </div>

@@ -233,6 +233,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
                     $_SESSION['username']  = (string) $user['username'];
                     $_SESSION['full_name'] = (string) ($user['fullname'] ?? $user['username']);
                     $_SESSION['role']      = (string) $user['role'];
+                    $_SESSION['email']     = (string) ($user['email'] ?? '');
                     $_SESSION['profile_image'] = (string) ($user['profile_image'] ?? '');
 
                     logAction(
@@ -631,7 +632,7 @@ try {
                                 </a>
                             </li>
                             <li>
-                                <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="customer/customerService.php">
+                                <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="customer/my_purchases.php">
                                     <i class="bi bi-bag-check text-secondary"></i>
                                     <span>My Purchase</span>
                                 </a>
@@ -737,7 +738,7 @@ try {
                                         </a>
                                     </li>
                                     <li>
-                                        <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="customer/customerService.php">
+                                        <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="customer/my_purchases.php">
                                             <i class="bi bi-bag-check text-secondary fs-6"></i>
                                             <span>My Purchase</span>
                                         </a>
