@@ -481,8 +481,10 @@ try {
             align-items: center;
             text-align: center;
             color: #6c757d;
-            font-size: 0.85rem;
-            margin: 14px 0;
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            margin: 18px 0;
         }
 
         .divider::before,
@@ -492,8 +494,51 @@ try {
             border-bottom: 1px solid #dee2e6;
         }
 
-        .divider:not(:empty)::before { margin-right: 10px; }
-        .divider:not(:empty)::after { margin-left: 10px; }
+        .divider:not(:empty)::before { margin-right: 12px; }
+        .divider:not(:empty)::after { margin-left: 12px; }
+
+        .auth-input-group {
+            position: relative;
+        }
+
+        .auth-input-group .auth-input-icon {
+            position: absolute;
+            left: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #6c757d;
+            font-size: 1rem;
+            pointer-events: none;
+            z-index: 3;
+        }
+
+        .auth-input-group .form-control {
+            padding-left: 40px;
+        }
+
+        .auth-input-group .form-control.has-right-btn {
+            padding-right: 42px;
+        }
+
+        .auth-input-group .auth-input-btn {
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            padding: 0;
+            color: #6c757d;
+            cursor: pointer;
+            z-index: 3;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .auth-input-group .auth-input-btn:hover {
+            color: #212529;
+        }
 
         /* Checklist Styles */
         .password-checklist {
@@ -517,6 +562,7 @@ try {
         }
         .password-checklist li::before {
             content: "• ";
+        }
         }
     </style>
 </head>
@@ -640,35 +686,26 @@ try {
 
     <!-- Floating Login / Create Account / Google Auth Modal -->
     <div class="modal fade" id="authModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content border-0 shadow-lg" style="border-radius: 18px;">
-                <div class="modal-header border-0 pb-0">
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body px-4 pb-4 pt-1">
-                    <div class="text-center mb-3">
-                        <img src="assets/logo.jpg" class="brand-logo-sm" alt="R. Taipan Hardware logo">
-                        <h5 class="mt-2 mb-0 fw-bold">R. Taipan Hardware</h5>
-                        <small class="text-muted">Sign in or create a customer account</small>
+        <div class="modal-dialog modal-dialog-centered" style="max-width: 430px;">
+            <div class="modal-content border-0 shadow-lg" style="border-radius: 20px;">
+                <div class="modal-body p-4">
+                    <!-- Top Brand Header: Logo + Title (Left), Close Button (Right) -->
+                    <div class="d-flex align-items-center justify-content-between mb-4">
+                        <div class="d-flex align-items-center gap-2">
+                            <img src="assets/logo.jpg" alt="R. Taipan Hardware" class="rounded" style="width: 34px; height: 34px; object-fit: cover;">
+                            <span class="fw-bold fs-6">R. Taipan Hardware</span>
+                        </div>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
 
-                    <ul class="nav nav-pills nav-fill mb-3" id="authTabs">
-                        <li class="nav-item">
-                            <button type="button" class="nav-link <?php echo $authTab === 'login' ? 'active' : ''; ?>"
-                                id="tabLoginBtn" onclick="switchAuthTab('login')">
-                                Log in
-                            </button>
-                        </li>
-                        <li class="nav-item">
-                            <button type="button" class="nav-link <?php echo $authTab === 'register' ? 'active' : ''; ?>"
-                                id="tabRegisterBtn" onclick="switchAuthTab('register')">
-                                Create Account
-                            </button>
-                        </li>
-                    </ul>
+                    <!-- Headline & Subtitle -->
+                    <div class="mb-4">
+                        <h4 class="fw-bold mb-1" id="authModalTitle"><?php echo $authTab === 'register' ? 'Create an account' : 'Welcome back!'; ?></h4>
+                        <p class="text-muted small mb-0" id="authModalSubtitle"><?php echo $authTab === 'register' ? 'Sign up to manage your orders.' : 'Sign in to manage your account.'; ?></p>
+                    </div>
 
                     <?php if ($error !== ''): ?>
-                        <div class="alert alert-danger text-center py-2 small" role="alert">
+                        <div class="alert alert-danger text-center py-2 small mb-3" role="alert">
                             <?php echo htmlspecialchars($error, ENT_QUOTES, 'UTF-8'); ?>
                         </div>
                     <?php endif; ?>
@@ -677,29 +714,37 @@ try {
                     <form method="POST" action="login.php" id="loginFormSection"
                         class="<?php echo $authTab === 'login' ? '' : 'd-none'; ?>" autocomplete="on">
                         <div class="mb-3">
-                            <label for="username" class="form-label small fw-semibold">Username or Email</label>
-                            <input type="text" name="username" id="username" class="form-control"
-                                placeholder="Enter username or email" autocomplete="username" required>
+                            <label for="username" class="form-label small fw-semibold">Email address / Username</label>
+                            <div class="auth-input-group">
+                                <i class="bi bi-envelope auth-input-icon"></i>
+                                <input type="text" name="username" id="username" class="form-control"
+                                    placeholder="Enter username or email" autocomplete="username" required>
+                            </div>
                         </div>
 
-                        <div class="mb-3">
-                            <label for="passwordField" class="form-label small fw-semibold">Password</label>
-                            <div class="input-group">
-                                <input type="password" name="password" id="passwordField" class="form-control"
+                        <div class="mb-4">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <label for="passwordField" class="form-label small fw-semibold mb-0">Password</label>
+                                <a href="forgotPassword.php" class="small text-decoration-none">Forgot password?</a>
+                            </div>
+                            <div class="auth-input-group">
+                                <i class="bi bi-lock auth-input-icon"></i>
+                                <input type="password" name="password" id="passwordField" class="form-control has-right-btn"
                                     placeholder="Enter your password" autocomplete="current-password" required>
-                                <button class="btn btn-outline-secondary" type="button" id="togglePasswordBtn"
-                                    aria-label="Show password">
+                                <button class="auth-input-btn" type="button" id="togglePasswordBtn" aria-label="Show password">
                                     <i class="bi bi-eye" id="togglePasswordIcon"></i>
                                 </button>
                             </div>
                         </div>
 
-                        <button type="submit" name="login" value="1" class="btn btn-primary-navy w-100 py-2">
-                            <i class="bi bi-box-arrow-in-right me-1"></i> Log in
+                        <button type="submit" name="login" value="1" class="btn btn-primary-navy w-100 py-2 fw-semibold d-flex align-items-center justify-content-center gap-2">
+                            <span>Sign in</span>
+                            <i class="bi bi-arrow-right"></i>
                         </button>
 
-                        <div class="text-center mt-2">
-                            <a href="forgotPassword.php" class="small text-decoration-none">Forgot Password?</a>
+                        <div class="text-center mt-3">
+                            <span class="small text-muted">Don't have an account? </span>
+                            <a href="javascript:void(0)" onclick="switchAuthTab('register')" class="small text-decoration-none fw-semibold">Create one</a>
                         </div>
                     </form>
 
@@ -708,29 +753,38 @@ try {
                         class="<?php echo $authTab === 'register' ? '' : 'd-none'; ?>" autocomplete="on">
                         <div class="mb-2">
                             <label for="full_name" class="form-label small fw-semibold">Full Name</label>
-                            <input type="text" name="full_name" id="full_name" class="form-control"
-                                placeholder="Enter your full name" required>
+                            <div class="auth-input-group">
+                                <i class="bi bi-person auth-input-icon"></i>
+                                <input type="text" name="full_name" id="full_name" class="form-control"
+                                    placeholder="Enter your full name" required>
+                            </div>
                         </div>
 
                         <div class="mb-2">
                             <label for="reg_username" class="form-label small fw-semibold">Username</label>
-                            <input type="text" name="username" id="reg_username" class="form-control"
-                                placeholder="Choose a username" autocomplete="username" required>
+                            <div class="auth-input-group">
+                                <i class="bi bi-at auth-input-icon"></i>
+                                <input type="text" name="username" id="reg_username" class="form-control"
+                                    placeholder="Choose a username" autocomplete="username" required>
+                            </div>
                         </div>
 
                         <div class="mb-2">
                             <label for="email" class="form-label small fw-semibold">Email Address</label>
-                            <input type="email" name="email" id="email" class="form-control"
-                                placeholder="name@example.com" autocomplete="email" required>
+                            <div class="auth-input-group">
+                                <i class="bi bi-envelope auth-input-icon"></i>
+                                <input type="email" name="email" id="email" class="form-control"
+                                    placeholder="name@example.com" autocomplete="email" required>
+                            </div>
                         </div>
 
                         <div class="mb-2">
                             <label for="reg_password" class="form-label small fw-semibold">Password</label>
-                            <div class="input-group">
-                                <input type="password" name="password" id="reg_password" class="form-control"
+                            <div class="auth-input-group">
+                                <i class="bi bi-lock auth-input-icon"></i>
+                                <input type="password" name="password" id="reg_password" class="form-control has-right-btn"
                                     placeholder="At least 8 characters" autocomplete="new-password" minlength="8" required>
-                                <button class="btn btn-outline-secondary" type="button" id="toggleRegPasswordBtn"
-                                    aria-label="Show password">
+                                <button class="auth-input-btn" type="button" id="toggleRegPasswordBtn" aria-label="Show password">
                                     <i class="bi bi-eye" id="toggleRegPasswordIcon"></i>
                                 </button>
                             </div>
@@ -747,26 +801,42 @@ try {
 
                         <div class="mb-3">
                             <label for="confirm_password" class="form-label small fw-semibold">Confirm Password</label>
-                            <div class="input-group">
-                                <input type="password" name="confirm_password" id="confirm_password" class="form-control"
+                            <div class="auth-input-group">
+                                <i class="bi bi-shield-check auth-input-icon"></i>
+                                <input type="password" name="confirm_password" id="confirm_password" class="form-control has-right-btn"
                                     placeholder="Re-enter your password" autocomplete="new-password" minlength="8" required>
-                                <button class="btn btn-outline-secondary" type="button" id="toggleRegConfirmPasswordBtn"
-                                    aria-label="Show password">
+                                <button class="auth-input-btn" type="button" id="toggleRegConfirmPasswordBtn" aria-label="Show password">
                                     <i class="bi bi-eye" id="toggleRegConfirmPasswordIcon"></i>
                                 </button>
                             </div>
                         </div>
 
-                        <button type="submit" name="register" value="1" class="btn btn-primary-navy w-100 py-2">
-                            <i class="bi bi-person-plus me-1"></i> Create Account
+                        <button type="submit" name="register" value="1" class="btn btn-primary-navy w-100 py-2 fw-semibold d-flex align-items-center justify-content-center gap-2">
+                            <span>Create Account</span>
+                            <i class="bi bi-arrow-right"></i>
                         </button>
+
+                        <div class="text-center mt-3">
+                            <span class="small text-muted">Already have an account? </span>
+                            <a href="javascript:void(0)" onclick="switchAuthTab('login')" class="small text-decoration-none fw-semibold">Sign in</a>
+                        </div>
                     </form>
 
-                    <div class="divider">OR</div>
+                    <div class="divider">OR CONTINUE WITH</div>
 
-                    <a href="google-auth.php" class="btn btn-outline-dark w-100 py-2 fw-semibold">
-                        <i class="bi bi-google me-2"></i> Continue with Google
+                    <a href="google-auth.php" class="btn btn-outline-dark w-100 py-2 fw-semibold d-flex align-items-center justify-content-center gap-2">
+                        <svg width="18" height="18" viewBox="0 0 24 24">
+                            <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/>
+                            <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.36 24 12 24z"/>
+                            <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.99 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/>
+                            <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.36 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
+                        </svg>
+                        <span>Continue with Google</span>
                     </a>
+
+                    <p class="text-center text-muted mt-3 mb-0" style="font-size: 0.75rem;">
+                        By continuing, you agree to our <a href="#" class="text-muted text-decoration-underline">Terms of Service</a> and <a href="#" class="text-muted text-decoration-underline">Privacy Policy</a>.
+                    </p>
                 </div>
             </div>
         </div>
@@ -985,17 +1055,23 @@ try {
             const registerForm = document.getElementById('registerFormSection');
             const tabLoginBtn = document.getElementById('tabLoginBtn');
             const tabRegisterBtn = document.getElementById('tabRegisterBtn');
+            const title = document.getElementById('authModalTitle');
+            const subtitle = document.getElementById('authModalSubtitle');
 
             if (tab === 'register') {
                 loginForm?.classList.add('d-none');
                 registerForm?.classList.remove('d-none');
                 tabLoginBtn?.classList.remove('active');
                 tabRegisterBtn?.classList.add('active');
+                if (title) title.textContent = 'Create an account';
+                if (subtitle) subtitle.textContent = 'Sign up to manage your orders.';
             } else {
                 registerForm?.classList.add('d-none');
                 loginForm?.classList.remove('d-none');
                 tabRegisterBtn?.classList.remove('active');
                 tabLoginBtn?.classList.add('active');
+                if (title) title.textContent = 'Welcome back!';
+                if (subtitle) subtitle.textContent = 'Sign in to manage your account.';
             }
         }
 
