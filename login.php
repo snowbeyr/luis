@@ -121,15 +121,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['register'])) {
                 $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
 
                 $insertStmt = $pdo->prepare(
-                    "INSERT INTO users (full_name, username, email, password, role, status)
-                     VALUES (:full_name, :username, :email, :password, 'customer', 'Active')
+                    "INSERT INTO users (fullname, username, email, password, role, status)
+                     VALUES (:fullname, :username, :email, :password, 'customer', 'Active')
                      RETURNING id"
                 );
                 $insertStmt->execute([
-                    ':full_name' => $fullName,
-                    ':username'  => $username,
-                    ':email'     => $email,
-                    ':password'  => $hashedPassword
+                    ':fullname' => $fullName,
+                    ':username' => $username,
+                    ':email'    => $email,
+                    ':password' => $hashedPassword
                 ]);
 
                 $newUserId = (int) $insertStmt->fetchColumn();
@@ -231,7 +231,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
 
                     $_SESSION['user_id']   = (int) $user['id'];
                     $_SESSION['username']  = (string) $user['username'];
-                    $_SESSION['full_name'] = (string) ($user['full_name'] ?? $user['username']);
+                    $_SESSION['full_name'] = (string) ($user['fullname'] ?? $user['username']);
                     $_SESSION['role']      = (string) $user['role'];
 
                     logAction(
