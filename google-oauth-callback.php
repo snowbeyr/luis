@@ -58,8 +58,15 @@ if (empty($_GET['code'])) {
 }
 
 try {
-    $clientId     = $_ENV['GOOGLE_CLIENT_ID'] ?? getenv('GOOGLE_CLIENT_ID');
-    $clientSecret = $_ENV['GOOGLE_CLIENT_SECRET'] ?? getenv('GOOGLE_CLIENT_SECRET');
+    $clientId = $_ENV['GOOGLE_LOGIN_CLIENT_ID']
+        ?? getenv('GOOGLE_LOGIN_CLIENT_ID')
+        ?? $_ENV['GOOGLE_CLIENT_ID']
+        ?? getenv('GOOGLE_CLIENT_ID');
+
+    $clientSecret = $_ENV['GOOGLE_LOGIN_CLIENT_SECRET']
+        ?? getenv('GOOGLE_LOGIN_CLIENT_SECRET')
+        ?? $_ENV['GOOGLE_CLIENT_SECRET']
+        ?? getenv('GOOGLE_CLIENT_SECRET');
 
     $redirectUri = $_SESSION['google_oauth_redirect_uri']
         ?? ($_ENV['GOOGLE_REDIRECT_URI'] ?? getenv('GOOGLE_REDIRECT_URI'));

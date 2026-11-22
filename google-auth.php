@@ -4,8 +4,15 @@ session_start();
 require_once __DIR__ . '/vendor/autoload.php';
 require_once __DIR__ . '/config/db.php';
 
-$clientId     = $_ENV['GOOGLE_CLIENT_ID'] ?? getenv('GOOGLE_CLIENT_ID');
-$clientSecret = $_ENV['GOOGLE_CLIENT_SECRET'] ?? getenv('GOOGLE_CLIENT_SECRET');
+$clientId = $_ENV['GOOGLE_LOGIN_CLIENT_ID']
+    ?? getenv('GOOGLE_LOGIN_CLIENT_ID')
+    ?? $_ENV['GOOGLE_CLIENT_ID']
+    ?? getenv('GOOGLE_CLIENT_ID');
+
+$clientSecret = $_ENV['GOOGLE_LOGIN_CLIENT_SECRET']
+    ?? getenv('GOOGLE_LOGIN_CLIENT_SECRET')
+    ?? $_ENV['GOOGLE_CLIENT_SECRET']
+    ?? getenv('GOOGLE_CLIENT_SECRET');
 
 if (empty($clientId) || empty($clientSecret)) {
     $_SESSION['message'] = 'Google Login configuration is missing. Please check your credentials.';
