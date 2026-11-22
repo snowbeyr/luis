@@ -839,9 +839,7 @@ foreach ($allOrders as $o) {
                                         <button type="button" class="btn btn-navy btn-sm" onclick="openOrderModal(<?php echo (int)$order['id']; ?>)">
                                             <i class="bi bi-info-circle me-1"></i> Order Details
                                         </button>
-                                        <button type="button" class="btn btn-outline-dark btn-sm" onclick="openReceiptDirectly(<?php echo (int)$order['id']; ?>)">
-                                            <i class="bi bi-receipt me-1"></i> View Receipt
-                                        </button>
+        
                                     </div>
                                 </div>
                             </div>
@@ -1001,9 +999,7 @@ foreach ($allOrders as $o) {
                         <button type="button" class="btn btn-success btn-sm fw-semibold d-flex align-items-center gap-1 shadow-sm" id="btnDownloadReceipt" onclick="downloadThermalReceipt()">
                             <i class="bi bi-download"></i> Download
                         </button>
-                        <button type="button" class="btn btn-outline-secondary btn-sm d-flex align-items-center gap-1" onclick="printThermalReceipt()">
-                            <i class="bi bi-printer"></i> Print
-                        </button>
+                    
                     </div>
                     <button type="button" class="btn btn-secondary btn-sm px-3" data-bs-dismiss="modal">Close</button>
                 </div>
