@@ -68,6 +68,94 @@ try {
             $exchangeOrderIds[] = (int) $req['order_number'];
         }
     }
+
+    // Fetch all items from order_items table for these orders
+    $orderIds = array_column($allOrders, 'id');
+    $dbItemsByOrder = [];
+    if (!empty($orderIds)) {
+        $inPlaceholders = implode(',', array_fill(0, count($orderIds), '?'));
+        $oiStmt = $pdo->prepare("
+            SELECT oi.*, p.image AS product_image 
+            FROM order_items oi 
+            LEFT JOIN products p ON oi.product_id = p.id 
+            WHERE oi.order_id IN ($inPlaceholders)
+            ORDER BY oi.id ASC
+        ");
+        $oiStmt->execute($orderIds);
+        while ($oiRow = $oiStmt->fetch(PDO::FETCH_ASSOC)) {
+            $dbItemsByOrder[(int)$oiRow['order_id']][] = $oiRow;
+        }
+    }
+
+    // Pre-process and normalize order items
+    foreach ($allOrders as &$orderRef) {
+        $oid = (int) $orderRef['id'];
+        $parsedItems = [];
+
+        // 1. Check order_items table first
+        if (!empty($dbItemsByOrder[$oid])) {
+            foreach ($dbItemsByOrder[$oid] as $dbItem) {
+                $pName = trim((string) ($dbItem['product_name'] ?? 'Hardware Item'));
+                if (!empty($dbItem['variant_name'])) {
+                    $pName .= ' (' . trim($dbItem['variant_name']) . ')';
+                }
+                $pQty = (int) ($dbItem['qty'] ?? 1);
+                if ($pQty <= 0) $pQty = 1;
+                $pPrice = (float) ($dbItem['price'] ?? 0);
+                $pImgRaw = trim((string) ($dbItem['product_image'] ?? ''));
+                $pImg = !empty($pImgRaw) ? getProductImageSrc($pImgRaw) : '../assets/images/no-image.png';
+                $pSubtotal = (float) ($dbItem['subtotal'] ?? ($pPrice * $pQty));
+
+                $parsedItems[] = [
+                    'name' => $pName,
+                    'qty' => $pQty,
+                    'price' => $pPrice,
+                    'price_formatted' => number_format($pPrice, 2),
+                    'subtotal' => $pSubtotal,
+                    'subtotal_formatted' => number_format($pSubtotal, 2),
+                    'image' => $pImg
+                ];
+            }
+        }
+
+        // 2. If order_items was empty, parse cart JSON
+        if (empty($parsedItems)) {
+            $cartRaw = $orderRef['cart'] ?? '';
+            $cartObj = is_string($cartRaw) ? json_decode($cartRaw, true) : $cartRaw;
+            if (is_string($cartObj)) {
+                $cartObj = json_decode($cartObj, true);
+            }
+            if (is_array($cartObj)) {
+                foreach ($cartObj as $cItem) {
+                    if (!is_array($cItem)) continue;
+                    $pName = trim((string) ($cItem['name'] ?? ($cItem['product_name'] ?? ($cItem['title'] ?? 'Hardware Item'))));
+                    if (!empty($cItem['variant_name'])) {
+                        $pName .= ' (' . trim($cItem['variant_name']) . ')';
+                    }
+                    $pQty = (int) ($cItem['qty'] ?? ($cItem['quantity'] ?? 1));
+                    if ($pQty <= 0) $pQty = 1;
+                    $pPrice = (float) ($cItem['price'] ?? ($cItem['unit_price'] ?? 0));
+                    $pImgRaw = trim((string) ($cItem['image'] ?? ($cItem['product_image'] ?? '')));
+                    $pImg = !empty($pImgRaw) ? getProductImageSrc($pImgRaw) : '../assets/images/no-image.png';
+                    $pSubtotal = $pPrice * $pQty;
+
+                    $parsedItems[] = [
+                        'name' => $pName,
+                        'qty' => $pQty,
+                        'price' => $pPrice,
+                        'price_formatted' => number_format($pPrice, 2),
+                        'subtotal' => $pSubtotal,
+                        'subtotal_formatted' => number_format($pSubtotal, 2),
+                        'image' => $pImg
+                    ];
+                }
+            }
+        }
+
+        $orderRef['parsed_items'] = $parsedItems;
+        $orderRef['proof_resolved'] = !empty($orderRef['proof_of_payment']) ? getProductImageSrc($orderRef['proof_of_payment']) : '';
+    }
+    unset($orderRef);
 } catch (PDOException $e) {
     error_log("My Purchases load error: " . $e->getMessage());
     $allOrders = [];
@@ -339,6 +427,140 @@ foreach ($allOrders as $o) {
             background: #0b3267;
             color: #fff;
         }
+
+        /* Shopee-Style Order Stepper */
+        .order-stepper {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            position: relative;
+            margin: 15px 0 20px 0;
+            padding: 0 10px;
+        }
+
+        .stepper-step {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            position: relative;
+            z-index: 2;
+            flex: 1;
+        }
+
+        .stepper-icon {
+            width: 38px;
+            height: 38px;
+            border-radius: 50%;
+            background: #f1f5f9;
+            color: #94a3b8;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+            margin-bottom: 6px;
+            border: 3px solid #fff;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+            transition: all 0.3s ease;
+        }
+
+        .stepper-step.completed .stepper-icon {
+            background: #10b981;
+            color: #fff;
+        }
+
+        .stepper-step.active .stepper-icon {
+            background: #051c3c;
+            color: #ffc107;
+            box-shadow: 0 0 0 4px rgba(5, 28, 60, 0.15);
+        }
+
+        .stepper-label {
+            font-size: 0.72rem;
+            color: #64748b;
+            font-weight: 500;
+            text-align: center;
+            line-height: 1.25;
+            max-width: 80px;
+        }
+
+        .stepper-step.completed .stepper-label,
+        .stepper-step.active .stepper-label {
+            color: #051c3c;
+            font-weight: 700;
+        }
+
+        .stepper-track {
+            position: absolute;
+            top: 19px;
+            left: 10%;
+            right: 10%;
+            height: 3px;
+            background: #e2e8f0;
+            z-index: 1;
+        }
+
+        .stepper-track-fill {
+            height: 100%;
+            background: #10b981;
+            transition: width 0.3s ease;
+        }
+
+        /* Shopee Order Details Cards */
+        .order-detail-box {
+            background: #fff;
+            border: 1px solid #eaedf1;
+            border-radius: 12px;
+            padding: 16px 18px;
+            margin-bottom: 14px;
+        }
+
+        .delivery-ribbon-box {
+            border-left: 3px solid #ef4444;
+            background: #fffbfb;
+        }
+
+        .receipt-item-row {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 12px 0;
+            border-bottom: 1px dashed #e2e8f0;
+        }
+
+        .receipt-item-row:last-child {
+            border-bottom: none;
+            padding-bottom: 0;
+        }
+
+        .receipt-item-img {
+            width: 58px;
+            height: 58px;
+            object-fit: cover;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+            background: #fff;
+            flex-shrink: 0;
+        }
+
+        @media print {
+            body * {
+                visibility: hidden;
+            }
+            #orderDetailsModal, #orderDetailsModal * {
+                visibility: visible;
+            }
+            #orderDetailsModal {
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100%;
+                margin: 0;
+                padding: 0;
+            }
+            .modal-footer, .btn-close, .modal-backdrop {
+                display: none !important;
+            }
+        }
     </style>
 </head>
 <body>
@@ -510,11 +732,8 @@ foreach ($allOrders as $o) {
                             $statusLabel = strtoupper($rawStatus);
                         }
 
-                        // Decode cart items
-                        $cartItems = json_decode($order['cart'] ?? '[]', true);
-                        if (!is_array($cartItems)) {
-                            $cartItems = [];
-                        }
+                        // Items parsed already
+                        $itemsList = $order['parsed_items'] ?? [];
                         ?>
                         <div class="order-card">
                             <!-- Card Header -->
@@ -533,32 +752,30 @@ foreach ($allOrders as $o) {
 
                             <!-- Cart Items List -->
                             <div>
-                                <?php foreach ($cartItems as $item): ?>
-                                    <?php
-                                    $pName = $item['name'] ?? ($item['product_name'] ?? 'Hardware Item');
-                                    $pQty = (int) ($item['qty'] ?? 1);
-                                    $pPrice = (float) ($item['price'] ?? 0);
-                                    $pImg = !empty($item['image']) ? getProductImageSrc($item['image']) : '../assets/images/no-image.png';
-                                    ?>
-                                    <div class="order-item-row">
-                                        <img src="<?php echo htmlspecialchars($pImg, ENT_QUOTES, 'UTF-8'); ?>"
-                                             alt="<?php echo htmlspecialchars($pName, ENT_QUOTES, 'UTF-8'); ?>"
-                                             class="order-item-img"
-                                             onerror="this.src='../assets/images/no-image.png';">
-                                        
-                                        <div class="flex-grow-1 overflow-hidden">
-                                            <h6 class="fw-bold mb-1 text-truncate text-dark"><?php echo htmlspecialchars($pName, ENT_QUOTES, 'UTF-8'); ?></h6>
-                                            <div class="text-muted small">
-                                                Quantity: <span class="fw-semibold text-dark">x<?php echo $pQty; ?></span>
+                                <?php if (!empty($itemsList)): ?>
+                                    <?php foreach ($itemsList as $item): ?>
+                                        <div class="order-item-row">
+                                            <img src="<?php echo htmlspecialchars($item['image'], ENT_QUOTES, 'UTF-8'); ?>"
+                                                 alt="<?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?>"
+                                                 class="order-item-img"
+                                                 onerror="this.src='../assets/images/no-image.png';">
+                                            
+                                            <div class="flex-grow-1 overflow-hidden">
+                                                <h6 class="fw-bold mb-1 text-truncate text-dark"><?php echo htmlspecialchars($item['name'], ENT_QUOTES, 'UTF-8'); ?></h6>
+                                                <div class="text-muted small">
+                                                    Quantity: <span class="fw-semibold text-dark">x<?php echo $item['qty']; ?></span>
+                                                </div>
+                                            </div>
+
+                                            <div class="text-end">
+                                                <div class="fw-bold text-dark fs-6">₱<?php echo $item['subtotal_formatted']; ?></div>
+                                                <small class="text-muted">₱<?php echo $item['price_formatted']; ?> each</small>
                                             </div>
                                         </div>
-
-                                        <div class="text-end">
-                                            <div class="fw-bold text-dark fs-6">₱<?php echo number_format($pPrice * $pQty, 2); ?></div>
-                                            <small class="text-muted">₱<?php echo number_format($pPrice, 2); ?> each</small>
-                                        </div>
-                                    </div>
-                                <?php endforeach; ?>
+                                    <?php endforeach; ?>
+                                <?php else: ?>
+                                    <div class="p-3 text-muted small">Hardware Items Order</div>
+                                <?php endif; ?>
                             </div>
 
                             <!-- Card Footer -->
@@ -595,7 +812,11 @@ foreach ($allOrders as $o) {
                                             </a>
                                         <?php endif; ?>
 
-                                        <button type="button" class="btn btn-navy btn-sm" onclick='viewOrderSummary(<?php echo json_encode($order); ?>)'>
+                                        <!-- Safe JSON payload container for zero escaping bugs -->
+                                        <script type="application/json" id="order-data-<?php echo $order['id']; ?>">
+                                            <?php echo json_encode($order, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE); ?>
+                                        </script>
+                                        <button type="button" class="btn btn-navy btn-sm" onclick="openOrderModal(<?php echo (int)$order['id']; ?>)">
                                             <i class="bi bi-receipt me-1"></i> Order Details
                                         </button>
                                     </div>
@@ -609,19 +830,131 @@ foreach ($allOrders as $o) {
         </div>
     </div>
 
-    <!-- Order Details Modal -->
+    <!-- Shopee-Style Order Details Modal -->
     <div class="modal fade" id="orderDetailsModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered modal-lg">
-            <div class="modal-content border-0 shadow-lg rounded-4">
-                <div class="modal-header border-bottom py-3">
-                    <h5 class="modal-title fw-bold" id="modalOrderTitle">Order Details</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            <div class="modal-content border-0 shadow-lg" style="border-radius: 16px; overflow: hidden;">
+                <!-- Header with Brand Accent -->
+                <div class="modal-header border-0 text-white p-3 px-4" style="background: #051c3c;">
+                    <div>
+                        <div class="d-flex align-items-center gap-2">
+                            <i class="bi bi-receipt-cutoff text-warning fs-5"></i>
+                            <h5 class="modal-title fw-bold text-white mb-0">Order #<span id="mdlOrderId"></span> Details</h5>
+                        </div>
+                        <small class="text-white-50" id="mdlOrderSubtitle"></small>
+                    </div>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
-                <div class="modal-body p-4" id="modalOrderBody">
-                    <!-- Populated dynamically via JS -->
+
+                <div class="modal-body p-4 pt-3" id="modalOrderBody">
+                    <!-- Progress Stepper (Shopee Style) -->
+                    <div id="mdlStepperContainer" class="mb-4">
+                        <div class="order-stepper">
+                            <div class="stepper-track">
+                                <div class="stepper-track-fill" id="mdlStepperFill" style="width: 0%;"></div>
+                            </div>
+                            <div class="stepper-step" id="step-placed">
+                                <div class="stepper-icon"><i class="bi bi-bag"></i></div>
+                                <div class="stepper-label">Order Placed</div>
+                            </div>
+                            <div class="stepper-step" id="step-confirmed">
+                                <div class="stepper-icon"><i class="bi bi-wallet2"></i></div>
+                                <div class="stepper-label">Payment Confirmed</div>
+                            </div>
+                            <div class="stepper-step" id="step-preparing">
+                                <div class="stepper-icon"><i class="bi bi-box-seam"></i></div>
+                                <div class="stepper-label">Preparing</div>
+                            </div>
+                            <div class="stepper-step" id="step-shipping">
+                                <div class="stepper-icon"><i class="bi bi-truck"></i></div>
+                                <div class="stepper-label">Out for Delivery</div>
+                            </div>
+                            <div class="stepper-step" id="step-delivered">
+                                <div class="stepper-icon"><i class="bi bi-check2-circle"></i></div>
+                                <div class="stepper-label">Completed</div>
+                            </div>
+                        </div>
+                        <div id="mdlStatusAlert" class="text-center small py-2 px-3 rounded-3 mt-2 fw-semibold"></div>
+                    </div>
+
+                    <!-- Shopee-Style Delivery Address -->
+                    <div class="order-detail-box delivery-ribbon-box mb-3">
+                        <div class="d-flex align-items-center gap-2 text-danger fw-bold mb-2 small text-uppercase">
+                            <i class="bi bi-geo-alt-fill fs-6"></i> Delivery Address
+                        </div>
+                        <div class="delivery-address-content">
+                            <div class="d-flex align-items-center gap-2">
+                                <strong class="text-dark fs-6" id="mdlCustomerName"></strong>
+                                <span class="text-muted small">•</span>
+                                <span class="text-secondary small fw-semibold" id="mdlContactNumber"></span>
+                            </div>
+                            <div class="text-dark small mt-1" id="mdlFullAddress"></div>
+                            <div class="text-muted small mt-1" id="mdlLandmarkContainer">
+                                <i class="bi bi-pin-map me-1 text-secondary"></i>Landmark: <span id="mdlLandmark"></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Purchased Items (Shopee Shop List Style) -->
+                    <div class="order-detail-box mb-3 p-0 overflow-hidden">
+                        <div class="p-3 bg-light border-bottom d-flex align-items-center justify-content-between">
+                            <div class="d-flex align-items-center gap-2">
+                                <i class="bi bi-shop text-primary fs-6"></i>
+                                <strong class="text-dark small">R. Taipan Hardware Official Store</strong>
+                            </div>
+                            <span class="badge bg-white text-secondary border small fw-normal">Standard Delivery</span>
+                        </div>
+                        <div class="p-3" id="mdlItemsContainer">
+                            <!-- Items injected dynamically -->
+                        </div>
+                    </div>
+
+                    <!-- Payment Breakdown (Invoice Style) -->
+                    <div class="order-detail-box mb-0">
+                        <div class="row g-3">
+                            <div class="col-md-6" id="mdlPaymentInfoCol">
+                                <div class="text-muted small text-uppercase fw-bold mb-2">Payment Information</div>
+                                <div class="small mb-1">
+                                    Method: <strong class="text-dark" id="mdlPaymentMethod"></strong>
+                                    <span id="mdlPaymentSchemeBadge"></span>
+                                </div>
+                                <div class="small mb-1" id="mdlRefNoRow">
+                                    Ref No: <span class="fw-semibold text-primary" id="mdlRefNo"></span>
+                                </div>
+                                <div class="small" id="mdlProofRow"></div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="text-muted small text-uppercase fw-bold mb-2 text-md-end">Payment Summary</div>
+                                <table class="table table-sm table-borderless mb-0 small">
+                                    <tbody>
+                                        <tr>
+                                            <td class="text-muted">Merchandise Subtotal:</td>
+                                            <td class="text-end fw-semibold text-dark">₱<span id="mdlSubtotal">0.00</span></td>
+                                        </tr>
+                                        <tr>
+                                            <td class="text-muted">Shipping Fee:</td>
+                                            <td class="text-end text-success fw-semibold">FREE (₱0.00)</td>
+                                        </tr>
+                                        <tr class="border-top">
+                                            <td class="fw-bold text-dark pt-2">Order Total:</td>
+                                            <td class="text-end pt-2">
+                                                <span class="fw-bold text-danger fs-5">₱<span id="mdlTotalAmount">0.00</span></span>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
                 </div>
-                <div class="modal-footer border-top py-2">
-                    <button type="button" class="btn btn-secondary btn-sm px-4" data-bs-dismiss="modal">Close</button>
+
+                <!-- Footer with Print & Close -->
+                <div class="modal-footer bg-light border-top py-2 px-4 d-flex justify-content-between">
+                    <button type="button" class="btn btn-outline-secondary btn-sm d-flex align-items-center gap-1" onclick="printReceipt()">
+                        <i class="bi bi-printer"></i> Print Receipt
+                    </button>
+                    <button type="button" class="btn btn-navy btn-sm px-4" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
         </div>
@@ -629,81 +962,162 @@ foreach ($allOrders as $o) {
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        function viewOrderSummary(order) {
-            const modalTitle = document.getElementById('modalOrderTitle');
-            const modalBody = document.getElementById('modalOrderBody');
-
-            modalTitle.innerText = `Order #${order.id} Summary`;
-
-            let cart = [];
+        function openOrderModal(orderId) {
+            const jsonEl = document.getElementById('order-data-' + orderId);
+            if (!jsonEl) return;
+            let order;
             try {
-                cart = typeof order.cart === 'string' ? JSON.parse(order.cart) : order.cart;
-            } catch (e) {
-                cart = [];
+                order = JSON.parse(jsonEl.textContent);
+            } catch(e) {
+                console.error("Failed to parse order JSON", e);
+                return;
             }
 
-            let itemsHtml = '';
-            if (Array.isArray(cart) && cart.length > 0) {
-                cart.forEach(item => {
-                    const price = parseFloat(item.price || 0).toLocaleString(undefined, {minimumFractionDigits: 2});
-                    const total = (parseFloat(item.price || 0) * parseInt(item.qty || 1)).toLocaleString(undefined, {minimumFractionDigits: 2});
-                    itemsHtml += `
-                        <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
-                            <div>
-                                <strong class="d-block text-dark">${item.name || item.product_name || 'Item'}</strong>
-                                <small class="text-muted">₱${price} x ${item.qty || 1}</small>
+            // Header info
+            document.getElementById('mdlOrderId').textContent = order.id;
+            if (order.order_date) {
+                const d = new Date(order.order_date.replace(' ', 'T'));
+                const dateStr = !isNaN(d.getTime()) ? d.toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit'}) : order.order_date;
+                document.getElementById('mdlOrderSubtitle').textContent = `Placed on ${dateStr}`;
+            } else {
+                document.getElementById('mdlOrderSubtitle').textContent = '';
+            }
+
+            // Stepper logic
+            const status = (order.status || 'pending').toLowerCase().trim();
+            const steps = ['placed', 'confirmed', 'preparing', 'shipping', 'delivered'];
+            steps.forEach(s => {
+                const el = document.getElementById('step-' + s);
+                if (el) el.className = 'stepper-step';
+            });
+            
+            const stepperFill = document.getElementById('mdlStepperFill');
+            const alertBox = document.getElementById('mdlStatusAlert');
+
+            if (status === 'completed') {
+                stepperFill.style.width = '100%';
+                steps.forEach(s => document.getElementById('step-' + s).classList.add('completed'));
+                alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-success-subtle text-success border border-success-subtle';
+                alertBox.innerHTML = '<i class="bi bi-check-circle-fill me-1"></i> Order successfully delivered and completed!';
+            } else if (status === 'out_for_delivery') {
+                stepperFill.style.width = '75%';
+                ['placed', 'confirmed', 'preparing'].forEach(s => document.getElementById('step-' + s).classList.add('completed'));
+                document.getElementById('step-shipping').classList.add('active');
+                alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-info-subtle text-primary border border-info-subtle';
+                alertBox.innerHTML = '<i class="bi bi-truck me-1"></i> Your parcel is out for delivery! Please keep your lines open.';
+            } else if (status === 'preparing') {
+                stepperFill.style.width = '50%';
+                ['placed', 'confirmed'].forEach(s => document.getElementById('step-' + s).classList.add('completed'));
+                document.getElementById('step-preparing').classList.add('active');
+                alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-warning-subtle text-warning-emphasis border border-warning-subtle';
+                alertBox.innerHTML = '<i class="bi bi-box-seam me-1"></i> The hardware store is currently preparing your ordered items.';
+            } else if (status === 'approved') {
+                stepperFill.style.width = '25%';
+                document.getElementById('step-placed').classList.add('completed');
+                document.getElementById('step-confirmed').classList.add('active');
+                alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-warning-subtle text-warning-emphasis border border-warning-subtle';
+                alertBox.innerHTML = '<i class="bi bi-check2 me-1"></i> Order approved! Scheduled for preparation.';
+            } else if (status === 'cancelled' || status === 'declined') {
+                stepperFill.style.width = '0%';
+                alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-danger-subtle text-danger border border-danger-subtle';
+                alertBox.innerHTML = `<i class="bi bi-x-circle-fill me-1"></i> This order was ${status.toUpperCase()}.`;
+            } else {
+                // Pending
+                stepperFill.style.width = '5%';
+                document.getElementById('step-placed').classList.add('active');
+                alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-light text-secondary border';
+                alertBox.innerHTML = '<i class="bi bi-clock-history me-1"></i> Order placed. Waiting for store confirmation.';
+            }
+
+            // Customer Delivery Address
+            const fullName = `${order.fullname || ''} ${order.surname || ''}`.trim() || 'Customer';
+            document.getElementById('mdlCustomerName').textContent = fullName;
+            document.getElementById('mdlContactNumber').textContent = order.contact_number ? `(+63) ${order.contact_number}` : 'N/A';
+            document.getElementById('mdlFullAddress').textContent = order.full_address || 'No delivery address provided';
+            
+            if (order.landmark && order.landmark.trim() !== '') {
+                document.getElementById('mdlLandmarkContainer').style.display = 'block';
+                document.getElementById('mdlLandmark').textContent = order.landmark;
+            } else {
+                document.getElementById('mdlLandmarkContainer').style.display = 'none';
+            }
+
+            // Items list
+            const itemsContainer = document.getElementById('mdlItemsContainer');
+            itemsContainer.innerHTML = '';
+
+            const items = Array.isArray(order.parsed_items) ? order.parsed_items : [];
+            if (items.length > 0) {
+                items.forEach(it => {
+                    const row = document.createElement('div');
+                    row.className = 'receipt-item-row';
+                    row.innerHTML = `
+                        <img src="${it.image || '../assets/images/no-image.png'}" 
+                             class="receipt-item-img" 
+                             alt="${it.name || 'Item'}" 
+                             onerror="this.src='../assets/images/no-image.png';">
+                        <div class="flex-grow-1 overflow-hidden">
+                            <h6 class="fw-bold mb-1 text-truncate text-dark" style="font-size: 0.95rem;">${it.name || 'Hardware Item'}</h6>
+                            <div class="text-muted small">
+                                Unit Price: ₱${it.price_formatted} &nbsp;•&nbsp; 
+                                <span class="badge bg-light text-dark border">x${it.qty}</span>
                             </div>
-                            <span class="fw-bold text-dark">₱${total}</span>
+                        </div>
+                        <div class="text-end">
+                            <strong class="text-dark fs-6">₱${it.subtotal_formatted}</strong>
                         </div>
                     `;
+                    itemsContainer.appendChild(row);
                 });
             } else {
-                itemsHtml = '<p class="text-muted small">No item details available.</p>';
+                itemsContainer.innerHTML = '<div class="text-muted small py-3 text-center">No individual item details recorded.</div>';
             }
 
-            const totalAmount = parseFloat(order.total_amount || 0).toLocaleString(undefined, {minimumFractionDigits: 2});
-            const paidAmount = parseFloat(order.paid_amount || 0).toLocaleString(undefined, {minimumFractionDigits: 2});
+            // Payment details
+            const method = (order.payment_method || 'COD').toUpperCase();
+            document.getElementById('mdlPaymentMethod').textContent = method;
+            
+            const schemeBadge = document.getElementById('mdlPaymentSchemeBadge');
+            if (order.payment_scheme) {
+                schemeBadge.innerHTML = `<span class="badge bg-secondary ms-1 small">${order.payment_scheme}</span>`;
+            } else {
+                schemeBadge.innerHTML = '';
+            }
 
-            modalBody.innerHTML = `
-                <div class="row g-3 mb-3">
-                    <div class="col-md-6">
-                        <div class="p-3 bg-light rounded-3">
-                            <span class="text-muted small d-block">Recipient Info</span>
-                            <strong class="text-dark">${order.fullname || ''} ${order.surname || ''}</strong>
-                            <div class="small text-muted mt-1">📞 ${order.contact_number || 'N/A'}</div>
-                            <div class="small text-muted">📧 ${order.email || 'N/A'}</div>
-                        </div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="p-3 bg-light rounded-3">
-                            <span class="text-muted small d-block">Delivery Address</span>
-                            <strong class="text-dark">${order.full_address || 'N/A'}</strong>
-                            <div class="small text-muted mt-1">Landmark: ${order.landmark || 'None'}</div>
-                        </div>
-                    </div>
-                </div>
+            const refRow = document.getElementById('mdlRefNoRow');
+            if (order.ref_no && order.ref_no.trim() !== '') {
+                refRow.style.display = 'block';
+                document.getElementById('mdlRefNo').textContent = order.ref_no;
+            } else {
+                refRow.style.display = 'none';
+            }
 
-                <div class="mb-3">
-                    <h6 class="fw-bold mb-2">Purchased Items</h6>
-                    <div class="p-3 border rounded-3 bg-white">
-                        ${itemsHtml}
-                    </div>
-                </div>
+            const proofRow = document.getElementById('mdlProofRow');
+            if (order.proof_resolved && order.proof_resolved.trim() !== '') {
+                proofRow.style.display = 'block';
+                proofRow.innerHTML = `
+                    <a href="${order.proof_resolved}" target="_blank" class="btn btn-outline-primary btn-sm mt-2">
+                        <i class="bi bi-image me-1"></i> View Payment Receipt Proof
+                    </a>
+                `;
+            } else {
+                proofRow.style.display = 'none';
+                proofRow.innerHTML = '';
+            }
 
-                <div class="p-3 bg-light rounded-3 d-flex justify-content-between align-items-center">
-                    <div>
-                        <span class="d-block text-muted small">Payment Method: <strong>${(order.payment_method || 'COD').toUpperCase()}</strong></span>
-                        ${order.ref_no ? `<span class="d-block text-muted small">Ref No: <strong>${order.ref_no}</strong></span>` : ''}
-                    </div>
-                    <div class="text-end">
-                        <span class="text-muted small d-block">Grand Total</span>
-                        <h4 class="fw-bold text-danger mb-0">₱${totalAmount}</h4>
-                    </div>
-                </div>
-            `;
+            // Totals
+            const totalNum = parseFloat(order.total_amount || 0);
+            const totalFormatted = totalNum.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            document.getElementById('mdlSubtotal').textContent = totalFormatted;
+            document.getElementById('mdlTotalAmount').textContent = totalFormatted;
 
+            // Show modal
             const modal = new bootstrap.Modal(document.getElementById('orderDetailsModal'));
             modal.show();
+        }
+
+        function printReceipt() {
+            window.print();
         }
     </script>
 </body>
