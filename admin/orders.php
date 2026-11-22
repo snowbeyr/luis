@@ -3,6 +3,7 @@ session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../config/google_drive.php';
 require_once __DIR__ . '/../config/image.php';
+require_once __DIR__ . '/../config/email.php';
 
 if (!isset($_SESSION['role']) || $_SESSION['role'] != "admin") {
     header("Location: ../login.php");
@@ -37,45 +38,11 @@ function logAdminAction($conn, $user_id, $username, $role, $action, $details)
 }
 
 /**
- * Sends Order Email Notification via Resend HTTP API (Bypasses SMTP timeout errors on cloud hosting)[cite: 9]
+ * Sends Order Email Notification via Brevo/Resend API
  */
 function sendOrderEmail(string $toEmail, string $toName, string $subject, string $htmlBody): array
 {
-    $apiKey = $_ENV['RESEND_API_KEY'] ?? getenv('RESEND_API_KEY');
-
-    if (empty($apiKey)) {
-        error_log("MAILER ERROR: RESEND_API_KEY is not defined.");
-        return ['success' => false, 'error' => 'RESEND_API_KEY is missing in environment variables.'];
-    }
-
-    $url = 'https://api.resend.com/emails';
-    $data = [
-        'from'    => 'R. Taipan Hardware <onboarding@resend.dev>',
-        'to'      => [$toEmail],
-        'subject' => $subject,
-        'html'    => $htmlBody
-    ];
-
-    $ch = curl_init($url);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        'Authorization: Bearer ' . $apiKey,
-        'Content-Type: application/json'
-    ]);
-
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $curlError = curl_error($ch);
-    curl_close($ch);
-
-    if ($httpCode >= 200 && $httpCode < 300) {
-        return ['success' => true, 'error' => ''];
-    } else {
-        error_log("Resend API cURL Error: " . $response);
-        return ['success' => false, 'error' => $response ?: $curlError];
-    }
+    return sendSystemEmail($toEmail, $toName, $subject, $htmlBody);
 }
 
 // EMAILER ACTION LOGIC[cite: 9]

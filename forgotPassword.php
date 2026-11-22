@@ -3,6 +3,7 @@ session_start();
 
 // 1. Load Database Connection (handles dotenv and PDO)
 require_once __DIR__ . "/config/db.php";
+require_once __DIR__ . "/config/email.php";
 
 date_default_timezone_set('Asia/Manila');
 
@@ -18,52 +19,22 @@ function h($value)
 }
 
 /**
- * Sends Reset OTP via Native cURL HTTP API to Resend
+ * Sends Reset OTP via Emailer (Brevo / Resend)
  */
 function sendResetOtp(string $email, string $otp): array
 {
-    $apiKey = $_ENV['RESEND_API_KEY'] ?? getenv('RESEND_API_KEY');
+    $subject = 'Password Reset OTP - R. Taipan Hardware';
+    $htmlBody = "
+        <div style='font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px;'>
+            <h2 style='color:#001f4d;margin-top:0;'>Password Reset Verification</h2>
+            <p>We received a request to reset your R. Taipan Hardware account password.</p>
+            <p>Your one-time password (OTP) is:</p>
+            <div style='font-size:30px;font-weight:bold;letter-spacing:8px;background:#f3f6fb;padding:18px;text-align:center;border-radius:8px;color:#001f4d;'>" . h($otp) . "</div>
+            <p>This OTP expires in <strong>5 minutes</strong>. Do not share it with anyone.</p>
+            <p>If you did not request a password reset, you can ignore this email.</p>
+        </div>";
 
-    if (empty($apiKey)) {
-        error_log("OTP RESEND ERROR: RESEND_API_KEY is not defined.");
-        return ['success' => false, 'error' => 'Mail Configuration Error: RESEND_API_KEY is missing in environment variables.'];
-    }
-
-    $url = 'https://api.resend.com/emails';
-    $data = [
-        'from'    => 'R. Taipan Hardware <onboarding@resend.dev>',
-        'to'      => [$email],
-        'subject' => 'Password Reset OTP - R. Taipan Hardware',
-        'html'    => "
-            <div style='font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:24px;border:1px solid #e5e7eb;border-radius:12px;'>
-                <h2 style='color:#001f4d;margin-top:0;'>Password Reset Verification</h2>
-                <p>We received a request to reset your R. Taipan Hardware account password.</p>
-                <p>Your one-time password (OTP) is:</p>
-                <div style='font-size:30px;font-weight:bold;letter-spacing:8px;background:#f3f6fb;padding:18px;text-align:center;border-radius:8px;color:#001f4d;'>" . h($otp) . "</div>
-                <p>This OTP expires in <strong>5 minutes</strong>. Do not share it with anyone.</p>
-                <p>If you did not request a password reset, you can ignore this email.</p>
-            </div>"
-    ];
-
-    $ch = curl_init($url);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        'Authorization: Bearer ' . $apiKey,
-        'Content-Type: application/json'
-    ]);
-
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    if ($httpCode >= 200 && $httpCode < 300) {
-        return ['success' => true, 'error' => ''];
-    } else {
-        error_log("Resend cURL Error: " . $response);
-        return ['success' => false, 'error' => 'Mailer Error: Failed to connect to email API.'];
-    }
+    return sendSystemEmail($email, $email, $subject, $htmlBody);
 }
 
 function clearResetSession(): void

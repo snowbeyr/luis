@@ -3,6 +3,7 @@ session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../config/google_drive.php';
 require_once __DIR__ . '/../config/image.php';
+require_once __DIR__ . '/../config/email.php';
 
 if (!isset($_SESSION['role']) || $_SESSION['role'] !== "admin") {
     header("Location: ../login.php");
@@ -14,45 +15,11 @@ $admin_id = $_SESSION['user_id'] ?? ($_SESSION['id'] ?? ($_SESSION['admin_id'] ?
 
 function sendCustomerRequestEmail(string $toEmail, string $toName, string $subject, string $htmlBody): array
 {
-    $apiKey = $_ENV['RESEND_API_KEY'] ?? getenv('RESEND_API_KEY');
-
-    if (empty($apiKey)) {
-        error_log("MAILER ERROR: RESEND_API_KEY is not defined.");
-        return ['success' => false, 'error' => 'RESEND_API_KEY is missing in environment variables.'];
-    }
-
     if (empty(trim($htmlBody))) {
         $htmlBody = "<p>Hello " . htmlspecialchars($toName) . ", you have a notification regarding your request.</p>";
     }
 
-    $url = 'https://api.resend.com/emails';
-    $data = [
-        'from'    => 'R. Taipan Hardware <onboarding@resend.dev>',
-        'to'      => [$toEmail],
-        'subject' => $subject,
-        'html'    => $htmlBody
-    ];
-
-    $ch = curl_init($url);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        'Authorization: Bearer ' . $apiKey,
-        'Content-Type: application/json'
-    ]);
-
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $curlError = curl_error($ch);
-    curl_close($ch);
-
-    if ($httpCode >= 200 && $httpCode < 300) {
-        return ['success' => true, 'error' => ''];
-    } else {
-        error_log("Resend API cURL Error: " . $response);
-        return ['success' => false, 'error' => $response ?: $curlError];
-    }
+    return sendSystemEmail($toEmail, $toName, $subject, $htmlBody);
 }
 
 // --- 1. EMAILER ACTION LOGIC ---
