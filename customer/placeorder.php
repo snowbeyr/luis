@@ -390,6 +390,75 @@ if (isset($_POST['place_order'])) {
             50% { background-color: #f0fdf4; border-color: #22c55e; }
             100% { background-color: #fff; border-color: #dee2e6; }
         }
+
+        /* Payment Details Dark Card (matches official preview) */
+        .payment-details-card {
+            background-color: #0d1b2a;
+            border-radius: 16px;
+            padding: 18px;
+            color: #ffffff;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+            margin-bottom: 16px;
+        }
+        .payment-details-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+        .payment-details-icon {
+            width: 34px;
+            height: 34px;
+            background-color: #10b981;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 18px;
+        }
+        .payment-inner-box {
+            background-color: #17263c;
+            border-radius: 12px;
+            padding: 14px;
+            margin-bottom: 12px;
+        }
+        .payment-field-box {
+            background-color: #17263c;
+            border-radius: 10px;
+            padding: 10px 14px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .payment-field-label {
+            font-size: 0.72rem;
+            color: #94a3b8;
+            text-transform: uppercase;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            margin-bottom: 2px;
+        }
+        .payment-field-value {
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: #ffffff;
+        }
+        .qr-preview-thumb {
+            width: 105px;
+            height: 105px;
+            object-fit: contain;
+            background: #ffffff;
+            border-radius: 8px;
+            padding: 4px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .qr-preview-thumb:hover {
+            transform: scale(1.04);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
     </style>
 </head>
 <body>
@@ -583,8 +652,102 @@ if (isset($_POST['place_order'])) {
 
                     <!-- ONLINE PAYMENT FIELDS WITH AUTOMATIC TESSERACT OCR SCANNER -->
                     <div id="online_payment_fields" class="col-12 d-none bg-light p-3 border rounded">
-                        <a href="qr.php" target="_blank" class="btn btn-sm btn-outline-primary mb-2">View QR Code / Account Details</a>
-                        
+                        <!-- GCASH ACCOUNT DETAILS CARD -->
+                        <div id="gcash_details_card" class="payment-details-card d-none">
+                            <div class="payment-details-header">
+                                <div class="payment-details-icon">
+                                    <i class="bi bi-phone"></i>
+                                </div>
+                                <h6 class="fw-bold text-white mb-0">GCash Account Details</h6>
+                            </div>
+
+                            <!-- QR & Scan Instruction Box -->
+                            <div class="payment-inner-box d-flex align-items-center gap-3">
+                                <img src="../assets/qr/gcash.jpg" 
+                                     alt="GCash QR Code" 
+                                     class="qr-preview-thumb rounded shadow-sm"
+                                     onclick="openQrEnlargeModal('GCash')"
+                                     onerror="this.src='../assets/images/no-image.png';">
+                                <div class="flex-grow-1">
+                                    <div class="small fw-bold text-info text-uppercase mb-1" style="letter-spacing: 0.5px;">SCAN QR CODE OR SEND TO NUMBER</div>
+                                    <div class="small text-light mb-2" style="font-size: 0.82rem; line-height: 1.4;">Open your GCash app, tap "Scan QR" or use "Express Send" to the number below.</div>
+                                    <span role="button" class="text-success small fw-semibold d-inline-flex align-items-center" onclick="openQrEnlargeModal('GCash')">
+                                        <i class="bi bi-zoom-in me-1"></i>Tap QR to enlarge
+                                    </span>
+                                </div>
+                            </div>
+
+                            <!-- GCash Account Name -->
+                            <div class="payment-field-box">
+                                <div>
+                                    <div class="payment-field-label">GCASH ACCOUNT NAME</div>
+                                    <div class="payment-field-value" id="val_gcash_name">Ronil Taipan</div>
+                                </div>
+                                <button type="button" class="btn btn-sm btn-link text-white text-decoration-none p-1" onclick="copyToClipboard('Ronil Taipan', this)" title="Copy Name">
+                                    <i class="bi bi-copy fs-5"></i>
+                                </button>
+                            </div>
+
+                            <!-- GCash Number -->
+                            <div class="payment-field-box mb-0">
+                                <div>
+                                    <div class="payment-field-label">GCASH NUMBER</div>
+                                    <div class="payment-field-value" id="val_gcash_num">09073595023</div>
+                                </div>
+                                <button type="button" class="btn btn-sm btn-link text-white text-decoration-none p-1" onclick="copyToClipboard('09073595023', this)" title="Copy Number">
+                                    <i class="bi bi-copy fs-5"></i>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- MAYA ACCOUNT DETAILS CARD -->
+                        <div id="maya_details_card" class="payment-details-card d-none">
+                            <div class="payment-details-header">
+                                <div class="payment-details-icon" style="background-color: #06b6d4;">
+                                    <i class="bi bi-wallet2"></i>
+                                </div>
+                                <h6 class="fw-bold text-white mb-0">Maya Account Details</h6>
+                            </div>
+
+                            <!-- QR & Scan Instruction Box -->
+                            <div class="payment-inner-box d-flex align-items-center gap-3">
+                                <img src="../assets/qr/maya.jpg" 
+                                     alt="Maya QR Code" 
+                                     class="qr-preview-thumb rounded shadow-sm"
+                                     onclick="openQrEnlargeModal('Maya')"
+                                     onerror="this.src='../assets/images/no-image.png';">
+                                <div class="flex-grow-1">
+                                    <div class="small fw-bold text-info text-uppercase mb-1" style="letter-spacing: 0.5px;">SCAN QR CODE OR SEND TO NUMBER</div>
+                                    <div class="small text-light mb-2" style="font-size: 0.82rem; line-height: 1.4;">Open your Maya app, tap "Scan QR" or send money to the number below.</div>
+                                    <span role="button" class="text-info small fw-semibold d-inline-flex align-items-center" onclick="openQrEnlargeModal('Maya')">
+                                        <i class="bi bi-zoom-in me-1"></i>Tap QR to enlarge
+                                    </span>
+                                </div>
+                            </div>
+
+                            <!-- Maya Account Name -->
+                            <div class="payment-field-box">
+                                <div>
+                                    <div class="payment-field-label">MAYA ACCOUNT NAME</div>
+                                    <div class="payment-field-value" id="val_maya_name">Melanie Taipan</div>
+                                </div>
+                                <button type="button" class="btn btn-sm btn-link text-white text-decoration-none p-1" onclick="copyToClipboard('Melanie Taipan', this)" title="Copy Name">
+                                    <i class="bi bi-copy fs-5"></i>
+                                </button>
+                            </div>
+
+                            <!-- Maya Number -->
+                            <div class="payment-field-box mb-0">
+                                <div>
+                                    <div class="payment-field-label">MAYA NUMBER</div>
+                                    <div class="payment-field-value" id="val_maya_num">09682770376</div>
+                                </div>
+                                <button type="button" class="btn btn-sm btn-link text-white text-decoration-none p-1" onclick="copyToClipboard('09682770376', this)" title="Copy Number">
+                                    <i class="bi bi-copy fs-5"></i>
+                                </button>
+                            </div>
+                        </div>
+
                         <!-- Hidden Inputs: Automatically saved to Database -->
                         <input type="hidden" name="ref_no" id="ref_no_input">
                         <input type="hidden" name="paid_amount" id="paid_amount_input">
@@ -617,6 +780,30 @@ if (isset($_POST['place_order'])) {
     </div>
 </div>
 
+<!-- QR ENLARGE MODAL -->
+<div class="modal fade" id="qrEnlargeModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow-lg" style="background-color: #0d1b2a; color: #fff; border-radius: 16px;">
+            <div class="modal-header border-bottom border-secondary py-3">
+                <h6 class="modal-title fw-bold text-white d-flex align-items-center gap-2" id="qrModalTitle">
+                    <i class="bi bi-qr-code text-success"></i> Payment QR Code
+                </h6>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body text-center p-4">
+                <img id="qrModalImg" src="" alt="QR Code" class="img-fluid rounded-3 bg-white p-2 shadow" style="max-height: 480px; width: auto;">
+                <div class="mt-3 small text-secondary" id="qrModalSubtitle">
+                    Scan using your mobile e-wallet app to pay.
+                </div>
+            </div>
+            <div class="modal-footer border-top border-secondary py-2 justify-content-between">
+                <span class="small text-light" id="qrModalAccountInfo"></span>
+                <button type="button" class="btn btn-secondary btn-sm px-3" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Bootstrap JS Bundle -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
@@ -633,6 +820,62 @@ function getRequiredPaymentAmount() {
     return grandTotal;
 }
 
+function copyToClipboard(text, btnElement) {
+    if (!navigator.clipboard) {
+        fallbackCopy(text, btnElement);
+        return;
+    }
+    navigator.clipboard.writeText(text).then(() => {
+        showCopyFeedback(btnElement);
+    }).catch(err => {
+        fallbackCopy(text, btnElement);
+    });
+}
+
+function fallbackCopy(text, btnElement) {
+    const tempInput = document.createElement('input');
+    tempInput.value = text;
+    document.body.appendChild(tempInput);
+    tempInput.select();
+    try {
+        document.execCommand('copy');
+        showCopyFeedback(btnElement);
+    } catch (e) {
+        console.error('Copy failed', e);
+    }
+    document.body.removeChild(tempInput);
+}
+
+function showCopyFeedback(btnElement) {
+    if (!btnElement) return;
+    const origHtml = btnElement.innerHTML;
+    btnElement.innerHTML = '<i class="bi bi-check2 text-success fs-5"></i>';
+    setTimeout(() => {
+        btnElement.innerHTML = origHtml;
+    }, 1800);
+}
+
+function openQrEnlargeModal(type) {
+    const modalEl = document.getElementById('qrEnlargeModal');
+    if (!modalEl) return;
+    const titleEl = document.getElementById('qrModalTitle');
+    const imgEl = document.getElementById('qrModalImg');
+    const infoEl = document.getElementById('qrModalAccountInfo');
+
+    if (type === 'GCash') {
+        if (titleEl) titleEl.innerHTML = '<i class="bi bi-qr-code text-success"></i> GCash Official QR Code';
+        if (imgEl) imgEl.src = '../assets/qr/gcash.jpg';
+        if (infoEl) infoEl.innerHTML = 'Account: <b>Ronil Taipan</b> (09073595023)';
+    } else {
+        if (titleEl) titleEl.innerHTML = '<i class="bi bi-qr-code text-info"></i> Maya Official QR Code';
+        if (imgEl) imgEl.src = '../assets/qr/maya.jpg';
+        if (infoEl) infoEl.innerHTML = 'Account: <b>Melanie Taipan</b> (09682770376)';
+    }
+
+    const modal = new bootstrap.Modal(modalEl);
+    modal.show();
+}
+
 function togglePaymentFields() {
     const selectedRadio = document.querySelector('input[name="payment_method"]:checked');
     if (!selectedRadio) return;
@@ -642,17 +885,29 @@ function togglePaymentFields() {
     const codMessage = document.getElementById('cod_message');
     const optionBox = document.getElementById('payment_option_box');
     const proofInput = document.getElementById('proof_of_payment_input');
+    const gcashCard = document.getElementById('gcash_details_card');
+    const mayaCard = document.getElementById('maya_details_card');
 
     if (selectedMethod === 'GCash' || selectedMethod === 'Maya') {
         if (onlineFields) onlineFields.classList.remove('d-none');
         if (codMessage) codMessage.classList.add('d-none');
         if (optionBox) optionBox.classList.remove('d-none');
         if (proofInput) proofInput.required = true;
+
+        if (selectedMethod === 'GCash') {
+            if (gcashCard) gcashCard.classList.remove('d-none');
+            if (mayaCard) mayaCard.classList.add('d-none');
+        } else {
+            if (gcashCard) gcashCard.classList.add('d-none');
+            if (mayaCard) mayaCard.classList.remove('d-none');
+        }
     } else if (selectedMethod === 'Cash on Delivery (COD)') {
         if (onlineFields) onlineFields.classList.add('d-none');
         if (codMessage) codMessage.classList.remove('d-none');
         if (optionBox) optionBox.classList.add('d-none');
         if (proofInput) proofInput.required = false;
+        if (gcashCard) gcashCard.classList.add('d-none');
+        if (mayaCard) mayaCard.classList.add('d-none');
         
         document.getElementById('ref_no_input').value = "";
         document.getElementById('paid_amount_input').value = "";
@@ -896,7 +1151,7 @@ async function processReceiptOCR(fileInput) {
             let fReq = reqAmt.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
             h += `<div>Detected Payment Amount: <b>₱${fAmt}</b> (Required: ₱${fReq})</div>`;
         }
-        if (sentTo) h += `<div>Recipient: <b>${sentTo}</b></div>`;
+        if (sentTo) h += `<div>Sent To Number: <b>${sentTo}</b></div>`;
         if (dt) h += `<div>Date & Time: <b>${dt}</b></div>`;
         h += '</div>';
         return h;
@@ -922,37 +1177,57 @@ async function processReceiptOCR(fileInput) {
         const lowerText = text.toLowerCase();
         const requiredAmount = getRequiredPaymentAmount();
 
-        // 1. Detect Phone Number & Recipient Name
-        let foundPhone = '';
-        let detectedSentTo = '';
-        const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+        // 1. Detect Phone Number (ONLY the 2 official numbers are accepted)
+        // Official GCash Number: 09073595023
+        // Official Maya Number:  09682770376
+        const officialNumbers = ['09073595023', '09682770376'];
 
-        for (let i = 0; i < lines.length; i++) {
-            let pMatch = lines[i].match(/(?:\+?63\s*9\d{2}[\s\-]?\d{3}[\s\-]?\d{4}|09\d{2}[\s\-]?\d{3}[\s\-]?\d{4})/);
-            if (pMatch) {
-                foundPhone = pMatch[0].trim();
-                if (i > 0) {
-                    let potentialName = lines[i - 1].replace(/Express\s*Send|Sent\s*via\s*GCash|GCash|Amount|Total/gi, '').trim();
-                    if (potentialName.length >= 2) {
-                        detectedSentTo = `${potentialName} ${foundPhone}`.trim();
-                    } else {
-                        detectedSentTo = foundPhone;
-                    }
-                } else {
-                    detectedSentTo = foundPhone;
+        let detectedSentTo = '';
+        let isOfficialRecipient = false;
+
+        // Collect all potential phone numbers from lines and text
+        const phoneRegex = /(?:\+?63\s*9\d{2}[\s\-]?\d{3}[\s\-]?\d{4}|09\d{2}[\s\-]?\d{3}[\s\-]?\d{4}|\b9\d{9}\b)/g;
+        let allPhoneMatches = text.match(phoneRegex) || [];
+
+        let candidatePhones = [];
+        for (let rawP of allPhoneMatches) {
+            let digits = rawP.replace(/\D/g, '');
+            if (digits.startsWith('63') && digits.length === 12) {
+                digits = '0' + digits.substring(2);
+            } else if (digits.length === 10 && digits.startsWith('9')) {
+                digits = '0' + digits;
+            }
+            if (digits.length === 11 && digits.startsWith('09')) {
+                if (!candidatePhones.includes(digits)) {
+                    candidatePhones.push(digits);
                 }
+            }
+        }
+
+        // Check if any candidate matches an official number
+        for (let p of candidatePhones) {
+            if (officialNumbers.includes(p)) {
+                detectedSentTo = p;
+                isOfficialRecipient = true;
                 break;
             }
         }
 
-        if (!detectedSentTo) {
-            let labeledRecipient = text.match(/(?:Sent\s*(?:money\s*)?to|To)\s*:?\s*([A-Z0-9\s•\.\*\+\-]{4,35})/i);
-            if (labeledRecipient) {
-                let cleanedName = labeledRecipient[1].replace(/G-Xchange|Inc\.|Gcash|Maya|InstaPay/gi, '').trim();
-                if (cleanedName.length >= 3) {
-                    detectedSentTo = cleanedName;
-                }
+        // Also check if text literally contains the continuous digits of official numbers
+        if (!isOfficialRecipient) {
+            const cleanDigitsOnly = text.replace(/\D/g, '');
+            if (cleanDigitsOnly.includes('09073595023') || cleanDigitsOnly.includes('639073595023')) {
+                detectedSentTo = '09073595023';
+                isOfficialRecipient = true;
+            } else if (cleanDigitsOnly.includes('09682770376') || cleanDigitsOnly.includes('639682770376')) {
+                detectedSentTo = '09682770376';
+                isOfficialRecipient = true;
             }
+        }
+
+        // If neither official number is detected, store the first non-official number found (number lang, huwag name)
+        if (!isOfficialRecipient && candidatePhones.length > 0) {
+            detectedSentTo = candidatePhones[0];
         }
 
         // 2. Extract Reference Number
@@ -977,21 +1252,9 @@ async function processReceiptOCR(fileInput) {
         if (detectedDateTime) dtInput.value = detectedDateTime;
         if (detectedSentTo) sentToInput.value = detectedSentTo;
 
-        // 5. Check for Incorrect Recipient Number
-        // Authorized store recipients: Melanie Taipan, R**L T. / Roel, 09074565632, R. Taipan
-        const cleanPhoneDigits = foundPhone.replace(/\D/g, '');
-        const isOfficialPhone = cleanPhoneDigits === '09074565632' || cleanPhoneDigits.endsWith('9074565632');
-        const hasOfficialName = /taipan|melanie|roel|r[\s\*\.]{1,4}t/i.test(lowerText) || /taipan|melanie|roel|r[\s\*\.]{1,4}t/i.test(detectedSentTo);
-
-        let isIncorrectRecipient = false;
-        if (foundPhone && !isOfficialPhone && !hasOfficialName) {
-            isIncorrectRecipient = true;
-        } else if (detectedSentTo && detectedSentTo.length >= 4 && !isOfficialPhone && !hasOfficialName) {
-            // Recipient explicitly identified and doesn't match official store details
-            if (!/gcash|maya|merchant|bank|transfer|payment/i.test(detectedSentTo)) {
-                isIncorrectRecipient = true;
-            }
-        }
+        // 5. Evaluate Recipient Number:
+        // Kapag wala dyan sa dalawang number ang nadetect, lalabas na ang Incorrect Recipient Number note
+        let isIncorrectRecipient = !isOfficialRecipient;
 
         // 6. Evaluate the 4 Validation States:
         statusBox.classList.remove('alert-info', 'alert-success', 'alert-danger', 'alert-warning');
@@ -1098,6 +1361,8 @@ function selectSavedAddress(addressId) {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
+    togglePaymentFields();
+
     if (Array.isArray(SAVED_ADDRESSES) && SAVED_ADDRESSES.length > 0) {
         // Find default or first saved address
         const defaultAddr = SAVED_ADDRESSES.find(a => a.is_default === true || a.is_default === 't' || a.is_default == 1) || SAVED_ADDRESSES[0];
@@ -1110,20 +1375,9 @@ document.addEventListener('DOMContentLoaded', function() {
 document.querySelector('form').addEventListener('submit', function(e) {
     const selectedRadio = document.querySelector('input[name="payment_method"]:checked');
     if (selectedRadio && (selectedRadio.value === 'GCash' || selectedRadio.value === 'Maya')) {
-        const refNo = document.getElementById('ref_no_input').value;
-        const paidAmt = document.getElementById('paid_amount_input').value;
-        
-        if (!refNo || !paidAmt) {
-            alert("Checkout Blocked: Valid payment receipt details were not detected. Please upload a valid payment receipt.");
-            e.preventDefault();
-            return false;
-        }
-
-        const parsedPaid = parseFloat(paidAmt);
-        const reqAmt = getRequiredPaymentAmount();
-
-        if (parsedPaid < (reqAmt - 0.01)) {
-            alert("Checkout Blocked: Payment amount detected (₱" + parsedPaid.toFixed(2) + ") is less than the required amount (₱" + reqAmt.toFixed(2) + ").");
+        const proofInput = document.getElementById('proof_of_payment_input');
+        if (!proofInput || !proofInput.files || proofInput.files.length === 0) {
+            alert("Please upload your proof of payment receipt before submitting your order.");
             e.preventDefault();
             return false;
         }

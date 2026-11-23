@@ -141,9 +141,13 @@ require_once __DIR__ . '/../config/db.php';
                         onclick="openModal('../assets/qr/maya.jpg')"
                     >
 
-                    <p class="small text-secondary mb-0">
+                    <p class="small text-secondary mb-1">
                         Account Name:
                         <b>Melanie Taipan</b>
+                    </p>
+                    <p class="small text-secondary mb-0">
+                        Number:
+                        <b>09682770376</b>
                     </p>
 
                 </div>
@@ -164,9 +168,13 @@ require_once __DIR__ . '/../config/db.php';
                         onclick="openModal('../assets/qr/gcash.jpg')"
                     >
 
-                    <p class="small text-secondary mb-0">
+                    <p class="small text-secondary mb-1">
                         Account Name:
-                        <b>R**L T.</b>
+                        <b>Ronil Taipan</b>
+                    </p>
+                    <p class="small text-secondary mb-0">
+                        Number:
+                        <b>09073595023</b>
                     </p>
 
                 </div>
