@@ -21,6 +21,22 @@ if (file_exists(__DIR__ . '/../config/google_drive.php')) {
 $message = "";
 $message_type = "";
 
+// Pre-fill parameters when arriving directly from My Purchases
+$prefill_order_id = !empty($_GET['order_id']) ? trim($_GET['order_id']) : '';
+$prefill_type = !empty($_GET['type']) ? strtolower(trim($_GET['type'])) : '';
+$prefill_email = !empty($_GET['email']) ? trim($_GET['email']) : (!empty($_SESSION['email']) ? trim($_SESSION['email']) : '');
+
+if (empty($prefill_email) && !empty($_SESSION['user_id'])) {
+    try {
+        $u_stmt = $pdo->prepare("SELECT email FROM users WHERE id = :uid LIMIT 1");
+        $u_stmt->execute([':uid' => (int) $_SESSION['user_id']]);
+        $fetched_email = $u_stmt->fetchColumn();
+        if (!empty($fetched_email)) {
+            $prefill_email = trim((string) $fetched_email);
+        }
+    } catch (Exception $e) {}
+}
+
 // ========================================================
 // API ENDPOINT: LIVE FETCH OF ITEMS & ORDER INFO (PDO)
 // ========================================================
@@ -386,15 +402,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
                     <div class="row g-3 mb-4">
                         <div class="col-md-6">
                             <label class="form-label fw-semibold">Order ID / Number</label>
-                            <input type="number" name="order_id" id="order_id" class="form-control" placeholder="e.g. 1024" required>
+                            <input type="number" name="order_id" id="order_id" class="form-control" placeholder="e.g. 1024"
+                                   value="<?php echo htmlspecialchars($prefill_order_id, ENT_QUOTES, 'UTF-8'); ?>" required>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label fw-semibold">Account Email Address</label>
-                            <input type="email" name="email" id="email" class="form-control" placeholder="yourname@email.com" required>
+                            <input type="email" name="email" id="email" class="form-control" placeholder="yourname@email.com"
+                                   value="<?php echo htmlspecialchars($prefill_email, ENT_QUOTES, 'UTF-8'); ?>" required>
                         </div>
                         <div class="col-12 text-end">
                             <button type="button" id="btnVerify" class="btn btn-primary px-4"><i class="bi bi-shield-check"></i> Verify Order</button>
-                            <button type="button" class="btn btn-secondary px-4" onclick="window.location.href='dashboard.php';"><i class="bi bi-arrow-left"></i> Back</button>
+                            <button type="button" class="btn btn-secondary px-4" onclick="window.location.href='my_purchases.php';"><i class="bi bi-arrow-left"></i> Back to Purchases</button>
                         </div>
                     </div>
                     
@@ -499,6 +517,31 @@ document.getElementById('btnVerify').addEventListener('click', function() {
                 
                 renderLiveReceiptPreview();
                 handleFormTypeSetup(currentOrderInfo.status);
+
+                // Auto-select requested action type from URL if specified
+                const urlParams = new URLSearchParams(window.location.search);
+                const reqTypeParam = urlParams.get('type');
+                if (reqTypeParam === 'cancel') {
+                    const reqCancel = document.getElementById('req_cancel');
+                    if (reqCancel && !reqCancel.disabled) {
+                        reqCancel.checked = true;
+                        reqCancel.dispatchEvent(new Event('change'));
+                    }
+                } else if (reqTypeParam === 'exchange') {
+                    const reqExchange = document.getElementById('req_exchange');
+                    if (reqExchange && !reqExchange.disabled) {
+                        reqExchange.checked = true;
+                        reqExchange.dispatchEvent(new Event('change'));
+                    }
+                }
+
+                // Smooth scroll to actions box
+                setTimeout(() => {
+                    const targetSection = document.getElementById('requestActionsBox');
+                    if (targetSection) {
+                        targetSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }
+                }, 200);
             } else {
                 formBodyWrapper.classList.add('d-none');
                 errorWrapper.classList.remove('d-none');
@@ -1144,6 +1187,15 @@ function updateExchangeItemControls() {
         btnAddMore.classList.add('disabled');
     }
 }
+
+// Auto-verify if order ID and email are pre-filled (e.g. clicked direct from My Purchases)
+document.addEventListener('DOMContentLoaded', function() {
+    const oIdInput = document.getElementById('order_id');
+    const emInput = document.getElementById('email');
+    if (oIdInput && emInput && oIdInput.value.trim() !== '' && emInput.value.trim() !== '') {
+        document.getElementById('btnVerify')?.click();
+    }
+});
 </script>
 </body>
 </html>

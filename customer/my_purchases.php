@@ -152,6 +152,7 @@ try {
             }
         }
 
+        $orderRef['has_exchange'] = isset($exchangeRequests[(int) $orderRef['id']]);
         $orderRef['parsed_items'] = $parsedItems;
         $orderRef['proof_resolved'] = !empty($orderRef['proof_of_payment']) ? getProductImageSrc($orderRef['proof_of_payment']) : '';
     }
@@ -829,13 +830,13 @@ foreach ($allOrders as $o) {
                                     <!-- Action Buttons -->
                                     <div class="d-flex align-items-center gap-2">
                                         <?php if ($rawStatus === 'completed' && !$hasEx): ?>
-                                            <a href="customerService.php?order_id=<?php echo $order['id']; ?>" class="btn btn-outline-primary btn-sm fw-semibold">
+                                            <a href="customerService.php?order_id=<?php echo $order['id']; ?>&type=exchange&email=<?php echo urlencode($customerEmail); ?>" class="btn btn-outline-primary btn-sm fw-semibold">
                                                 <i class="bi bi-arrow-repeat me-1"></i> Return / Exchange
                                             </a>
                                         <?php endif; ?>
 
                                         <?php if ($rawStatus === 'pending'): ?>
-                                            <a href="customerService.php?order_id=<?php echo $order['id']; ?>" class="btn btn-outline-danger btn-sm fw-semibold">
+                                            <a href="customerService.php?order_id=<?php echo $order['id']; ?>&type=cancel&email=<?php echo urlencode($customerEmail); ?>" class="btn btn-outline-danger btn-sm fw-semibold">
                                                 <i class="bi bi-x-circle me-1"></i> Cancel Request
                                             </a>
                                         <?php endif; ?>
@@ -979,10 +980,13 @@ foreach ($allOrders as $o) {
                 </div>
 
                 <!-- Footer with View Receipt & Close -->
-                <div class="modal-footer bg-light border-top py-2 px-4 d-flex justify-content-between">
-                    <button type="button" class="btn btn-warning btn-sm fw-semibold d-flex align-items-center gap-2 text-dark shadow-sm" onclick="viewThermalReceipt()">
-                        <i class="bi bi-receipt fs-6"></i> View Receipt
-                    </button>
+                <div class="modal-footer bg-light border-top py-2 px-4 d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center gap-2">
+                        <button type="button" class="btn btn-warning btn-sm fw-semibold d-flex align-items-center gap-2 text-dark shadow-sm" onclick="viewThermalReceipt()">
+                            <i class="bi bi-receipt fs-6"></i> View Receipt
+                        </button>
+                        <a href="#" id="mdlDirectActionBtn" class="btn btn-sm fw-semibold d-none"></a>
+                    </div>
                     <button type="button" class="btn btn-navy btn-sm px-4" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
@@ -1170,6 +1174,25 @@ foreach ($allOrders as $o) {
             const totalFormatted = totalNum.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
             document.getElementById('mdlSubtotal').textContent = totalFormatted;
             document.getElementById('mdlTotalAmount').textContent = totalFormatted;
+
+            // Direct Action Button in modal footer
+            const directBtn = document.getElementById('mdlDirectActionBtn');
+            if (directBtn) {
+                const custEmail = <?php echo json_encode($customerEmail); ?>;
+                if (status === 'pending') {
+                    directBtn.className = 'btn btn-outline-danger btn-sm fw-semibold';
+                    directBtn.href = `customerService.php?order_id=${order.id}&type=cancel&email=${encodeURIComponent(custEmail)}`;
+                    directBtn.innerHTML = '<i class="bi bi-x-circle me-1"></i> Cancel Request';
+                    directBtn.classList.remove('d-none');
+                } else if (status === 'completed' && !order.has_exchange) {
+                    directBtn.className = 'btn btn-outline-primary btn-sm fw-semibold';
+                    directBtn.href = `customerService.php?order_id=${order.id}&type=exchange&email=${encodeURIComponent(custEmail)}`;
+                    directBtn.innerHTML = '<i class="bi bi-arrow-repeat me-1"></i> Return / Exchange';
+                    directBtn.classList.remove('d-none');
+                } else {
+                    directBtn.classList.add('d-none');
+                }
+            }
 
             // Show modal
             const modal = new bootstrap.Modal(document.getElementById('orderDetailsModal'));
