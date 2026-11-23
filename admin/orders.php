@@ -655,23 +655,6 @@ body{
         <h4 class="mb-0 fs-5 fw-bold text-dark">📦 Orders Management</h4>
     </div>
 
-    <?php if (!empty($pendingCancellations)): ?>
-        <div class="alert alert-danger d-flex align-items-center justify-content-between shadow-sm rounded-3 mb-3 border-danger p-3" role="alert">
-            <div class="d-flex align-items-center">
-                <i class="bi bi-exclamation-octagon-fill fs-2 me-3 text-danger"></i>
-                <div>
-                    <h6 class="fw-bold mb-1 text-danger"><i class="bi bi-lock-fill me-1"></i> Active Cancellation Request Pending Review</h6>
-                    <div class="small text-dark">
-                        Order(s) <strong>#<?php echo implode(', #', array_keys($pendingCancellations)); ?></strong> have pending cancellation requests from customers. Status updates for these orders are <strong>locked</strong> until approved or declined in Customer Service.
-                    </div>
-                </div>
-            </div>
-            <a href="ItemsRequest.php" class="btn btn-danger btn-sm fw-semibold text-nowrap ms-3 shadow-sm">
-                <i class="bi bi-arrow-right-circle me-1"></i> Review in Items Request
-            </a>
-        </div>
-    <?php endif; ?>
-
     <div class="table-responsive bg-white p-3 rounded shadow-sm">
         <table class="table table-hover align-middle">
             <thead class="table-light">
@@ -693,17 +676,8 @@ body{
                     $oid = (int)$row['id'];
                     $hasPendingCancel = isset($pendingCancellations[$oid]);
                 ?>
-                <tr id="order-<?php echo $row['id']; ?>" class="<?php echo $hasPendingCancel ? 'table-danger-subtle' : ''; ?>">
-                    <td class="text-center">
-                        <strong>#<?php echo $row['id']; ?></strong>
-                        <?php if ($hasPendingCancel): ?>
-                            <div>
-                                <span class="badge bg-danger shadow-sm" style="font-size: 0.72rem;" title="Has active customer cancellation request">
-                                    <i class="bi bi-exclamation-triangle-fill"></i> Cancel Req.
-                                </span>
-                            </div>
-                        <?php endif; ?>
-                    </td>
+                <tr id="order-<?php echo $row['id']; ?>">
+                    <td class="text-center">#<?php echo $row['id']; ?></td>
                     <td class="text-center"><strong><?php echo htmlspecialchars($row['fullname']); ?></strong></td>
                     
                     <td class="text-center">
@@ -727,13 +701,6 @@ body{
                         ?>">
                             <?php echo strtoupper($row['status']); ?>
                         </span>
-                        <?php if ($hasPendingCancel): ?>
-                            <div class="mt-1">
-                                <span class="badge bg-danger-subtle text-danger border border-danger-subtle small fw-semibold">
-                                    <i class="bi bi-clock-history me-1"></i> Cancellation Pending
-                                </span>
-                            </div>
-                        <?php endif; ?>
                     </td>
                     <td class="text-center small text-muted">
                         <?php echo date('M d, Y', strtotime($row['order_date'])); ?>
@@ -744,36 +711,53 @@ body{
                         </button>
                     </td>
                     <td class="text-center"> 
-                        <?php if ($hasPendingCancel): ?>
-                            <button type="button" class="btn btn-sm btn-danger fw-semibold shadow-sm mb-1" 
-                                    onclick="showCancelWarning(<?php echo (int)$row['id']; ?>, <?php echo htmlspecialchars(json_encode($pendingCancellations[$oid]['reason'] ?? 'Customer requested cancellation.'), ENT_QUOTES, 'UTF-8'); ?>)">
-                                <i class="bi bi-lock-fill me-1"></i> Action Locked
-                            </button>
-                            <div>
-                                <a href="ItemsRequest.php" class="small text-danger fw-bold text-decoration-none" title="Review in Items Request">
-                                    <i class="bi bi-box-arrow-up-right me-1"></i> Resolve Request
-                                </a>
-                            </div>
-                        <?php elseif ($row['status'] == 'pending'): ?>
+                        <?php if($row['status'] == 'pending'): ?>
                             <form method="POST" class="d-inline">
                                 <input type="hidden" name="order_id" value="<?php echo $row['id']; ?>">
-                                <button type="submit" name="status" value="approved" class="btn btn-success btn-sm mb-1">Approve</button>
+                                <button type="submit" name="status" value="approved" class="btn btn-success btn-sm mb-1"
+                                    <?php if ($hasPendingCancel): ?>
+                                        onclick="return interceptPendingCancel(event, <?php echo $oid; ?>);"
+                                    <?php endif; ?>>
+                                    Approve
+                                </button>
                                 <input type="hidden" name="update_status" value="1">
                             </form>
-                            <button type="button" class="btn btn-sm btn-danger mb-1" data-bs-toggle="modal" data-bs-target="#declineModal" onclick="openDeclineModal('<?php echo $row['id']; ?>', '<?php echo strtoupper(trim($row['payment_method'] ?? 'COD')); ?>')">Decline</button>
+                            <button type="button" class="btn btn-sm btn-danger mb-1" 
+                                <?php if ($hasPendingCancel): ?>
+                                    onclick="return interceptPendingCancel(event, <?php echo $oid; ?>);"
+                                <?php else: ?>
+                                    data-bs-toggle="modal" data-bs-target="#declineModal" onclick="openDeclineModal('<?php echo $row['id']; ?>', '<?php echo strtoupper(trim($row['payment_method'] ?? 'COD')); ?>')"
+                                <?php endif; ?>>
+                                Decline
+                            </button>
                         
                         <?php else: ?>
                             <form method="POST">
                                 <input type="hidden" name="order_id" value="<?php echo $row['id']; ?>">
                                 
                                 <?php if($row['status'] == 'approved'): ?>
-                                    <button type="submit" name="status" value="preparing" class="btn btn-info btn-sm text-white">Preparing</button>
+                                    <button type="submit" name="status" value="preparing" class="btn btn-info btn-sm text-white"
+                                        <?php if ($hasPendingCancel): ?>
+                                            onclick="return interceptPendingCancel(event, <?php echo $oid; ?>);"
+                                        <?php endif; ?>>
+                                        Preparing
+                                    </button>
                                 
                                 <?php elseif($row['status'] == 'preparing'): ?>
-                                    <button type="submit" name="status" value="out_for_delivery" class="btn btn-warning btn-sm">Out for Delivery</button>
+                                    <button type="submit" name="status" value="out_for_delivery" class="btn btn-warning btn-sm"
+                                        <?php if ($hasPendingCancel): ?>
+                                            onclick="return interceptPendingCancel(event, <?php echo $oid; ?>);"
+                                        <?php endif; ?>>
+                                        Out for Delivery
+                                    </button>
                                 
                                 <?php elseif($row['status'] == 'out_for_delivery'): ?>
-                                    <button type="submit" name="status" value="completed" class="btn btn-primary btn-sm">Complete Order</button>
+                                    <button type="submit" name="status" value="completed" class="btn btn-primary btn-sm"
+                                        <?php if ($hasPendingCancel): ?>
+                                            onclick="return interceptPendingCancel(event, <?php echo $oid; ?>);"
+                                        <?php endif; ?>>
+                                        Complete Order
+                                    </button>
 
                                 <?php elseif($row['status'] == 'declined'): ?>
                                     <span class="badge bg-danger mb-1">Order Declined</span>
@@ -848,13 +832,13 @@ body{
     </div>
 </div>
 
-<!-- CANCELLATION REQUEST WARNING MODAL -->
+<!-- CANCELLATION REQUEST NOTIFICATION MODAL -->
 <div class="modal fade" id="cancelWarningModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content border-0 shadow">
             <div class="modal-header bg-danger text-white">
                 <h5 class="modal-title fw-bold">
-                    <i class="bi bi-exclamation-octagon-fill me-2"></i> Action Blocked: Pending Cancellation
+                    <i class="bi bi-exclamation-triangle-fill me-2"></i> Pending Cancellation Request
                 </h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
@@ -862,22 +846,22 @@ body{
                 <div class="alert alert-danger d-flex align-items-center mb-3">
                     <i class="bi bi-shield-lock-fill fs-2 me-3 text-danger"></i>
                     <div>
-                        <strong class="d-block text-danger" id="warnOrderTitle">Order Status Locked</strong>
-                        <span class="small text-dark">This order currently has an active cancellation request filed by the customer.</span>
+                        <strong class="d-block text-danger" id="warnOrderTitle">Order Status Update Blocked</strong>
+                        <span class="small text-dark" id="warnOrderSubtitle">May pending cancellation request ang order na ito sa Customer Service Request.</span>
                     </div>
                 </div>
                 <div class="card bg-light border p-3 mb-3">
                     <div class="small text-muted mb-1 fw-semibold">Customer's Stated Reason:</div>
                     <div class="fw-bold text-dark" id="warnOrderReason">---</div>
                 </div>
-                <p class="text-secondary small mb-0">
-                    <i class="bi bi-info-circle me-1"></i> You must first <strong>Approve</strong> or <strong>Decline</strong> the customer's cancellation request in <strong>Items Request / Customer Service</strong> before you can proceed with updating this order's status.
-                </p>
+                <div class="alert alert-warning small mb-0">
+                    <i class="bi bi-info-circle-fill me-1"></i> Kailangan mo munang <strong>i-approve o i-decline</strong> ang cancellation request sa <strong>Customer Service Request (Items Request)</strong> bago ka makapag-update ng order status dito sa Orders.
+                </div>
             </div>
             <div class="modal-footer bg-light d-flex justify-content-between">
-                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
-                <a href="ItemsRequest.php" class="btn btn-danger btn-sm fw-semibold">
-                    <i class="bi bi-arrow-right-circle me-1"></i> Go to Items Request
+                <button type="button" class="btn btn-secondary btn-sm px-3" data-bs-dismiss="modal">Close</button>
+                <a href="ItemsRequest.php" class="btn btn-danger btn-sm px-3 fw-semibold shadow-sm">
+                    <i class="bi bi-arrow-right-circle me-1"></i> Pumunta sa Customer Service Request
                 </a>
             </div>
         </div>
@@ -1351,11 +1335,37 @@ function viewReceipt(data) {
     document.activeElement.blur();
 }
 
-function showCancelWarning(orderId, reason) {
-    document.getElementById('warnOrderTitle').textContent = `Order #${orderId} Status Locked`;
-    document.getElementById('warnOrderReason').textContent = reason || 'Customer requested cancellation of this order.';
-    const modal = new bootstrap.Modal(document.getElementById('cancelWarningModal'));
-    modal.show();
+const pendingCancellationMap = <?php echo json_encode($pendingCancellations, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
+
+function interceptPendingCancel(event, orderId) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    
+    const cancelInfo = (pendingCancellationMap && pendingCancellationMap[orderId]) ? pendingCancellationMap[orderId] : {};
+    const reason = cancelInfo.reason || 'Customer submitted a cancellation request for this order.';
+    
+    const titleEl = document.getElementById('warnOrderTitle');
+    const textEl = document.getElementById('warnOrderText');
+    const reasonEl = document.getElementById('warnOrderReason');
+    
+    if (titleEl) titleEl.textContent = `Order #${orderId} - Pending Cancellation Request`;
+    if (reasonEl) reasonEl.textContent = reason;
+    if (textEl) {
+        textEl.innerHTML = `May kasalukuyang cancellation request ang <strong>Order #${orderId}</strong> mula kay customer sa Customer Service Request.<br><br>Kailangan mo munang <strong>i-approve o i-decline</strong> ang cancellation request sa Customer Service Request bago ka makapag-update ng order status sa Orders.`;
+    }
+    
+    const modalEl = document.getElementById('cancelWarningModal');
+    if (modalEl && typeof bootstrap !== 'undefined') {
+        const modal = new bootstrap.Modal(modalEl);
+        modal.show();
+    } else {
+        alert(`Notice: Ang Order #${orderId} ay may pending cancellation request sa Customer Service Request.\n\nKailangan mo munang i-approve o i-decline ang cancellation request sa Customer Service Request bago makapag-update ng order status.`);
+        window.location.href = 'ItemsRequest.php';
+    }
+    
+    return false;
 }
 
 document.addEventListener("DOMContentLoaded", function() {
