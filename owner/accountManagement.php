@@ -593,14 +593,14 @@ $countArchived = (int)($pdo->query("SELECT COUNT(*) AS total FROM users WHERE st
             <a href="?tab=active" class="<?= $tab === 'active' ? 'active' : '' ?>">
                 <i class="bi bi-people me-1"></i>Active Accounts (<?= $countActive ?>)
             </a>
-            <a href="?tab=archived" class="<?= $tab === 'archived' ? 'active' : '' ?>">
-                <i class="bi bi-archive me-1"></i>Archived (<?= $countArchived ?>)
-            </a>
             <a href="?tab=staffs" class="<?= $tab === 'staffs' ? 'active' : '' ?>">
                 <i class="bi bi-person-badge me-1"></i>Staffs (<?= $countStaffs ?>)
             </a>
             <a href="?tab=customers" class="<?= $tab === 'customers' ? 'active' : '' ?>">
                 <i class="bi bi-person-lines-fill me-1"></i>Customers (<?= $countCustomers ?>)
+            </a>
+             <a href="?tab=archived" class="<?= $tab === 'archived' ? 'active' : '' ?>">
+                <i class="bi bi-archive me-1"></i>Archived (<?= $countArchived ?>)
             </a>
         </div>
 
