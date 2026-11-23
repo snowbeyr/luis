@@ -866,17 +866,7 @@ try {
                                 <input type="text" name="tel_no" id="modal_tel_no" class="form-control" 
                                        placeholder="e.g. 02-8123456" oninput="this.value = this.value.replace(/[^0-9-]/g, '')">
                             </div>
-                            <div class="col-12">
-                                <label class="form-label small fw-semibold">Email Address (Account Fixed)</label>
-                                <div class="input-group">
-                                    <input type="email" class="form-control bg-light" 
-                                           value="<?php echo htmlspecialchars((string) ($user['email'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>" readonly>
-                                    <span class="input-group-text bg-light text-muted">
-                                        <i class="bi bi-lock-fill"></i>
-                                    </span>
-                                </div>
-                                <div class="form-text text-muted small"><i class="bi bi-lock-fill me-1"></i>Fixed: Linked to your current logged-in customer account.</div>
-                            </div>
+
                             <div class="col-12">
                                 <label class="form-label small fw-semibold">Complete Delivery Address <span class="text-danger">*</span></label>
                                 <textarea name="full_address" id="modal_full_address" class="form-control" rows="3" 
