@@ -52,13 +52,13 @@ try {
 $customerName = trim((string) ($user['fullname'] ?? $user['username']));
 $profileImage = $user['profile_image'] ?? '';
 
-// Active Tab ('profile' or 'address')
+// Active Tab ('profile', 'password', or 'address')
 $currentTab = isset($_GET['tab']) ? strtolower(trim($_GET['tab'])) : 'profile';
-if (!in_array($currentTab, ['profile', 'address'], true)) {
+if (!in_array($currentTab, ['profile', 'password', 'address'], true)) {
     $currentTab = 'profile';
 }
 
-// Handle Profile Information Update
+// Handle Profile Information Update (Email CANNOT be changed)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
     $fullname = trim((string) ($_POST['fullname'] ?? ''));
     $phone_number = trim((string) ($_POST['phone_number'] ?? ''));
@@ -93,6 +93,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
             $msg_type = "danger";
         } else {
             try {
+                // Email is strictly excluded to prevent modification
                 $update_stmt = $pdo->prepare("
                     UPDATE users
                     SET fullname = :fullname, phone_number = :phone_number, profile_image = :profile_image
@@ -123,6 +124,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
         }
     }
     $currentTab = 'profile';
+}
+
+// Handle Change Password (Same validation as Forgot Password)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['change_password'])) {
+    $current_password = (string) ($_POST['current_password'] ?? '');
+    $new_password     = (string) ($_POST['new_password'] ?? '');
+    $confirm_password = (string) ($_POST['confirm_password'] ?? '');
+
+    $hasExistingPassword = !empty($user['password']);
+
+    if ($hasExistingPassword && empty($current_password)) {
+        $message = "Please enter your current password.";
+        $msg_type = "danger";
+    } elseif ($hasExistingPassword && !password_verify($current_password, $user['password'])) {
+        $message = "Current password is incorrect.";
+        $msg_type = "danger";
+    } elseif (strlen($new_password) < 8) {
+        $message = "Password must be at least 8 characters long.";
+        $msg_type = "danger";
+    } elseif (!preg_match('/[A-Z]/', $new_password)) {
+        $message = "Password must contain at least 1 uppercase letter (A–Z).";
+        $msg_type = "danger";
+    } elseif (!preg_match('/[a-z]/', $new_password)) {
+        $message = "Password must contain at least 1 lowercase letter (a–z).";
+        $msg_type = "danger";
+    } elseif (!preg_match('/[0-9]/', $new_password)) {
+        $message = "Password must contain at least 1 number (0–9).";
+        $msg_type = "danger";
+    } elseif (!preg_match('/[\W_]/', $new_password)) {
+        $message = "Password must contain at least 1 special character (!@#$%^&*).";
+        $msg_type = "danger";
+    } elseif (preg_match('/\s/', $new_password)) {
+        $message = "Password cannot contain spaces.";
+        $msg_type = "danger";
+    } elseif ($new_password !== $confirm_password) {
+        $message = "Passwords do not match.";
+        $msg_type = "danger";
+    } elseif ($hasExistingPassword && password_verify($new_password, $user['password'])) {
+        $message = "New password must not match the current password.";
+        $msg_type = "danger";
+    } else {
+        try {
+            $hashedPassword = password_hash($new_password, PASSWORD_DEFAULT);
+            $upd = $pdo->prepare("UPDATE users SET password = :password WHERE id = :id");
+            $upd->execute([':password' => $hashedPassword, ':id' => $user_id]);
+            $user['password'] = $hashedPassword;
+            $message = "Your password has been changed successfully!";
+            $msg_type = "success";
+        } catch (PDOException $e) {
+            error_log("Password update error: " . $e->getMessage());
+            $message = "Failed to update password. Please try again.";
+            $msg_type = "danger";
+        }
+    }
+    $currentTab = 'password';
 }
 
 // Handle Address Module Actions (Add, Edit, Delete, Set Default)
@@ -224,7 +280,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['address_action'])) {
     } elseif ($action === 'delete_address') {
         $del_id = (int) ($_POST['address_id'] ?? 0);
         try {
-            // Check if deleted address was default
             $chk = $pdo->prepare("SELECT is_default FROM customer_addresses WHERE id = :id AND user_id = :uid");
             $chk->execute([':id' => $del_id, ':uid' => $user_id]);
             $wasDefault = (bool) $chk->fetchColumn();
@@ -232,7 +287,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['address_action'])) {
             $del_stmt = $pdo->prepare("DELETE FROM customer_addresses WHERE id = :id AND user_id = :uid");
             $del_stmt->execute([':id' => $del_id, ':uid' => $user_id]);
 
-            // If it was default, promote latest remaining address to default
             if ($wasDefault) {
                 $rem_stmt = $pdo->prepare("
                     UPDATE customer_addresses 
@@ -389,6 +443,46 @@ try {
             padding: 4px 8px;
             border-radius: 6px;
         }
+
+        /* Password Checklist Styles */
+        .password-checklist {
+            list-style: none;
+            padding-left: 0;
+            margin-bottom: 0;
+            font-size: 0.78rem;
+            color: #6c757d;
+        }
+
+        .password-checklist li {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 3px;
+            transition: color 0.2s ease;
+        }
+
+        .password-checklist li::before {
+            content: "•";
+            font-size: 1.1rem;
+            line-height: 1;
+        }
+
+        .password-checklist li.valid {
+            color: #198754;
+            font-weight: 500;
+        }
+
+        .password-checklist li.valid::before {
+            content: "✓";
+        }
+
+        .password-checklist li.invalid {
+            color: #dc3545;
+        }
+
+        .password-checklist li.invalid::before {
+            content: "✕";
+        }
     </style>
 </head>
 <body>
@@ -445,6 +539,10 @@ try {
                             <i class="bi bi-person fs-5"></i>
                             <span>My Profile</span>
                         </a>
+                        <a href="profile.php?tab=password" class="sidebar-menu-link <?php echo $currentTab === 'password' ? 'active' : ''; ?>">
+                            <i class="bi bi-shield-lock fs-5"></i>
+                            <span>Change Password</span>
+                        </a>
                         <a href="profile.php?tab=address" class="sidebar-menu-link <?php echo $currentTab === 'address' ? 'active' : ''; ?>">
                             <i class="bi bi-geo-alt fs-5"></i>
                             <span>My Addresses</span>
@@ -453,7 +551,7 @@ try {
                             <i class="bi bi-bag-check fs-5"></i>
                             <span>My Purchase</span>
                         </a>
-                        <a href="../logout.php" class="sidebar-menu-link text-danger mt-2">
+                        <a href="../logout.php" class="sidebar-menu-link text-danger mt-2" onclick="return confirm('Are you sure you want to logout?');">
                             <i class="bi bi-box-arrow-right fs-5"></i>
                             <span>Logout</span>
                         </a>
@@ -565,6 +663,76 @@ try {
                             </div>
                         <?php endif; ?>
 
+                    <?php elseif ($currentTab === 'password'): ?>
+                        <!-- ================= TAB: CHANGE PASSWORD ================= -->
+                        <div class="d-flex align-items-center justify-content-between mb-4 pb-3 border-bottom flex-wrap gap-2">
+                            <div>
+                                <h4 class="fw-bold mb-1 text-dark d-flex align-items-center gap-2">
+                                    <i class="bi bi-shield-lock-fill text-primary"></i> Change Password
+                                </h4>
+                                <p class="text-muted small mb-0">For your security, choose a strong password that you do not use on other sites.</p>
+                            </div>
+                            <a href="profile.php?tab=profile" class="btn btn-outline-secondary btn-sm fw-semibold">
+                                <i class="bi bi-person me-1"></i> View Profile
+                            </a>
+                        </div>
+
+                        <form method="POST" id="changePasswordForm" class="mx-auto" style="max-width: 500px;">
+                            <?php if (!empty($user['password'])): ?>
+                                <div class="mb-3">
+                                    <label for="current_password" class="form-label small fw-semibold">Current Password <span class="text-danger">*</span></label>
+                                    <div class="input-group">
+                                        <input type="password" name="current_password" id="current_password" class="form-control" placeholder="Enter your current password" required>
+                                        <button class="btn btn-outline-secondary" type="button" onclick="togglePassVisibility('current_password', this)">
+                                            <i class="bi bi-eye"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            <?php else: ?>
+                                <div class="alert alert-info py-2 small mb-3">
+                                    <i class="bi bi-info-circle me-1"></i> You signed in using Google. Set a password below to allow direct email and password sign-in.
+                                </div>
+                            <?php endif; ?>
+
+                            <div class="mb-3">
+                                <label for="new_password" class="form-label small fw-semibold">New Password <span class="text-danger">*</span></label>
+                                <div class="input-group">
+                                    <input type="password" name="new_password" id="new_password" class="form-control" placeholder="At least 8 characters" minlength="8" required>
+                                    <button class="btn btn-outline-secondary" type="button" onclick="togglePassVisibility('new_password', this)">
+                                        <i class="bi bi-eye"></i>
+                                    </button>
+                                </div>
+                                
+                                <!-- Real-time Checklist Validation (identical to forgot password and registration) -->
+                                <ul class="password-checklist mt-2" id="newPasswordChecklist">
+                                    <li id="pwLenReq">At least 8 characters</li>
+                                    <li id="pwUpperReq">At least 1 uppercase letter (A–Z)</li>
+                                    <li id="pwLowerReq">At least 1 lowercase letter (a–z)</li>
+                                    <li id="pwNumReq">At least 1 number (0–9)</li>
+                                    <li id="pwSpecReq">At least 1 special character (!@#$%^&*)</li>
+                                    <li id="pwSpaceReq">No spaces allowed</li>
+                                </ul>
+                            </div>
+
+                            <div class="mb-4">
+                                <label for="confirm_password" class="form-label small fw-semibold">Confirm New Password <span class="text-danger">*</span></label>
+                                <div class="input-group">
+                                    <input type="password" name="confirm_password" id="confirm_password" class="form-control" placeholder="Re-enter your new password" minlength="8" required>
+                                    <button class="btn btn-outline-secondary" type="button" onclick="togglePassVisibility('confirm_password', this)">
+                                        <i class="bi bi-eye"></i>
+                                    </button>
+                                </div>
+                                <div id="pwMatchFeedback" class="small mt-1 text-muted"></div>
+                            </div>
+
+                            <div class="d-flex justify-content-end gap-2">
+                                <a href="profile.php?tab=profile" class="btn btn-light px-4">Cancel</a>
+                                <button type="submit" name="change_password" value="1" class="btn btn-navy px-4 fw-semibold">
+                                    <i class="bi bi-check2-circle me-1"></i> Update Password
+                                </button>
+                            </div>
+                        </form>
+
                     <?php else: ?>
                         <!-- ================= TAB: MY PROFILE ================= -->
                         <div class="d-flex align-items-center justify-content-between mb-4 pb-3 border-bottom flex-wrap gap-2">
@@ -573,6 +741,9 @@ try {
                                 <p class="text-muted small mb-0">Manage and protect your account information.</p>
                             </div>
                             <div class="d-flex align-items-center gap-2">
+                                <a href="profile.php?tab=password" class="btn btn-outline-secondary btn-sm fw-semibold">
+                                    <i class="bi bi-shield-lock me-1"></i> Change Password
+                                </a>
                                 <a href="profile.php?tab=address" class="btn btn-outline-secondary btn-sm fw-semibold">
                                     <i class="bi bi-geo-alt me-1"></i> My Addresses
                                 </a>
@@ -615,9 +786,15 @@ try {
                                            value="<?php echo htmlspecialchars((string) ($user['username'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>" readonly>
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label small fw-semibold">Email Address</label>
-                                    <input type="email" class="form-control bg-light"
-                                           value="<?php echo htmlspecialchars((string) ($user['email'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>" readonly>
+                                    <label class="form-label small fw-semibold">Email Address (Fixed)</label>
+                                    <div class="input-group">
+                                        <input type="email" class="form-control bg-light"
+                                               value="<?php echo htmlspecialchars((string) ($user['email'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>" readonly>
+                                        <span class="input-group-text bg-light text-muted" title="Account Email is fixed and cannot be changed">
+                                            <i class="bi bi-lock-fill"></i>
+                                        </span>
+                                    </div>
+                                    <div class="form-text text-muted small"><i class="bi bi-shield-check me-1"></i>Email address cannot be changed to protect account security.</div>
                                 </div>
                                 <div class="col-md-6">
                                     <label class="form-label small fw-semibold">Phone Number</label>
@@ -684,8 +861,13 @@ try {
                             </div>
                             <div class="col-12">
                                 <label class="form-label small fw-semibold">Email Address (Account Fixed)</label>
-                                <input type="email" class="form-control bg-light" 
-                                       value="<?php echo htmlspecialchars((string) ($user['email'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>" readonly>
+                                <div class="input-group">
+                                    <input type="email" class="form-control bg-light" 
+                                           value="<?php echo htmlspecialchars((string) ($user['email'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>" readonly>
+                                    <span class="input-group-text bg-light text-muted">
+                                        <i class="bi bi-lock-fill"></i>
+                                    </span>
+                                </div>
                                 <div class="form-text text-muted small"><i class="bi bi-lock-fill me-1"></i>Fixed: Linked to your current logged-in customer account.</div>
                             </div>
                             <div class="col-12">
@@ -740,6 +922,70 @@ try {
             }
         }
 
+        // Toggle password visibility helper
+        function togglePassVisibility(inputId, btn) {
+            const input = document.getElementById(inputId);
+            if (!input) return;
+            const icon = btn.querySelector('i');
+            if (input.type === 'password') {
+                input.type = 'text';
+                if (icon) {
+                    icon.classList.remove('bi-eye');
+                    icon.classList.add('bi-eye-slash');
+                }
+            } else {
+                input.type = 'password';
+                if (icon) {
+                    icon.classList.remove('bi-eye-slash');
+                    icon.classList.add('bi-eye');
+                }
+            }
+        }
+
+        // Real-time password validation logic (identical to forgot password and registration)
+        const newPwInput = document.getElementById('new_password');
+        const confirmPwInput = document.getElementById('confirm_password');
+        if (newPwInput) {
+            newPwInput.addEventListener('input', function() {
+                const val = this.value;
+                const setReq = (id, valid) => {
+                    const el = document.getElementById(id);
+                    if (!el) return;
+                    el.className = valid ? 'valid' : 'invalid';
+                };
+
+                setReq('pwLenReq', val.length >= 8);
+                setReq('pwUpperReq', /[A-Z]/.test(val));
+                setReq('pwLowerReq', /[a-z]/.test(val));
+                setReq('pwNumReq', /[0-9]/.test(val));
+                setReq('pwSpecReq', /[\W_]/.test(val));
+                setReq('pwSpaceReq', val.length > 0 && !/\s/.test(val));
+
+                checkMatch();
+            });
+        }
+
+        function checkMatch() {
+            if (!confirmPwInput || !newPwInput) return;
+            const matchEl = document.getElementById('pwMatchFeedback');
+            if (!matchEl) return;
+            if (confirmPwInput.value === '') {
+                matchEl.textContent = '';
+                matchEl.className = 'small mt-1 text-muted';
+            } else if (confirmPwInput.value === newPwInput.value) {
+                matchEl.textContent = '✓ Passwords match';
+                matchEl.className = 'small mt-1 text-success fw-semibold';
+            } else {
+                matchEl.textContent = '✕ Passwords do not match';
+                matchEl.className = 'small mt-1 text-danger fw-semibold';
+            }
+        }
+
+        if (confirmPwInput) {
+            confirmPwInput.addEventListener('input', checkMatch);
+        }
+
+        // Address modal helpers
         let addressModalInstance = null;
         function getAddressModal() {
             if (!addressModalInstance) {

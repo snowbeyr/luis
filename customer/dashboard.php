@@ -207,6 +207,12 @@ try {
                                 </a>
                             </li>
                             <li>
+                                <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="profile.php?tab=password">
+                                    <i class="bi bi-shield-lock text-secondary"></i>
+                                    <span>Change Password</span>
+                                </a>
+                            </li>
+                            <li>
                                 <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="profile.php?tab=address">
                                     <i class="bi bi-geo-alt text-secondary"></i>
                                     <span>My Addresses</span>
@@ -220,7 +226,7 @@ try {
                             </li>
                             <li><hr class="dropdown-divider my-1"></li>
                             <li>
-                                <a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="../logout.php">
+                                <a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="../logout.php" onclick="return confirm('Are you sure you want to logout?');">
                                     <i class="bi bi-box-arrow-right"></i>
                                     <span>Logout</span>
                                 </a>
@@ -332,6 +338,12 @@ try {
                                         </a>
                                     </li>
                                     <li>
+                                        <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="profile.php?tab=password">
+                                            <i class="bi bi-shield-lock text-secondary fs-6"></i>
+                                            <span>Change Password</span>
+                                        </a>
+                                    </li>
+                                    <li>
                                         <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="profile.php?tab=address">
                                             <i class="bi bi-geo-alt text-secondary fs-6"></i>
                                             <span>My Addresses</span>
@@ -345,7 +357,7 @@ try {
                                     </li>
                                     <li><hr class="dropdown-divider my-1"></li>
                                     <li>
-                                        <a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="../logout.php">
+                                        <a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="../logout.php" onclick="return confirm('Are you sure you want to logout?');">
                                             <i class="bi bi-box-arrow-right fs-6"></i>
                                             <span>Logout</span>
                                         </a>

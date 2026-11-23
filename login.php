@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once __DIR__ . '/config/db.php';
+require_once __DIR__ . '/config/email.php';
 
 date_default_timezone_set('Asia/Manila');
 
@@ -8,6 +9,9 @@ $error = '';
 $success = '';
 $openAuthModal = isset($_GET['auth']) && ($_GET['auth'] === '1' || $_GET['auth'] === 'register');
 $authTab = (($_GET['mode'] ?? '') === 'register' || ($_GET['auth'] ?? '') === 'register') ? 'register' : 'login';
+if (!empty($_SESSION['reg_pending']) && $openAuthModal) {
+    $authTab = 'verify_otp';
+}
 
 $isLoggedIn = !empty($_SESSION['user_id']) && !empty($_SESSION['role']);
 $currentRole = (string) ($_SESSION['role'] ?? '');
@@ -75,7 +79,7 @@ if ($isLoggedIn && $currentRole !== 'customer') {
 }
 
 /*
- * Handle Customer Registration (always assigns role = 'customer').
+ * Handle Customer Registration (Step 1: Validate inputs and send Email OTP)
  */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['register'])) {
     $openAuthModal = true;
@@ -108,7 +112,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['register'])) {
     } else {
         try {
             $checkStmt = $pdo->prepare(
-                "SELECT id FROM users WHERE username = :username OR email = :email LIMIT 1"
+                "SELECT id FROM users WHERE LOWER(username) = LOWER(:username) OR LOWER(email) = LOWER(:email) LIMIT 1"
             );
             $checkStmt->execute([
                 ':username' => $username,
@@ -118,46 +122,183 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['register'])) {
             if ($checkStmt->fetch(PDO::FETCH_ASSOC)) {
                 $error = 'Username or email is already registered.';
             } else {
-                $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
+                // Generate 6-digit verification code
+                $regOtp = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
 
-                $insertStmt = $pdo->prepare(
-                    "INSERT INTO users (fullname, username, email, password, role, status)
-                     VALUES (:fullname, :username, :email, :password, 'customer', 'Active')
-                     RETURNING id"
-                );
-                $insertStmt->execute([
-                    ':fullname' => $fullName,
-                    ':username' => $username,
-                    ':email'    => $email,
-                    ':password' => $hashedPassword
-                ]);
+                $_SESSION['reg_pending'] = [
+                    'fullname'      => $fullName,
+                    'username'      => $username,
+                    'email'         => $email,
+                    'password_hash' => password_hash($password, PASSWORD_DEFAULT),
+                    'otp_hash'      => password_hash($regOtp, PASSWORD_DEFAULT),
+                    'expires'       => time() + 300, // 5 minutes validity
+                    'attempts'      => 0
+                ];
 
-                $newUserId = (int) $insertStmt->fetchColumn();
+                $subject = 'Email Verification Code - R. Taipan Hardware';
+                $htmlBody = "
+                    <div style='font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:24px;border:1px solid #e2e8f0;border-radius:14px;background:#ffffff;'>
+                        <div style='text-align:center;margin-bottom:20px;'>
+                            <h2 style='color:#051c3c;margin:0 0 6px;'>Email Verification</h2>
+                            <p style='color:#64748b;font-size:14px;margin:0;'>Welcome to R. Taipan Hardware</p>
+                        </div>
+                        <p style='color:#334155;font-size:15px;'>Hello <strong>" . htmlspecialchars($fullName, ENT_QUOTES, 'UTF-8') . "</strong>,</p>
+                        <p style='color:#334155;font-size:14px;'>Thank you for signing up at R. Taipan Hardware. Please use the verification code below to complete your registration:</p>
+                        <div style='font-size:32px;font-weight:bold;letter-spacing:8px;background:#f0f4fa;padding:18px;text-align:center;border-radius:10px;color:#051c3c;margin:24px 0;border:1px dashed #94a3b8;'>" . htmlspecialchars($regOtp, ENT_QUOTES, 'UTF-8') . "</div>
+                        <p style='color:#64748b;font-size:13px;line-height:1.5;'>This verification code will expire in <strong>5 minutes</strong>. If you did not create an account at R. Taipan Hardware, please ignore this email.</p>
+                        <hr style='border:none;border-top:1px solid #e2e8f0;margin:20px 0;'>
+                        <p style='color:#94a3b8;font-size:12px;margin:0;text-align:center;'>© " . date('Y') . " R. Taipan Hardware. All rights reserved.</p>
+                    </div>
+                ";
 
-                session_regenerate_id(true);
-                $_SESSION['user_id']   = $newUserId;
-                $_SESSION['username']  = $username;
-                $_SESSION['full_name'] = $fullName;
-                $_SESSION['role']      = 'customer';
-                $_SESSION['message']   = 'Account created! Welcome to R. Taipan Hardware.';
-
-                logAction(
-                    $pdo,
-                    $newUserId,
-                    $username,
-                    'customer',
-                    'Register',
-                    'New customer account created'
-                );
-
-                header('Location: login.php');
-                exit;
+                $mailRes = sendSystemEmail($email, $fullName, $subject, $htmlBody);
+                if ($mailRes['success']) {
+                    $authTab = 'verify_otp';
+                    $success = 'A 6-digit verification code was sent to ' . htmlspecialchars($email, ENT_QUOTES, 'UTF-8') . '. Please check your email.';
+                } else {
+                    unset($_SESSION['reg_pending']);
+                    $error = 'Email sending failed: ' . $mailRes['error'] . '. Please check your email address or try again.';
+                }
             }
         } catch (Throwable $e) {
             error_log('Registration error: ' . $e->getMessage());
             $error = 'Unable to create account right now. Please try again later.';
         }
     }
+}
+
+/*
+ * Handle Customer Registration (Step 2: Verify OTP and create account)
+ */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['verify_reg_otp'])) {
+    $openAuthModal = true;
+    $authTab = 'verify_otp';
+
+    if (empty($_SESSION['reg_pending'])) {
+        $error = 'No pending registration found or session has expired. Please sign up again.';
+        $authTab = 'register';
+    } else {
+        $pending = &$_SESSION['reg_pending'];
+        $enteredOtp = trim((string) ($_POST['reg_otp'] ?? ''));
+
+        if (time() > (int) ($pending['expires'] ?? 0)) {
+            $error = 'Verification code has expired. Please click "Resend Code" to get a new code.';
+        } elseif ($pending['attempts'] >= 5) {
+            unset($_SESSION['reg_pending']);
+            $error = 'Too many incorrect attempts. Please sign up again.';
+            $authTab = 'register';
+        } elseif (!password_verify($enteredOtp, (string) ($pending['otp_hash'] ?? ''))) {
+            $pending['attempts']++;
+            $remaining = 5 - $pending['attempts'];
+            $error = "Invalid verification code. Please check and try again ($remaining attempts left).";
+        } else {
+            // Code is verified! Insert user into database
+            try {
+                $checkStmt = $pdo->prepare(
+                    "SELECT id FROM users WHERE LOWER(username) = LOWER(:username) OR LOWER(email) = LOWER(:email) LIMIT 1"
+                );
+                $checkStmt->execute([
+                    ':username' => $pending['username'],
+                    ':email'    => $pending['email']
+                ]);
+
+                if ($checkStmt->fetch(PDO::FETCH_ASSOC)) {
+                    $error = 'Username or email was registered while verifying. Please try another.';
+                    unset($_SESSION['reg_pending']);
+                    $authTab = 'register';
+                } else {
+                    $insertStmt = $pdo->prepare(
+                        "INSERT INTO users (fullname, username, email, password, role, status)
+                         VALUES (:fullname, :username, :email, :password, 'customer', 'Active')
+                         RETURNING id"
+                    );
+                    $insertStmt->execute([
+                        ':fullname' => $pending['fullname'],
+                        ':username' => $pending['username'],
+                        ':email'    => $pending['email'],
+                        ':password' => $pending['password_hash']
+                    ]);
+
+                    $newUserId = (int) $insertStmt->fetchColumn();
+
+                    session_regenerate_id(true);
+                    $_SESSION['user_id']   = $newUserId;
+                    $_SESSION['username']  = $pending['username'];
+                    $_SESSION['full_name'] = $pending['fullname'];
+                    $_SESSION['email']     = $pending['email'];
+                    $_SESSION['role']      = 'customer';
+                    $_SESSION['message']   = 'Account created and email verified! Welcome to R. Taipan Hardware.';
+
+                    logAction(
+                        $pdo,
+                        $newUserId,
+                        $pending['username'],
+                        'customer',
+                        'Register',
+                        'New customer account created with verified email'
+                    );
+
+                    unset($_SESSION['reg_pending']);
+                    header('Location: login.php');
+                    exit;
+                }
+            } catch (Throwable $e) {
+                error_log('Registration completion error: ' . $e->getMessage());
+                $error = 'Unable to complete account registration right now. Please try again later.';
+            }
+        }
+    }
+}
+
+/*
+ * Handle Resend OTP for Registration
+ */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['resend_reg_otp'])) {
+    $openAuthModal = true;
+    $authTab = 'verify_otp';
+
+    if (empty($_SESSION['reg_pending'])) {
+        $error = 'Session expired. Please fill out the registration form again.';
+        $authTab = 'register';
+    } else {
+        $pending = &$_SESSION['reg_pending'];
+        $newOtp = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+        $pending['otp_hash'] = password_hash($newOtp, PASSWORD_DEFAULT);
+        $pending['expires']  = time() + 300;
+        $pending['attempts'] = 0;
+
+        $subject = 'New Verification Code - R. Taipan Hardware';
+        $htmlBody = "
+            <div style='font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:24px;border:1px solid #e2e8f0;border-radius:14px;background:#ffffff;'>
+                <div style='text-align:center;margin-bottom:20px;'>
+                    <h2 style='color:#051c3c;margin:0 0 6px;'>New Verification Code</h2>
+                    <p style='color:#64748b;font-size:14px;margin:0;'>R. Taipan Hardware Account Registration</p>
+                </div>
+                <p style='color:#334155;font-size:15px;'>Hello <strong>" . htmlspecialchars($pending['fullname'], ENT_QUOTES, 'UTF-8') . "</strong>,</p>
+                <p style='color:#334155;font-size:14px;'>Here is your new 6-digit verification code to complete your registration:</p>
+                <div style='font-size:32px;font-weight:bold;letter-spacing:8px;background:#f0f4fa;padding:18px;text-align:center;border-radius:10px;color:#051c3c;margin:24px 0;border:1px dashed #94a3b8;'>" . htmlspecialchars($newOtp, ENT_QUOTES, 'UTF-8') . "</div>
+                <p style='color:#64748b;font-size:13px;'>This code is valid for <strong>5 minutes</strong>.</p>
+                <hr style='border:none;border-top:1px solid #e2e8f0;margin:20px 0;'>
+                <p style='color:#94a3b8;font-size:12px;margin:0;text-align:center;'>© " . date('Y') . " R. Taipan Hardware. All rights reserved.</p>
+            </div>
+        ";
+
+        $mailRes = sendSystemEmail($pending['email'], $pending['fullname'], $subject, $htmlBody);
+        if ($mailRes['success']) {
+            $success = 'A new 6-digit verification code has been sent to ' . htmlspecialchars($pending['email'], ENT_QUOTES, 'UTF-8');
+        } else {
+            $error = 'Failed to resend email: ' . $mailRes['error'];
+        }
+    }
+}
+
+/*
+ * Handle Cancel Registration OTP
+ */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cancel_reg_otp'])) {
+    unset($_SESSION['reg_pending']);
+    $authTab = 'register';
+    $openAuthModal = true;
 }
 
 /*
@@ -632,6 +773,12 @@ try {
                                 </a>
                             </li>
                             <li>
+                                <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="customer/profile.php?tab=password">
+                                    <i class="bi bi-shield-lock text-secondary"></i>
+                                    <span>Change Password</span>
+                                </a>
+                            </li>
+                            <li>
                                 <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="customer/profile.php?tab=address">
                                     <i class="bi bi-geo-alt text-secondary"></i>
                                     <span>My Addresses</span>
@@ -645,7 +792,7 @@ try {
                             </li>
                             <li><hr class="dropdown-divider my-1"></li>
                             <li>
-                                <a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="logout.php">
+                                <a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="logout.php" onclick="return confirm('Are you sure you want to logout?');">
                                     <i class="bi bi-box-arrow-right"></i>
                                     <span>Logout</span>
                                 </a>
@@ -744,6 +891,12 @@ try {
                                         </a>
                                     </li>
                                     <li>
+                                        <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="customer/profile.php?tab=password">
+                                            <i class="bi bi-shield-lock text-secondary fs-6"></i>
+                                            <span>Change Password</span>
+                                        </a>
+                                    </li>
+                                    <li>
                                         <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="customer/profile.php?tab=address">
                                             <i class="bi bi-geo-alt text-secondary fs-6"></i>
                                             <span>My Addresses</span>
@@ -757,7 +910,7 @@ try {
                                     </li>
                                     <li><hr class="dropdown-divider my-1"></li>
                                     <li>
-                                        <a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="logout.php">
+                                        <a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="logout.php" onclick="return confirm('Are you sure you want to logout?');">
                                             <i class="bi bi-box-arrow-right fs-6"></i>
                                             <span>Logout</span>
                                         </a>
@@ -792,13 +945,35 @@ try {
 
                     <!-- Headline & Subtitle -->
                     <div class="mb-4">
-                        <h4 class="fw-bold mb-1" id="authModalTitle"><?php echo $authTab === 'register' ? 'Create an account' : 'Welcome back!'; ?></h4>
-                        <p class="text-muted small mb-0" id="authModalSubtitle"><?php echo $authTab === 'register' ? 'Sign up to manage your orders.' : 'Sign in to manage your account.'; ?></p>
+                        <h4 class="fw-bold mb-1" id="authModalTitle"><?php
+                            if ($authTab === 'verify_otp') {
+                                echo 'Verify Your Email';
+                            } elseif ($authTab === 'register') {
+                                echo 'Create an account';
+                            } else {
+                                echo 'Welcome back!';
+                            }
+                        ?></h4>
+                        <p class="text-muted small mb-0" id="authModalSubtitle"><?php
+                            if ($authTab === 'verify_otp') {
+                                echo 'Enter the 6-digit code sent to your email to complete registration.';
+                            } elseif ($authTab === 'register') {
+                                echo 'Sign up to manage your orders.';
+                            } else {
+                                echo 'Sign in to manage your account.';
+                            }
+                        ?></p>
                     </div>
 
                     <?php if ($error !== ''): ?>
                         <div class="alert alert-danger text-center py-2 small mb-3" role="alert">
                             <?php echo htmlspecialchars($error, ENT_QUOTES, 'UTF-8'); ?>
+                        </div>
+                    <?php endif; ?>
+
+                    <?php if ($success !== ''): ?>
+                        <div class="alert alert-success text-center py-2 small mb-3" role="alert">
+                            <?php echo htmlspecialchars($success, ENT_QUOTES, 'UTF-8'); ?>
                         </div>
                     <?php endif; ?>
 
@@ -914,21 +1089,60 @@ try {
                         </div>
                     </form>
 
-                    <div class="divider">OR CONTINUE WITH</div>
+                    <!-- OTP Verification Form for Customer Registration -->
+                    <form method="POST" action="login.php" id="otpFormSection"
+                        class="<?php echo $authTab === 'verify_otp' ? '' : 'd-none'; ?>">
+                        
+                        <div class="text-center mb-4">
+                            <div class="p-3 bg-light rounded-circle d-inline-block mb-2">
+                                <i class="bi bi-envelope-check text-primary fs-1"></i>
+                            </div>
+                            <p class="small text-muted mb-1">We sent a verification code to:</p>
+                            <strong class="d-block text-dark small text-break">
+                                <?php echo htmlspecialchars((string) ($_SESSION['reg_pending']['email'] ?? 'your email'), ENT_QUOTES, 'UTF-8'); ?>
+                            </strong>
+                        </div>
 
-                    <a href="google-auth.php" class="btn btn-outline-dark w-100 py-2 fw-semibold d-flex align-items-center justify-content-center gap-2">
-                        <svg width="18" height="18" viewBox="0 0 24 24">
-                            <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/>
-                            <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.36 24 12 24z"/>
-                            <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.99 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/>
-                            <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.36 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
-                        </svg>
-                        <span>Continue with Google</span>
-                    </a>
+                        <div class="mb-3">
+                            <label for="reg_otp" class="form-label small fw-semibold text-center d-block">Enter 6-Digit Code</label>
+                            <input type="text" name="reg_otp" id="reg_otp" class="form-control form-control-lg text-center fw-bold"
+                                   placeholder="••••••" maxlength="6" pattern="[0-9]{6}" inputmode="numeric"
+                                   autocomplete="one-time-code" style="letter-spacing: 8px; font-size: 1.5rem;" required>
+                            <div class="form-text small text-center text-muted">Expires in 5 minutes. Check spam/junk if not in inbox.</div>
+                        </div>
 
-                    <p class="text-center text-muted mt-3 mb-0" style="font-size: 0.75rem;">
-                        By continuing, you agree to our <a href="#" class="text-muted text-decoration-underline">Terms of Service</a> and <a href="#" class="text-muted text-decoration-underline">Privacy Policy</a>.
-                    </p>
+                        <button type="submit" name="verify_reg_otp" value="1" class="btn btn-primary-navy w-100 py-2 fw-semibold d-flex align-items-center justify-content-center gap-2 mb-3">
+                            <span>Verify & Complete Registration</span>
+                            <i class="bi bi-arrow-right"></i>
+                        </button>
+
+                        <div class="d-flex justify-content-between align-items-center pt-2 border-top">
+                            <button type="submit" name="resend_reg_otp" value="1" class="btn btn-link text-decoration-none small text-primary p-0">
+                                <i class="bi bi-arrow-clockwise me-1"></i>Resend Code
+                            </button>
+                            <button type="submit" name="cancel_reg_otp" value="1" class="btn btn-link text-decoration-none small text-secondary p-0">
+                                <i class="bi bi-pencil me-1"></i>Change Email
+                            </button>
+                        </div>
+                    </form>
+
+                    <div id="authSocialSection" class="<?php echo $authTab === 'verify_otp' ? 'd-none' : ''; ?>">
+                        <div class="divider">OR CONTINUE WITH</div>
+
+                        <a href="google-auth.php" class="btn btn-outline-dark w-100 py-2 fw-semibold d-flex align-items-center justify-content-center gap-2">
+                            <svg width="18" height="18" viewBox="0 0 24 24">
+                                <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/>
+                                <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.36 24 12 24z"/>
+                                <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.99 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/>
+                                <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.36 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
+                            </svg>
+                            <span>Continue with Google</span>
+                        </a>
+
+                        <p class="text-center text-muted mt-3 mb-0" style="font-size: 0.75rem;">
+                            By continuing, you agree to our <a href="#" class="text-muted text-decoration-underline">Terms of Service</a> and <a href="#" class="text-muted text-decoration-underline">Privacy Policy</a>.
+                        </p>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1145,21 +1359,36 @@ try {
         function switchAuthTab(tab) {
             const loginForm = document.getElementById('loginFormSection');
             const registerForm = document.getElementById('registerFormSection');
+            const otpForm = document.getElementById('otpFormSection');
+            const socialSection = document.getElementById('authSocialSection');
             const tabLoginBtn = document.getElementById('tabLoginBtn');
             const tabRegisterBtn = document.getElementById('tabRegisterBtn');
             const title = document.getElementById('authModalTitle');
             const subtitle = document.getElementById('authModalSubtitle');
 
-            if (tab === 'register') {
+            if (tab === 'verify_otp') {
                 loginForm?.classList.add('d-none');
+                registerForm?.classList.add('d-none');
+                otpForm?.classList.remove('d-none');
+                socialSection?.classList.add('d-none');
+                tabLoginBtn?.classList.remove('active');
+                tabRegisterBtn?.classList.remove('active');
+                if (title) title.textContent = 'Verify Your Email';
+                if (subtitle) subtitle.textContent = 'Enter the 6-digit code sent to your email to complete registration.';
+            } else if (tab === 'register') {
+                loginForm?.classList.add('d-none');
+                otpForm?.classList.add('d-none');
                 registerForm?.classList.remove('d-none');
+                socialSection?.classList.remove('d-none');
                 tabLoginBtn?.classList.remove('active');
                 tabRegisterBtn?.classList.add('active');
                 if (title) title.textContent = 'Create an account';
                 if (subtitle) subtitle.textContent = 'Sign up to manage your orders.';
             } else {
                 registerForm?.classList.add('d-none');
+                otpForm?.classList.add('d-none');
                 loginForm?.classList.remove('d-none');
+                socialSection?.classList.remove('d-none');
                 tabRegisterBtn?.classList.remove('active');
                 tabLoginBtn?.classList.add('active');
                 if (title) title.textContent = 'Welcome back!';
