@@ -278,9 +278,9 @@ $stmt->execute($params);
 $accounts = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 $countActive = (int)($pdo->query("SELECT COUNT(*) AS total FROM users WHERE status = 'Active'")->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
-$countArchived = (int)($pdo->query("SELECT COUNT(*) AS total FROM users WHERE status = 'Archived'")->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
 $countStaffs = (int)($pdo->query("SELECT COUNT(*) AS total FROM users WHERE LOWER(role) IN ('admin', 'cashier', 'owner')")->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
 $countCustomers = (int)($pdo->query("SELECT COUNT(*) AS total FROM users WHERE LOWER(role) = 'customer'")->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+$countArchived = (int)($pdo->query("SELECT COUNT(*) AS total FROM users WHERE status = 'Archived'")->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
 ?>
 <!DOCTYPE html>
 <html lang="en">
