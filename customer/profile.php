@@ -354,6 +354,13 @@ try {
             padding: 24px 20px;
         }
 
+        @media (min-width: 768px) {
+            .sidebar-card {
+                position: sticky;
+                top: 24px;
+            }
+        }
+
         .user-avatar-sm {
             width: 48px;
             height: 48px;

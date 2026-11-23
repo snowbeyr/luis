@@ -685,10 +685,90 @@ foreach ($allOrders as $o) {
                 display: none !important;
             }
         }
+
+        /* Shopee-style Desktop Layout: Fixed Sidebar & Right-Side Only Scrollable */
+        @media (min-width: 768px) {
+            html, body {
+                height: 100%;
+                margin: 0;
+                overflow: hidden;
+            }
+
+            .purchases-page-wrapper {
+                display: flex;
+                flex-direction: column;
+                height: 100vh;
+                height: 100dvh;
+                overflow: hidden;
+            }
+
+            .navbar-custom {
+                flex-shrink: 0;
+            }
+
+            .purchases-main-container {
+                flex: 1 1 auto;
+                height: calc(100vh - 66px);
+                height: calc(100dvh - 66px);
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
+                padding-top: 1.25rem !important;
+                padding-bottom: 0 !important;
+            }
+
+            .purchases-row {
+                flex: 1 1 auto;
+                height: 100%;
+                overflow: hidden;
+            }
+
+            .purchases-sidebar-col {
+                height: 100%;
+                overflow-y: auto;
+                flex-shrink: 0;
+            }
+
+            .purchases-sidebar-col .sidebar-card {
+                position: sticky;
+                top: 0;
+            }
+
+            .purchases-content-col {
+                height: 100%;
+                overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
+                padding-right: 10px;
+                padding-bottom: 45px;
+            }
+
+            .purchase-tabs-container {
+                position: sticky;
+                top: 0;
+                z-index: 20;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+            }
+        }
+
+        /* Custom subtle scrollbar para sa right content panel */
+        .custom-scroll::-webkit-scrollbar {
+            width: 7px;
+        }
+        .custom-scroll::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .custom-scroll::-webkit-scrollbar-thumb {
+            background-color: #cbd5e1;
+            border-radius: 10px;
+        }
+        .custom-scroll::-webkit-scrollbar-thumb:hover {
+            background-color: #94a3b8;
+        }
     </style>
 </head>
-<body>
+<body class="bg-light">
 
+<div class="purchases-page-wrapper">
     <!-- Header Navbar -->
     <nav class="navbar navbar-expand-lg navbar-dark navbar-custom sticky-top">
         <div class="container">
@@ -737,12 +817,12 @@ foreach ($allOrders as $o) {
         </div>
     </nav>
 
-    <!-- Main Container (Shopee-Style Layout) -->
-    <div class="container py-4">
-        <div class="row g-4">
+    <!-- Main Container (Shopee-Style Layout: Fixed Sidebar & Right Content Scrollable) -->
+    <div class="container purchases-main-container py-3 py-md-4">
+        <div class="row g-4 purchases-row">
             
-            <!-- Left Sidebar -->
-            <div class="col-lg-3 col-md-4">
+            <!-- Left Sidebar (Fixed) -->
+            <div class="col-lg-3 col-md-4 purchases-sidebar-col">
                 <div class="sidebar-card">
                     <!-- User Profile Info -->
                     <div class="d-flex align-items-center gap-3 pb-3 mb-3 border-bottom">
@@ -789,8 +869,8 @@ foreach ($allOrders as $o) {
                 </div>
             </div>
 
-            <!-- Right Content Area -->
-            <div class="col-lg-9 col-md-8">
+            <!-- Right Content Area (Scrollable Orders Feed) -->
+            <div class="col-lg-9 col-md-8 purchases-content-col custom-scroll">
                 
                 <!-- Category Tabs (All, To Ship, To Receive, Completed, Cancelled, Exchange Items) -->
                 <div class="purchase-tabs-container">
@@ -962,6 +1042,7 @@ foreach ($allOrders as $o) {
             </div>
         </div>
     </div>
+</div>
 
     <!-- Shopee-Style Order Details Modal -->
     <div class="modal fade" id="orderDetailsModal" tabindex="-1" aria-hidden="true">
