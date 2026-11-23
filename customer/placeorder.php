@@ -92,7 +92,20 @@ if (isset($_POST['place_order'])) {
     $surname = trim($_POST['surname']);
     $contact_number = trim($_POST['contact_number']);
     $tel_no = !empty($_POST['tel_no']) ? trim($_POST['tel_no']) : null;
-    $email = trim($_POST['email']);
+    
+    // Automatic: Kukunin ang email ng customer na ginamit sa pag-login
+    $email = !empty($customerEmail) ? $customerEmail : trim($_POST['email'] ?? '');
+    if (empty($email) && $loggedInUserId > 0) {
+        try {
+            $stmt_u = $pdo->prepare("SELECT email FROM users WHERE id = ? LIMIT 1");
+            $stmt_u->execute([$loggedInUserId]);
+            $email = trim((string) $stmt_u->fetchColumn());
+        } catch (Throwable $e) {}
+    }
+    if (empty($email) && !empty($_SESSION['email'])) {
+        $email = trim((string) $_SESSION['email']);
+    }
+
     $full_address = trim($_POST['full_address']);
     $landmark = trim($_POST['landmark']);
     
@@ -624,11 +637,8 @@ if (isset($_POST['place_order'])) {
                         <input type="text" name="tel_no" id="input_tel_no" class="form-control" 
                        oninput="this.value = this.value.replace(/[^0-9-]/g, '')">
                     </div>
-                    <div class="col-12">
-                        <label class="form-label">Email Address</label>
-                         <input type="email" name="email" id="input_email" class="form-control" placeholder="name@example.com" 
-                                value="<?php echo htmlspecialchars($customerEmail, ENT_QUOTES, 'UTF-8'); ?>" required>
-                    </div>
+                    <!-- Customer Email automatically bound to logged-in account -->
+                    <input type="hidden" name="email" id="input_email" value="<?php echo htmlspecialchars($customerEmail, ENT_QUOTES, 'UTF-8'); ?>">
                     <div class="col-12">
                         <label class="form-label">Complete Delivery Address</label>
                         <textarea name="full_address" id="input_full_address" class="form-control" rows="2" required></textarea>
@@ -1356,7 +1366,6 @@ function selectSavedAddress(addressId) {
         { id: 'input_surname', val: addr.last_name || '' },
         { id: 'input_contact_number', val: addr.contact_number || '' },
         { id: 'input_tel_no', val: addr.tel_no || '' },
-        { id: 'input_email', val: addr.email || '' },
         { id: 'input_full_address', val: addr.full_address || '' },
         { id: 'input_landmark', val: addr.landmark || '' }
     ];
