@@ -62,7 +62,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         "INSERT INTO users (username, fullname, phone_number, email, password, role, status)
                          VALUES (?, ?, ?, ?, ?, ?, 'Active')"
                     );
-                    
+
                     if ($stmt->execute([$username, $fullname, $phone_number, $email, $hashedPassword, $role])) {
                         $success = "Account successfully created.";
 
@@ -77,40 +77,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                     } else {
                         $error = "Failed to create account. Please try again.";
-                    }
-                }
-            }
-        } elseif ($action === 'reset_password') {
-            $userId = filter_var($_POST['user_id'] ?? '', FILTER_VALIDATE_INT);
-
-            if (!$userId || $userId <= 0) {
-                $error = "Invalid account selected.";
-            } else {
-                $check = $pdo->prepare("SELECT id, username FROM users WHERE id = ? LIMIT 1");
-                $check->execute([$userId]);
-                $account = $check->fetch(PDO::FETCH_ASSOC);
-
-                if (!$account) {
-                    $error = "Account not found.";
-                } else {
-                    $targetUsername = $account['username'];
-                    $defaultPasswordHash = password_hash('password', PASSWORD_DEFAULT);
-                    $stmt = $pdo->prepare("UPDATE users SET password = ? WHERE id = ?");
-                    
-                    if ($stmt->execute([$defaultPasswordHash, $userId])) {
-                        $success = "Password for account '{$targetUsername}' has been successfully reset to 'password'.";
-
-                        // ─── AUDIT TRAIL LOG FOR RESET PASSWORD ───
-                        $auditAction = "Reset Password";
-                        $details = "Owner reset password to default for account: {$targetUsername} (ID: {$userId})";
-                        $ipAddress = $_SERVER['REMOTE_ADDR'] ?? 'N/A';
-
-                        $auditStmt = $pdo->prepare("INSERT INTO audit_log (user_id, username, role, action, details, ip_address) VALUES (?, ?, 'owner', ?, ?, ?)");
-                        if ($auditStmt) {
-                            $auditStmt->execute([$currentOwnerId > 0 ? $currentOwnerId : null, $owner_name, $auditAction, $details, $ipAddress]);
-                        }
-                    } else {
-                        $error = "Failed to reset password.";
                     }
                 }
             }
@@ -133,7 +99,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } else {
                     $targetUsername = $account['username'];
                     $stmt = $pdo->prepare("UPDATE users SET status = 'Archived' WHERE id = ?");
-                    
+
                     if ($stmt->execute([$userId])) {
                         $success = "Account successfully archived.";
 
@@ -168,7 +134,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } else {
                     $targetUsername = $account['username'];
                     $stmt = $pdo->prepare("UPDATE users SET status = 'Active' WHERE id = ?");
-                    
+
                     if ($stmt->execute([$userId])) {
                         $success = "Account successfully unarchived and restored to active status.";
 
@@ -192,36 +158,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// ACTIVE / ARCHIVED FILTER
-$tab = $_GET['tab'] ?? 'active';
-if (!in_array($tab, ['active', 'archived'], true)) {
+// TAB FILTER: active | archived | staffs | customers
+$tab = strtolower(trim($_GET['tab'] ?? 'active'));
+if (!in_array($tab, ['active', 'archived', 'staffs', 'customers'], true)) {
     $tab = 'active';
 }
-$statusFilter = $tab === 'archived' ? 'Archived' : 'Active';
 $search = trim($_GET['search'] ?? '');
 
-// HANDLE AJAX LIVE SEARCH REQUEST
-if (isset($_GET['ajax']) && $_GET['ajax'] === '1') {
-    if ($search !== '') {
-        $searchTerm = '%' . $search . '%';
-        $stmt = $pdo->prepare(
-            "SELECT id, username, email, role, status
-             FROM users
-             WHERE status = ? AND (username LIKE ? OR email LIKE ? OR role LIKE ?)
-             ORDER BY id DESC"
-        );
-        $stmt->execute([$statusFilter, $searchTerm, $searchTerm, $searchTerm]);
-    } else {
-        $stmt = $pdo->prepare(
-            "SELECT id, username, email, role, status
-             FROM users WHERE status = ? ORDER BY id DESC"
-        );
-        $stmt->execute([$statusFilter]);
-    }
-    $accounts = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$whereClauses = [];
+$params = [];
 
+if ($tab === 'active') {
+    $whereClauses[] = "status = 'Active'";
+} elseif ($tab === 'archived') {
+    $whereClauses[] = "status = 'Archived'";
+} elseif ($tab === 'staffs') {
+    $whereClauses[] = "LOWER(role) IN ('admin', 'cashier', 'owner')";
+} elseif ($tab === 'customers') {
+    $whereClauses[] = "LOWER(role) = 'customer'";
+}
+
+if ($search !== '') {
+    $searchTerm = '%' . $search . '%';
+    $whereClauses[] = "(username LIKE ? OR fullname LIKE ? OR phone_number LIKE ? OR email LIKE ? OR role LIKE ?)";
+    array_push($params, $searchTerm, $searchTerm, $searchTerm, $searchTerm, $searchTerm);
+}
+
+$sql = "SELECT id, username, fullname, phone_number, email, role, status FROM users";
+if (!empty($whereClauses)) {
+    $sql .= " WHERE " . implode(" AND ", $whereClauses);
+}
+$sql .= " ORDER BY id DESC";
+
+function renderAccountRows(array $accounts, string $tab, int $currentOwnerId): string {
+    ob_start();
     if (count($accounts) > 0):
         foreach ($accounts as $account):
+            $isArchived = (($account['status'] ?? '') === 'Archived');
+            $isSelf = ($currentOwnerId > 0 && (int)$account['id'] === $currentOwnerId);
             ?>
             <tr>
                 <td><?= (int)$account['id'] ?></td>
@@ -229,23 +203,29 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === '1') {
                 <td><?= e($account['email'] ?? '') ?></td>
                 <td><span class="role-badge"><?= e($account['role']) ?></span></td>
                 <td>
-                    <?php if ($account['status'] === 'Active'): ?>
+                    <?php if (($account['status'] ?? '') === 'Active'): ?>
                         <span class="status-badge status-active">Active</span>
                     <?php else: ?>
-                        <span class="status-badge status-archived">Archived</span>
+                        <span class="status-badge status-archived"><?= e($account['status'] ?? 'Archived') ?></span>
                     <?php endif; ?>
                 </td>
                 <td>
-                    <button type="button" class="btn btn-warning-custom btn-sm fw-bold"
-                            data-bs-toggle="modal" data-bs-target="#resetPasswordModal"
-                            data-id="<?= (int)$account['id'] ?>"
-                            data-username="<?= e($account['username']) ?>">
-                        <i class="bi bi-key me-1"></i>Reset Password
+                    <button type="button"
+                            class="btn btn-view-user btn-sm fw-bold"
+                            data-bs-toggle="modal"
+                            data-bs-target="#viewUserModal"
+                            data-fullname="<?= e($account['fullname'] ?? '') ?>"
+                            data-username="<?= e($account['username'] ?? '') ?>"
+                            data-phone="<?= e($account['phone_number'] ?? '') ?>"
+                            data-email="<?= e($account['email'] ?? '') ?>"
+                            data-role="<?= e($account['role'] ?? '') ?>"
+                            data-status="<?= e($account['status'] ?? '') ?>">
+                        <i class="bi bi-eye me-1"></i>View User
                     </button>
                 </td>
                 <td>
-                    <?php if ($tab === 'active'): ?>
-                        <?php if ($currentOwnerId <= 0 || (int)$account['id'] !== $currentOwnerId): ?>
+                    <?php if (!$isArchived): ?>
+                        <?php if (!$isSelf): ?>
                             <button type="button" class="btn btn-archive"
                                     data-bs-toggle="modal" data-bs-target="#archiveModal"
                                     data-id="<?= (int)$account['id'] ?>"
@@ -280,32 +260,27 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === '1') {
         </tr>
         <?php
     endif;
-    exit(); 
+    return (string)ob_get_clean();
+}
+
+// HANDLE AJAX LIVE SEARCH REQUEST
+if (isset($_GET['ajax']) && $_GET['ajax'] === '1') {
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $accounts = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    echo renderAccountRows($accounts, $tab, $currentOwnerId);
+    exit();
 }
 
 // INITIAL PAGE LOAD QUERY
-if ($search !== '') {
-    $searchTerm = '%' . $search . '%';
-    $stmt = $pdo->prepare(
-        "SELECT id, username, email, role, status
-         FROM users
-         WHERE status = ? AND (username LIKE ? OR email LIKE ? OR role LIKE ?)
-         ORDER BY id DESC"
-    );
-    $stmt->execute([$statusFilter, $searchTerm, $searchTerm, $searchTerm]);
-} else {
-    $stmt = $pdo->prepare(
-        "SELECT id, username, email, role, status
-         FROM users WHERE status = ? ORDER BY id DESC"
-    );
-    $stmt->execute([$statusFilter]);
-}
+$stmt = $pdo->prepare($sql);
+$stmt->execute($params);
 $accounts = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-$countActiveResult = $pdo->query("SELECT COUNT(*) AS total FROM users WHERE status = 'Active'");
-$countArchivedResult = $pdo->query("SELECT COUNT(*) AS total FROM users WHERE status = 'Archived'");
-$countActive = (int)($countActiveResult->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
-$countArchived = (int)($countArchivedResult->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+$countActive = (int)($pdo->query("SELECT COUNT(*) AS total FROM users WHERE status = 'Active'")->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+$countArchived = (int)($pdo->query("SELECT COUNT(*) AS total FROM users WHERE status = 'Archived'")->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+$countStaffs = (int)($pdo->query("SELECT COUNT(*) AS total FROM users WHERE LOWER(role) IN ('admin', 'cashier', 'owner')")->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+$countCustomers = (int)($pdo->query("SELECT COUNT(*) AS total FROM users WHERE LOWER(role) = 'customer'")->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -399,15 +374,15 @@ $countArchived = (int)($countArchivedResult->fetch(PDO::FETCH_ASSOC)['total'] ??
             font-weight: 600;
         }
         .btn-primary-custom:hover { background: #0b315f; color: #fff; }
-        .btn-warning-custom {
-            background: #ffc107;
-            color: #000;
-            border: none;
+        .btn-view-user {
+            background: #e7f1ff;
+            color: #051c3c;
+            border: 1px solid #b6d4fe;
             padding: 6px 12px;
             border-radius: 6px;
             font-size: 13px;
         }
-        .btn-warning-custom:hover { background: #e0a800; color: #000; }
+        .btn-view-user:hover { background: #051c3c; color: #fff; border-color: #051c3c; }
         .stats-container {
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -435,6 +410,7 @@ $countArchived = (int)($countArchivedResult->fetch(PDO::FETCH_ASSOC)['total'] ??
             gap: 25px;
             padding: 18px 22px 0;
             border-bottom: 1px solid #dee2e6;
+            overflow-x: auto;
         }
         .tabs a {
             text-decoration: none;
@@ -486,6 +462,18 @@ $countArchived = (int)($countArchivedResult->fetch(PDO::FETCH_ASSOC)['total'] ??
         .empty-state i { font-size: 40px; display: block; margin-bottom: 12px; }
         .modal-header { background: #051c3c; color: #fff; border-bottom: none; }
         .modal-header .btn-close { filter: invert(1); }
+        .user-info-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 0;
+            border-bottom: 1px solid #edf2f7;
+            font-size: 14px;
+        }
+        .user-info-row:last-child { border-bottom: none; }
+        .user-info-label { color: #6c757d; font-weight: 600; }
+        .user-info-value { color: #051c3c; font-weight: 600; text-align: right; word-break: break-word; }
         .form-label { font-weight: 600; font-size: 13px; color: #334155; margin-bottom: 6px; }
         .form-control, .form-select { padding: 10px 12px; border-radius: 8px; border: 1px solid #cbd5e1; font-size: 14px; }
         .form-control:focus, .form-select:focus { border-color: #0d6efd; box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.15); }
@@ -503,7 +491,7 @@ $countArchived = (int)($countArchivedResult->fetch(PDO::FETCH_ASSOC)['total'] ??
             .stats-container { gap: 10px; }
             .stat-card { padding: 15px; }
             .stat-card h3 { font-size: 23px; }
-            .tabs { gap: 18px; padding: 16px 15px 0; overflow-x: auto; }
+            .tabs { gap: 18px; padding: 16px 15px 0; }
             .table-toolbar { padding: 15px; }
             .search-box { max-width: 100%; }
             .table { min-width: 860px; }
@@ -558,7 +546,7 @@ $countArchived = (int)($countArchivedResult->fetch(PDO::FETCH_ASSOC)['total'] ??
     </a>
 
     <div class="logout-section">
-         <a href="../logout.php" class="sidebar-link text-danger" onclick="return confirm('Are you sure you want to log out?')">
+        <a href="../logout.php" class="sidebar-link text-danger" onclick="return confirm('Are you sure you want to log out?')">
             <i class="bi bi-box-arrow-right"></i> Logout
         </a>
     </div>
@@ -569,7 +557,7 @@ $countArchived = (int)($countArchivedResult->fetch(PDO::FETCH_ASSOC)['total'] ??
     <div class="page-header">
         <div>
             <h2><i class="bi bi-person-circle me-2"></i>Account Management</h2>
-            <p>Manage staff accounts, roles, and account status.</p>
+            <p>Manage staff and customer accounts, roles, and account status.</p>
         </div>
         <button class="btn btn-primary-custom" data-bs-toggle="modal" data-bs-target="#addAccountModal">
             <i class="bi bi-plus-lg me-2"></i>Add Account
@@ -608,12 +596,18 @@ $countArchived = (int)($countArchivedResult->fetch(PDO::FETCH_ASSOC)['total'] ??
             <a href="?tab=archived" class="<?= $tab === 'archived' ? 'active' : '' ?>">
                 <i class="bi bi-archive me-1"></i>Archived (<?= $countArchived ?>)
             </a>
+            <a href="?tab=staffs" class="<?= $tab === 'staffs' ? 'active' : '' ?>">
+                <i class="bi bi-person-badge me-1"></i>Staffs (<?= $countStaffs ?>)
+            </a>
+            <a href="?tab=customers" class="<?= $tab === 'customers' ? 'active' : '' ?>">
+                <i class="bi bi-person-lines-fill me-1"></i>Customers (<?= $countCustomers ?>)
+            </a>
         </div>
 
         <div class="table-toolbar">
             <div class="search-box">
                 <input type="text" id="searchInput" class="form-control"
-                       placeholder="Search username, email, or role..."
+                       placeholder="Search username, full name, contact, email, or role..."
                        value="<?= e($search) ?>" autocomplete="off">
             </div>
         </div>
@@ -622,71 +616,57 @@ $countArchived = (int)($countArchivedResult->fetch(PDO::FETCH_ASSOC)['total'] ??
             <table class="table table-hover">
                 <thead>
                     <tr>
-                        <th>ID</th><th>Username</th><th>Email</th><th>Role</th><th>Status</th><th>Reset Password</th><th>Action</th>
+                        <th>ID</th><th>Username</th><th>Email</th><th>Role</th><th>Status</th><th>View User</th><th>Action</th>
                     </tr>
                 </thead>
                 <tbody id="accountTableBody">
-                <?php if (count($accounts) > 0): ?>
-                    <?php foreach ($accounts as $account): ?>
-                        <tr>
-                            <td><?= (int)$account['id'] ?></td>
-                            <td><strong><?= e($account['username']) ?></strong></td>
-                            <td><?= e($account['email'] ?? '') ?></td>
-                            <td><span class="role-badge"><?= e($account['role']) ?></span></td>
-                            <td>
-                                <?php if ($account['status'] === 'Active'): ?>
-                                    <span class="status-badge status-active">Active</span>
-                                <?php else: ?>
-                                    <span class="status-badge status-archived">Archived</span>
-                                <?php endif; ?>
-                            </td>
-                            <td>
-                                <button type="button" class="btn btn-warning-custom btn-sm fw-bold"
-                                        data-bs-toggle="modal" data-bs-target="#resetPasswordModal"
-                                        data-id="<?= (int)$account['id'] ?>"
-                                        data-username="<?= e($account['username']) ?>">
-                                    <i class="bi bi-key me-1"></i>Reset Password
-                                </button>
-                            </td>
-                            <td>
-                                <?php if ($tab === 'active'): ?>
-                                    <?php if ($currentOwnerId <= 0 || (int)$account['id'] !== $currentOwnerId): ?>
-                                        <button type="button" class="btn btn-archive"
-                                                data-bs-toggle="modal" data-bs-target="#archiveModal"
-                                                data-id="<?= (int)$account['id'] ?>"
-                                                data-username="<?= e($account['username']) ?>">
-                                            <i class="bi bi-archive me-1"></i>Archive
-                                        </button>
-                                    <?php else: ?>
-                                        <span class="text-muted small">Current Account</span>
-                                    <?php endif; ?>
-                                <?php else: ?>
-                                    <button type="button" class="btn btn-unarchive"
-                                            data-bs-toggle="modal" data-bs-target="#unarchiveModal"
-                                            data-id="<?= (int)$account['id'] ?>"
-                                            data-username="<?= e($account['username']) ?>">
-                                        <i class="bi bi-arrow-counterclockwise me-1"></i>Unarchive
-                                    </button>
-                                <?php endif; ?>
-                            </td>
-                        </tr>
-                    <?php endforeach; ?>
-                <?php else: ?>
-                    <tr>
-                        <td colspan="7">
-                            <div class="empty-state">
-                                <i class="bi bi-inbox"></i>
-                                <h6>No accounts found</h6>
-                                <p class="mb-0">There are no <?= e($tab) ?> accounts to display.</p>
-                            </div>
-                        </td>
-                    </tr>
-                <?php endif; ?>
+                    <?= renderAccountRows($accounts, $tab, $currentOwnerId) ?>
                 </tbody>
             </table>
         </div>
     </div>
 </main>
+
+<!-- View User Floating Modal -->
+<div class="modal fade" id="viewUserModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content border-0 shadow">
+            <div class="modal-header px-4 py-3">
+                <h5 class="modal-title fw-bold"><i class="bi bi-person-vcard me-2"></i>User Information</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body px-4 py-3">
+                <div class="user-info-row">
+                    <span class="user-info-label">Full Name</span>
+                    <span class="user-info-value" id="viewFullname">—</span>
+                </div>
+                <div class="user-info-row">
+                    <span class="user-info-label">Username</span>
+                    <span class="user-info-value" id="viewUsername">—</span>
+                </div>
+                <div class="user-info-row">
+                    <span class="user-info-label">Contact No.</span>
+                    <span class="user-info-value" id="viewPhone">—</span>
+                </div>
+                <div class="user-info-row">
+                    <span class="user-info-label">Email Address</span>
+                    <span class="user-info-value" id="viewEmail">—</span>
+                </div>
+                <div class="user-info-row">
+                    <span class="user-info-label">Role</span>
+                    <span class="user-info-value"><span class="role-badge" id="viewRole">—</span></span>
+                </div>
+                <div class="user-info-row">
+                    <span class="user-info-label">Status</span>
+                    <span class="user-info-value" id="viewStatus">—</span>
+                </div>
+            </div>
+            <div class="modal-footer bg-light px-4 py-2 border-top-0">
+                <button type="button" class="btn btn-primary-custom btn-sm px-3 fw-bold" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
 
 <!-- Add Account Modal -->
 <div class="modal fade" id="addAccountModal" tabindex="-1" aria-hidden="true">
@@ -713,10 +693,10 @@ $countArchived = (int)($countArchivedResult->fetch(PDO::FETCH_ASSOC)['total'] ??
 
                         <div class="col-12 col-md-6">
                             <label class="form-label">Phone Number <span class="text-danger">*</span></label>
-                            <input 
-                                type="text" 
-                                name="phone_number" 
-                                class="form-control" 
+                            <input
+                                type="text"
+                                name="phone_number"
+                                class="form-control"
                                 placeholder="09XXXXXXXXX"
                                 maxlength="11"
                                 minlength="11"
@@ -764,38 +744,6 @@ $countArchived = (int)($countArchivedResult->fetch(PDO::FETCH_ASSOC)['total'] ??
                     <button type="button" class="btn btn-outline-secondary px-3 fw-bold" data-bs-dismiss="modal">Cancel</button>
                     <button type="submit" class="btn btn-primary-custom px-4 fw-bold">
                         <i class="bi bi-check-lg me-1"></i>Create Account
-                    </button>
-                </div>
-            </form>
-        </div>
-    </div>
-</div>
-
-<!-- Reset Password Confirmation Modal -->
-<div class="modal fade" id="resetPasswordModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
-        <div class="modal-content">
-            <div class="modal-header bg-warning text-dark">
-                <h5 class="modal-title fw-bold"><i class="bi bi-key me-2"></i>Reset Password</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <form method="POST">
-                <input type="hidden" name="csrf_token" value="<?= e($csrfToken) ?>">
-                <input type="hidden" name="action" value="reset_password">
-                <input type="hidden" name="user_id" id="resetUserId">
-                <div class="modal-body">
-                    <p class="mb-2">Are you sure you want to reset the password for this account?</p>
-                    <div class="alert alert-warning mb-0">
-                        <i class="bi bi-exclamation-triangle me-2"></i>
-                        Account: <strong id="resetUsername"></strong>
-                        <br>
-                        <small>The password will be reset to: <strong>password</strong></small>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button>
-                    <button type="submit" class="btn btn-warning fw-bold">
-                        <i class="bi bi-key me-1"></i>Confirm Reset
                     </button>
                 </div>
             </form>
@@ -887,13 +835,29 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    // Reset Password Modal Filler
-    const resetPasswordModal = document.getElementById('resetPasswordModal');
-    if (resetPasswordModal) {
-        resetPasswordModal.addEventListener('show.bs.modal', function (event) {
+    // View User Floating Modal Filler
+    const viewUserModal = document.getElementById('viewUserModal');
+    if (viewUserModal) {
+        viewUserModal.addEventListener('show.bs.modal', function (event) {
             const button = event.relatedTarget;
-            document.getElementById('resetUserId').value = button.getAttribute('data-id') || '';
-            document.getElementById('resetUsername').textContent = button.getAttribute('data-username') || '';
+            if (!button) return;
+
+            const fullname = button.getAttribute('data-fullname') || '—';
+            const username = button.getAttribute('data-username') || '—';
+            const phone = button.getAttribute('data-phone') || '—';
+            const email = button.getAttribute('data-email') || '—';
+            const role = button.getAttribute('data-role') || '—';
+            const status = button.getAttribute('data-status') || '—';
+
+            document.getElementById('viewFullname').textContent = fullname || '—';
+            document.getElementById('viewUsername').textContent = username || '—';
+            document.getElementById('viewPhone').textContent = phone || '—';
+            document.getElementById('viewEmail').textContent = email || '—';
+            document.getElementById('viewRole').textContent = role || '—';
+
+            const statusEl = document.getElementById('viewStatus');
+            const badgeClass = status === 'Active' ? 'status-active' : 'status-archived';
+            statusEl.innerHTML = `<span class="status-badge ${badgeClass}">${status || '—'}</span>`;
         });
     }
 
@@ -920,7 +884,7 @@ document.addEventListener('DOMContentLoaded', function () {
     // LIVE SEARCH IMPLEMENTATION
     const searchInput = document.getElementById('searchInput');
     const tableBody = document.getElementById('accountTableBody');
-    const currentTab = "<?= $tab ?>";
+    const currentTab = <?= json_encode($tab) ?>;
     let debounceTimer;
 
     if (searchInput && tableBody) {
@@ -929,7 +893,7 @@ document.addEventListener('DOMContentLoaded', function () {
             const query = this.value.trim();
 
             debounceTimer = setTimeout(() => {
-                fetch(`accountManagement.php?ajax=1&tab=${currentTab}&search=${encodeURIComponent(query)}`)
+                fetch(`accountManagement.php?ajax=1&tab=${encodeURIComponent(currentTab)}&search=${encodeURIComponent(query)}`)
                     .then(response => response.text())
                     .then(html => {
                         tableBody.innerHTML = html;
