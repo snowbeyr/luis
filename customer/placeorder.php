@@ -9,6 +9,58 @@ function getCheckoutItemImageSrc($image_value) {
     return getProductImageSrc($image_value);
 }
 
+// Ensure customer_addresses table exists in PostgreSQL
+try {
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS customer_addresses (
+            id SERIAL PRIMARY KEY,
+            user_id INT NOT NULL,
+            first_name VARCHAR(100) NOT NULL,
+            last_name VARCHAR(100) NOT NULL,
+            contact_number VARCHAR(20) NOT NULL,
+            tel_no VARCHAR(50),
+            email VARCHAR(150) NOT NULL,
+            full_address TEXT NOT NULL,
+            landmark VARCHAR(255) NOT NULL,
+            is_default BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_customer_addresses_user_id ON customer_addresses(user_id);
+    ");
+} catch (PDOException $e) {
+    error_log("customer_addresses check notice: " . $e->getMessage());
+}
+
+$loggedInUserId = !empty($_SESSION['user_id']) ? (int) $_SESSION['user_id'] : 0;
+$loggedInUser = null;
+$saved_addresses = [];
+$customerEmail = '';
+
+if ($loggedInUserId > 0) {
+    try {
+        $u_stmt = $pdo->prepare("SELECT * FROM users WHERE id = :id LIMIT 1");
+        $u_stmt->execute([':id' => $loggedInUserId]);
+        $loggedInUser = $u_stmt->fetch(PDO::FETCH_ASSOC);
+        if ($loggedInUser) {
+            $customerEmail = trim((string) ($loggedInUser['email'] ?? ''));
+        }
+    } catch (PDOException $e) {
+        error_log("Load user error in placeorder: " . $e->getMessage());
+    }
+
+    try {
+        $addr_stmt = $pdo->prepare("SELECT * FROM customer_addresses WHERE user_id = :uid ORDER BY is_default DESC, id DESC");
+        $addr_stmt->execute([':uid' => $loggedInUserId]);
+        $saved_addresses = $addr_stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        error_log("Load saved addresses error: " . $e->getMessage());
+    }
+}
+
+if ($customerEmail === '' && !empty($_SESSION['email'])) {
+    $customerEmail = trim((string) $_SESSION['email']);
+}
+
 $checkout_source = isset($_GET['from']) ? $_GET['from'] : 'cart';
 $items_to_process = [];
 
@@ -317,6 +369,37 @@ if (isset($_POST['place_order'])) {
         .custom-scroll::-webkit-scrollbar-thumb:hover {
             background-color: rgba(0, 0, 0, 0.35);
         }
+
+        /* Saved Addresses in Checkout */
+        .saved-address-card {
+            border: 1.5px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 12px 14px;
+            background: #fff;
+            cursor: pointer;
+            transition: all 0.2s ease-in-out;
+        }
+
+        .saved-address-card:hover {
+            border-color: #94a3b8;
+            background: #f8fafc;
+        }
+
+        .saved-address-card.selected {
+            border-color: #051c3c;
+            background-color: #f0f4fa;
+            box-shadow: 0 0 0 1px #051c3c;
+        }
+
+        .address-autofill-flash {
+            animation: fieldPulse 1.2s ease-in-out;
+        }
+
+        @keyframes fieldPulse {
+            0% { background-color: #e0f2fe; border-color: #0284c7; }
+            50% { background-color: #f0fdf4; border-color: #22c55e; }
+            100% { background-color: #fff; border-color: #dee2e6; }
+        }
     </style>
 </head>
 <body>
@@ -390,38 +473,98 @@ if (isset($_POST['place_order'])) {
         <div class="card border-0 shadow-sm p-3 p-md-4 mb-4 mb-md-0">
             <h4 class="mb-4 text-primary fw-bold"><i class="bi bi-bag-check-fill"></i> Delivery & Payment Details</h4>
             <form action="<?php echo htmlspecialchars($_SERVER['PHP_SELF']) . (isset($_GET['from']) ? '?from=' . htmlspecialchars($_GET['from']) : ''); ?>" method="POST" enctype="multipart/form-data">
+                
+                <?php if (!empty($saved_addresses)): ?>
+                    <div class="mb-4 p-3 bg-light border rounded-3">
+                        <div class="d-flex align-items-center justify-content-between mb-2 flex-wrap gap-2">
+                            <label class="form-label fw-bold mb-0 text-dark d-flex align-items-center gap-2">
+                                <i class="bi bi-geo-alt-fill text-danger"></i> Choose Delivery Address
+                            </label>
+                            <a href="profile.php?tab=address" target="_blank" class="small text-primary text-decoration-none fw-semibold">
+                                <i class="bi bi-gear me-1"></i>Manage Addresses
+                            </a>
+                        </div>
+                        <p class="small text-muted mb-2">Select a saved address below to auto-fill your delivery details instantly:</p>
+
+                        <div class="d-flex flex-column gap-2" id="savedAddressesContainer">
+                            <?php foreach ($saved_addresses as $sIndex => $sAddr): ?>
+                                <div class="saved-address-card d-flex align-items-start gap-3 <?php echo (!empty($sAddr['is_default']) || $sIndex === 0) ? 'selected' : ''; ?>"
+                                     onclick="selectSavedAddress(<?php echo (int) $sAddr['id']; ?>)">
+                                    <div class="form-check mt-1">
+                                        <input class="form-check-input saved-address-radio" type="radio" name="saved_address_id" 
+                                               id="addr_radio_<?php echo (int) $sAddr['id']; ?>" 
+                                               value="<?php echo (int) $sAddr['id']; ?>"
+                                               <?php echo (!empty($sAddr['is_default']) || $sIndex === 0) ? 'checked' : ''; ?>>
+                                    </div>
+                                    <div class="flex-grow-1 small">
+                                        <div class="d-flex align-items-center gap-2 flex-wrap">
+                                            <strong class="text-dark fs-6"><?php echo htmlspecialchars($sAddr['first_name'] . ' ' . $sAddr['last_name'], ENT_QUOTES, 'UTF-8'); ?></strong>
+                                            <span class="text-secondary fw-medium"><?php echo htmlspecialchars($sAddr['contact_number'], ENT_QUOTES, 'UTF-8'); ?></span>
+                                            <?php if (!empty($sAddr['tel_no'])): ?>
+                                                <span class="text-muted small">(Tel: <?php echo htmlspecialchars($sAddr['tel_no'], ENT_QUOTES, 'UTF-8'); ?>)</span>
+                                            <?php endif; ?>
+                                            <?php if (!empty($sAddr['is_default'])): ?>
+                                                <span class="badge bg-danger-subtle text-danger border border-danger-subtle" style="font-size: 0.72rem;">Default</span>
+                                            <?php endif; ?>
+                                        </div>
+                                        <div class="text-secondary mt-1">
+                                            <i class="bi bi-pin-map text-danger me-1"></i><?php echo htmlspecialchars($sAddr['full_address'], ENT_QUOTES, 'UTF-8'); ?>
+                                        </div>
+                                        <div class="text-muted mt-1" style="font-size: 0.8rem;">
+                                            <span class="fw-semibold">Landmark:</span> <?php echo htmlspecialchars($sAddr['landmark'], ENT_QUOTES, 'UTF-8'); ?>
+                                        </div>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
+                <?php else: ?>
+                    <?php if ($loggedInUserId > 0): ?>
+                        <div class="alert alert-light border d-flex align-items-center justify-content-between p-3 mb-4 rounded-3 flex-wrap gap-2">
+                            <div class="small text-muted">
+                                <i class="bi bi-info-circle text-primary me-1"></i>
+                                Save your delivery address in your <a href="profile.php?tab=address" target="_blank" class="fw-semibold text-primary">Profile</a> for instant 1-click checkout!
+                            </div>
+                            <a href="profile.php?tab=address" target="_blank" class="btn btn-outline-primary btn-sm py-1 px-3 fw-semibold">
+                                + Add Address
+                            </a>
+                        </div>
+                    <?php endif; ?>
+                <?php endif; ?>
+
                 <div class="row g-3">
                     <div class="col-12 col-sm-6">
                         <label class="form-label">First Name</label>
-                        <input type="text" name="fullname" class="form-control" 
+                        <input type="text" name="fullname" id="input_fullname" class="form-control" 
                         pattern="[A-Za-z\s]+" title="Letters only" oninput="this.value = this.value.replace(/[^a-zA-Z\s]/g, '')" required>
                     </div>
                     <div class="col-12 col-sm-6">
                          <label class="form-label">Last Name</label>
-                        <input type="text" name="surname" class="form-control" 
+                        <input type="text" name="surname" id="input_surname" class="form-control" 
                         pattern="[A-Za-z\s]+" title="Letters only" oninput="this.value = this.value.replace(/[^a-zA-Z\s]/g, '')" required>
                     </div>
                     <div class="col-12 col-sm-6">
                         <label class="form-label">Contact Number</label>
-                        <input type="text" name="contact_number" class="form-control" placeholder="09XXXXXXXXX"
+                        <input type="text" name="contact_number" id="input_contact_number" class="form-control" placeholder="09XXXXXXXXX"
                         maxlength="11" oninput="this.value = this.value.replace(/[^0-9]/g, '')" required>
                     </div>
                     <div class="col-12 col-sm-6">
                        <label class="form-label">Telephone (Optional)</label>
-                        <input type="text" name="tel_no" class="form-control" 
+                        <input type="text" name="tel_no" id="input_tel_no" class="form-control" 
                        oninput="this.value = this.value.replace(/[^0-9-]/g, '')">
                     </div>
                     <div class="col-12">
                         <label class="form-label">Email Address</label>
-                         <input type="email" name="email" class="form-control" placeholder="name@example.com" required>
+                         <input type="email" name="email" id="input_email" class="form-control" placeholder="name@example.com" 
+                                value="<?php echo htmlspecialchars($customerEmail, ENT_QUOTES, 'UTF-8'); ?>" required>
                     </div>
                     <div class="col-12">
                         <label class="form-label">Complete Delivery Address</label>
-                        <textarea name="full_address" class="form-control" rows="2" required></textarea>
+                        <textarea name="full_address" id="input_full_address" class="form-control" rows="2" required></textarea>
                     </div>
                     <div class="col-12">
                         <label class="form-label">Landmark</label>
-                        <input type="text" name="landmark" class="form-control" required>
+                        <input type="text" name="landmark" id="input_landmark" class="form-control" required>
                     </div>
                     
                     <!-- PAYMENT SECTION (GCASH & MAYA ONLY) -->
@@ -782,6 +925,59 @@ async function processReceiptOCR(fileInput) {
         fileInput.value = "";
     }
 }
+
+// ================= SAVED ADDRESS AUTO-FILL LOGIC =================
+const SAVED_ADDRESSES = <?php echo json_encode($saved_addresses, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
+
+function selectSavedAddress(addressId) {
+    if (!Array.isArray(SAVED_ADDRESSES)) return;
+
+    // Update radio check state
+    const radio = document.getElementById('addr_radio_' + addressId);
+    if (radio) {
+        radio.checked = true;
+    }
+
+    // Update visual card highlighting
+    document.querySelectorAll('.saved-address-card').forEach(card => card.classList.remove('selected'));
+    if (radio) {
+        const card = radio.closest('.saved-address-card');
+        if (card) card.classList.add('selected');
+    }
+
+    const addr = SAVED_ADDRESSES.find(a => parseInt(a.id) === parseInt(addressId));
+    if (!addr) return;
+
+    const fields = [
+        { id: 'input_fullname', val: addr.first_name || '' },
+        { id: 'input_surname', val: addr.last_name || '' },
+        { id: 'input_contact_number', val: addr.contact_number || '' },
+        { id: 'input_tel_no', val: addr.tel_no || '' },
+        { id: 'input_email', val: addr.email || '' },
+        { id: 'input_full_address', val: addr.full_address || '' },
+        { id: 'input_landmark', val: addr.landmark || '' }
+    ];
+
+    fields.forEach(f => {
+        const el = document.getElementById(f.id);
+        if (el) {
+            el.value = f.val;
+            el.classList.remove('address-autofill-flash');
+            void el.offsetWidth; // trigger reflow for animation
+            el.classList.add('address-autofill-flash');
+        }
+    });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    if (Array.isArray(SAVED_ADDRESSES) && SAVED_ADDRESSES.length > 0) {
+        // Find default or first saved address
+        const defaultAddr = SAVED_ADDRESSES.find(a => a.is_default === true || a.is_default === 't' || a.is_default == 1) || SAVED_ADDRESSES[0];
+        if (defaultAddr) {
+            selectSavedAddress(defaultAddr.id);
+        }
+    }
+});
 
 document.querySelector('form').addEventListener('submit', function(e) {
     const selectedRadio = document.querySelector('input[name="payment_method"]:checked');

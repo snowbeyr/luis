@@ -632,6 +632,12 @@ try {
                                 </a>
                             </li>
                             <li>
+                                <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="customer/profile.php?tab=address">
+                                    <i class="bi bi-geo-alt text-secondary"></i>
+                                    <span>My Addresses</span>
+                                </a>
+                            </li>
+                            <li>
                                 <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="customer/my_purchases.php">
                                     <i class="bi bi-bag-check text-secondary"></i>
                                     <span>My Purchase</span>
@@ -735,6 +741,12 @@ try {
                                         <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="customer/profile.php">
                                             <i class="bi bi-person text-secondary fs-6"></i>
                                             <span>My Account</span>
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="customer/profile.php?tab=address">
+                                            <i class="bi bi-geo-alt text-secondary fs-6"></i>
+                                            <span>My Addresses</span>
                                         </a>
                                     </li>
                                     <li>

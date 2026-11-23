@@ -661,9 +661,13 @@ foreach ($allOrders as $o) {
 
                     <!-- Navigation Links -->
                     <div class="d-flex flex-column gap-1">
-                        <a href="profile.php" class="sidebar-menu-link">
+                        <a href="profile.php?tab=profile" class="sidebar-menu-link">
                             <i class="bi bi-person fs-5"></i>
-                            <span>My Account</span>
+                            <span>My Profile</span>
+                        </a>
+                        <a href="profile.php?tab=address" class="sidebar-menu-link">
+                            <i class="bi bi-geo-alt fs-5"></i>
+                            <span>My Addresses</span>
                         </a>
                         <a href="my_purchases.php" class="sidebar-menu-link active">
                             <i class="bi bi-bag-check fs-5"></i>
