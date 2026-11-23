@@ -462,7 +462,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
             
             <div class="text-center mb-4">
                 <h2 class="fw-bold text-dark"><i class="bi bi-headset text-primary"></i> Customer Service Help Center</h2>
-                <p class="text-muted">Input your order details below to file an item exchange, cancellation, or ask questions.</p>
             </div>
 
             <?php if(!empty($message)): ?>

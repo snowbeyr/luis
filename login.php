@@ -1845,10 +1845,6 @@ try {
                     <h5>Follow Us on Facebook</h5>
                     <a href="https://www.facebook.com/share/1Acq7mfhEZ/?mibextid=wwXIfr" class="text-info small">View
                         Facebook Page</a><br><br>
-                    <h5>Need Help?</h5>
-                    <a href="customer/customerService.php" target="_blank" class="btn btn-primary btn-sm shadow-sm">
-                        <i class="bi bi-telephone-fill"></i> Customer Service
-                    </a>
                 </div>
             </div>
             <hr>
