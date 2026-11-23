@@ -30,6 +30,82 @@ $customerEmail = trim((string) ($currentUser['email'] ?? ''));
 $customerName  = trim((string) ($currentUser['fullname'] ?? $currentUser['username']));
 $profileImage  = $currentUser['profile_image'] ?? '';
 
+// Ensure delivered_at column exists in orders table
+try {
+    $pdo->exec("ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP NULL");
+} catch (Throwable $e) {
+    error_log("My Purchases ensure delivered_at error: " . $e->getMessage());
+}
+
+// 72-hour (3 days) Auto-Complete: Automatically mark delivered orders as completed if older than 72 hours
+try {
+    $autoCompleteOrdersStmt = $pdo->prepare("
+        UPDATE orders 
+        SET status = 'completed' 
+        WHERE LOWER(TRIM(status)) = 'delivered' 
+          AND delivered_at IS NOT NULL 
+          AND delivered_at <= (NOW() - INTERVAL '72 hours')
+    ");
+    $autoCompleteOrdersStmt->execute();
+} catch (Throwable $e) {
+    error_log("My Purchases Auto-complete error: " . $e->getMessage());
+}
+
+// Handle Customer Order Confirmation: "Order Received" -> Status becomes "completed"
+$flashMessage = '';
+$flashType = 'success';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'confirm_order_received') {
+    $confirmOrderId = (int) ($_POST['order_id'] ?? 0);
+    if ($confirmOrderId > 0) {
+        $chkOrder = $pdo->prepare("
+            SELECT id, status, fullname 
+            FROM orders 
+            WHERE id = ? AND LOWER(TRIM(email)) = LOWER(?)
+            LIMIT 1
+        ");
+        $chkOrder->execute([$confirmOrderId, $customerEmail]);
+        $orderToConfirm = $chkOrder->fetch(PDO::FETCH_ASSOC);
+
+        if ($orderToConfirm) {
+            $currSt = strtolower(trim((string)($orderToConfirm['status'] ?? '')));
+            if ($currSt === 'delivered') {
+                $updStmt = $pdo->prepare("UPDATE orders SET status = 'completed' WHERE id = ?");
+                $updStmt->execute([$confirmOrderId]);
+
+                try {
+                    $auditStmt = $pdo->prepare("
+                        INSERT INTO audit_log (user_id, username, role, action, details, ip_address) 
+                        VALUES (?, ?, 'customer', 'Order Received', ?, ?)
+                    ");
+                    $auditStmt->execute([
+                        $user_id,
+                        $customerName,
+                        "Customer confirmed receipt for Order #$confirmOrderId. Status marked as Completed.",
+                        $_SERVER['REMOTE_ADDR'] ?? 'unknown'
+                    ]);
+                } catch (Throwable $e) {}
+
+                $_SESSION['flash_msg'] = "Thank you! Order #$confirmOrderId has been confirmed as received and marked as Completed.";
+                $_SESSION['flash_type'] = "success";
+                header("Location: my_purchases.php?tab=completed#order-" . $confirmOrderId);
+                exit();
+            } else {
+                $_SESSION['flash_msg'] = "Order #$confirmOrderId cannot be marked as received because its status is " . strtoupper($currSt) . ".";
+                $_SESSION['flash_type'] = "warning";
+                header("Location: my_purchases.php#order-" . $confirmOrderId);
+                exit();
+            }
+        }
+    }
+}
+
+if (!empty($_SESSION['flash_msg'])) {
+    $flashMessage = $_SESSION['flash_msg'];
+    $flashType = $_SESSION['flash_type'] ?? 'success';
+    unset($_SESSION['flash_msg'], $_SESSION['flash_type']);
+}
+
 // Active Tab Filter (default: all)
 $activeTab = strtolower(trim((string) ($_GET['tab'] ?? 'all')));
 $allowedTabs = ['all', 'to_ship', 'to_receive', 'completed', 'cancelled', 'exchange'];
@@ -275,7 +351,7 @@ function isOrderInTab(array $order, string $tab, bool $hasExchange): bool {
         return in_array($st, ['pending', 'approved', 'preparing'], true);
     }
     if ($tab === 'to_receive') {
-        return in_array($st, ['out_for_delivery', 'to_receive', 'shipping', 'delivery'], true);
+        return in_array($st, ['out_for_delivery', 'delivered', 'to_receive', 'shipping', 'delivery'], true);
     }
     if ($tab === 'completed') {
         return ($st === 'completed');
@@ -500,6 +576,12 @@ foreach ($allOrders as $o) {
         .badge-to-receive {
             background: #e0f2fe;
             color: #0369a1;
+            font-weight: 600;
+        }
+
+        .badge-delivered {
+            background: #dbeafe;
+            color: #1e40af;
             font-weight: 600;
         }
 
@@ -908,6 +990,14 @@ foreach ($allOrders as $o) {
                     </ul>
                 </div>
 
+                <!-- Flash message alert -->
+                <?php if (!empty($flashMessage)): ?>
+                    <div class="alert alert-<?php echo htmlspecialchars($flashType); ?> alert-dismissible fade show mb-3 shadow-sm rounded-3" role="alert">
+                        <i class="bi bi-check-circle-fill me-2"></i><?php echo htmlspecialchars($flashMessage); ?>
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
+                <?php endif; ?>
+
                 <!-- Orders List -->
                 <?php if (empty($filteredOrders)): ?>
                     <div class="text-center py-5 bg-white rounded-4 border p-4">
@@ -936,6 +1026,9 @@ foreach ($allOrders as $o) {
                         } elseif ($rawStatus === 'out_for_delivery') {
                             $badgeClass = 'badge-to-receive';
                             $statusLabel = 'OUT FOR DELIVERY';
+                        } elseif ($rawStatus === 'delivered') {
+                            $badgeClass = 'badge-delivered';
+                            $statusLabel = 'DELIVERED';
                         } elseif ($rawStatus === 'completed') {
                             $badgeClass = 'badge-completed';
                             $statusLabel = 'COMPLETED';
@@ -947,7 +1040,7 @@ foreach ($allOrders as $o) {
                         // Items parsed already
                         $itemsList = $order['parsed_items'] ?? [];
                         ?>
-                        <div class="order-card">
+                        <div class="order-card" id="order-<?php echo $order['id']; ?>">
                             <!-- Card Header -->
                             <div class="order-card-header">
                                 <div class="d-flex align-items-center gap-2">
@@ -1012,6 +1105,12 @@ foreach ($allOrders as $o) {
 
                                     <!-- Action Buttons -->
                                     <div class="d-flex align-items-center gap-2">
+                                        <?php if ($rawStatus === 'delivered'): ?>
+                                            <button type="button" class="btn btn-success btn-sm fw-semibold shadow-sm" onclick="openConfirmReceivedModal(<?php echo (int)$order['id']; ?>)">
+                                                <i class="bi bi-box-seam me-1"></i> Order Received
+                                            </button>
+                                        <?php endif; ?>
+
                                         <?php if ($rawStatus === 'completed' && !$hasEx): ?>
                                             <a href="customerService.php?order_id=<?php echo $order['id']; ?>&type=exchange&email=<?php echo urlencode($customerEmail); ?>" class="btn btn-outline-primary btn-sm fw-semibold">
                                                 <i class="bi bi-arrow-repeat me-1"></i> Return / Exchange
@@ -1035,6 +1134,25 @@ foreach ($allOrders as $o) {
                                     </div>
                                 </div>
                             </div>
+
+                            <?php if ($rawStatus === 'delivered'): ?>
+                                <div class="px-4 pb-3">
+                                    <div class="alert alert-primary py-2 px-3 mb-0 d-flex align-items-center justify-content-between flex-wrap gap-2 small rounded-3 border-0 bg-primary-subtle text-primary-emphasis">
+                                        <div>
+                                            <i class="bi bi-box-seam-fill me-1 text-primary"></i>
+                                            <strong>Package Delivered:</strong> Please click <strong>Order Received</strong> to confirm your package.
+                                            <div class="text-secondary mt-1" style="font-size: 11.5px;">
+                                                <i class="bi bi-clock-history me-1 text-primary"></i>Note: If not confirmed within 3 days (72 hours), this order will automatically be marked as Completed.
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <button type="button" class="btn btn-success btn-sm fw-bold px-3 py-1 shadow-sm" onclick="openConfirmReceivedModal(<?php echo (int)$order['id']; ?>)">
+                                                <i class="bi bi-check2-circle me-1"></i> Order Received
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
                         </div>
                     <?php endforeach; ?>
                 <?php endif; ?>
@@ -1043,6 +1161,49 @@ foreach ($allOrders as $o) {
         </div>
     </div>
 </div>
+
+    <!-- Confirm Order Received Modal -->
+    <div class="modal fade" id="confirmReceivedModal" tabindex="-1" aria-labelledby="confirmReceivedModalLabel" aria-hidden="true" data-bs-backdrop="static">
+        <div class="modal-dialog modal-dialog-centered" style="max-width: 460px;">
+            <div class="modal-content border-0 shadow-lg rounded-4 overflow-hidden">
+                <div class="modal-header border-0 bg-success text-white py-3 px-4">
+                    <h5 class="modal-title fw-bold fs-6 d-flex align-items-center gap-2" id="confirmReceivedModalLabel">
+                        <i class="bi bi-check2-circle fs-5"></i> Confirm Order Received
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body p-4 text-center bg-white">
+                    <div class="mb-3">
+                        <div class="d-inline-flex align-items-center justify-content-center bg-success-subtle text-success rounded-circle shadow-sm" style="width: 65px; height: 65px;">
+                            <i class="bi bi-box-seam-fill fs-2"></i>
+                        </div>
+                    </div>
+                    <h6 class="fw-bold text-dark mb-2">Order <span id="confirmReceivedDisplayId" class="text-primary"></span></h6>
+                    <p class="text-secondary mb-3" style="font-size: 15px; line-height: 1.5;">
+                        Are you sure you have received your order? Once confirmed, your order status will be marked as Completed.
+                    </p>
+                    <div class="p-2 px-3 bg-light rounded-3 text-start small border">
+                        <div class="text-muted" style="font-size: 12px;">
+                            <i class="bi bi-info-circle-fill text-primary me-1"></i>
+                            <strong>Note:</strong> If not confirmed within 3 days (72 hours), this order will automatically be marked as Completed.
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-0 bg-light py-3 px-4 d-flex justify-content-end gap-2">
+                    <form method="POST" id="confirmReceivedForm" class="d-flex align-items-center gap-2 w-100 justify-content-end">
+                        <input type="hidden" name="action" value="confirm_order_received">
+                        <input type="hidden" name="order_id" id="confirmReceivedOrderId" value="">
+                        <button type="button" class="btn btn-secondary btn-sm px-3 fw-semibold" data-bs-dismiss="modal">
+                            Cancel
+                        </button>
+                        <button type="submit" class="btn btn-success btn-sm px-3 fw-bold shadow-sm">
+                            <i class="bi bi-check-lg me-1"></i> Yes I Received My Order
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- Shopee-Style Order Details Modal -->
     <div class="modal fade" id="orderDetailsModal" tabindex="-1" aria-hidden="true">
@@ -1243,6 +1404,12 @@ foreach ($allOrders as $o) {
                 steps.forEach(s => document.getElementById('step-' + s).classList.add('completed'));
                 alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-success-subtle text-success border border-success-subtle';
                 alertBox.innerHTML = '<i class="bi bi-check-circle-fill me-1"></i> Order successfully delivered and completed!';
+            } else if (status === 'delivered') {
+                stepperFill.style.width = '85%';
+                ['placed', 'confirmed', 'preparing', 'shipping'].forEach(s => document.getElementById('step-' + s).classList.add('completed'));
+                document.getElementById('step-delivered').classList.add('active');
+                alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-primary-subtle text-primary border border-primary-subtle';
+                alertBox.innerHTML = '<i class="bi bi-box-seam me-1"></i> Your package has been delivered! Please inspect items and click "Order Received".';
             } else if (status === 'out_for_delivery') {
                 stepperFill.style.width = '75%';
                 ['placed', 'confirmed', 'preparing'].forEach(s => document.getElementById('step-' + s).classList.add('completed'));
@@ -1359,14 +1526,27 @@ foreach ($allOrders as $o) {
             const directBtn = document.getElementById('mdlDirectActionBtn');
             if (directBtn) {
                 const custEmail = <?php echo json_encode($customerEmail); ?>;
-                if (status === 'pending') {
+                if (status === 'delivered') {
+                    directBtn.className = 'btn btn-success btn-sm fw-semibold';
+                    directBtn.href = '#';
+                    directBtn.onclick = function(e) {
+                        e.preventDefault();
+                        const curModal = bootstrap.Modal.getInstance(document.getElementById('orderDetailsModal'));
+                        if (curModal) curModal.hide();
+                        openConfirmReceivedModal(order.id);
+                    };
+                    directBtn.innerHTML = '<i class="bi bi-box-seam me-1"></i> Order Received';
+                    directBtn.classList.remove('d-none');
+                } else if (status === 'pending') {
                     directBtn.className = 'btn btn-outline-danger btn-sm fw-semibold';
                     directBtn.href = `customerService.php?order_id=${order.id}&type=cancel&email=${encodeURIComponent(custEmail)}`;
+                    directBtn.onclick = null;
                     directBtn.innerHTML = '<i class="bi bi-x-circle me-1"></i> Cancel Request';
                     directBtn.classList.remove('d-none');
                 } else if (status === 'completed' && !order.has_exchange) {
                     directBtn.className = 'btn btn-outline-primary btn-sm fw-semibold';
                     directBtn.href = `customerService.php?order_id=${order.id}&type=exchange&email=${encodeURIComponent(custEmail)}`;
+                    directBtn.onclick = null;
                     directBtn.innerHTML = '<i class="bi bi-arrow-repeat me-1"></i> Return / Exchange';
                     directBtn.classList.remove('d-none');
                 } else {
@@ -1376,6 +1556,15 @@ foreach ($allOrders as $o) {
 
             // Show modal
             const modal = new bootstrap.Modal(document.getElementById('orderDetailsModal'));
+            modal.show();
+        }
+
+        // Open Confirm Order Received Modal
+        function openConfirmReceivedModal(orderId) {
+            document.getElementById('confirmReceivedOrderId').value = orderId;
+            document.getElementById('confirmReceivedDisplayId').textContent = '#' + orderId;
+            const modalEl = document.getElementById('confirmReceivedModal');
+            const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
             modal.show();
         }
 

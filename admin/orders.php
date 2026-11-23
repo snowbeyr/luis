@@ -13,6 +13,27 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] != "admin") {
 $admin_name = isset($_SESSION['username']) ? $_SESSION['username'] : "Admin";
 $admin_id = $_SESSION['user_id'] ?? ($_SESSION['id'] ?? ($_SESSION['admin_id'] ?? 0));
 
+// Ensure delivered_at column exists in orders table and run 72-hour auto-completion
+try {
+    $pdo->exec("ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP NULL");
+} catch (Throwable $e) {
+    error_log("Ensure delivered_at column error: " . $e->getMessage());
+}
+
+try {
+    // 72-hour (3 days) Auto-Complete: Automatically mark delivered orders as completed if older than 72 hours
+    $autoCompleteOrdersStmt = $pdo->prepare("
+        UPDATE orders 
+        SET status = 'completed' 
+        WHERE LOWER(TRIM(status)) = 'delivered' 
+          AND delivered_at IS NOT NULL 
+          AND delivered_at <= (NOW() - INTERVAL '72 hours')
+    ");
+    $autoCompleteOrdersStmt->execute();
+} catch (Throwable $e) {
+    error_log("Admin Auto-complete error: " . $e->getMessage());
+}
+
 /**
  * Audit trail logging function para mairehistro ang mga aksyon ng admin sa sistema
  */
@@ -279,13 +300,30 @@ if (isset($_POST['send_email_update'])) {
                 <h4>Best regards,<br>R. Taipan Construction Supply and Services, OPC</h4>
             </div>
         ";
+    } elseif ($current_status == 'delivered') {
+        $emailBody = "
+            <div style='font-family:Arial,sans-serif; color:#333; line-height:1.6;'>
+                <h3>Hi " . htmlspecialchars($order['fullname']) . ",</h3>
+                <p>Your order <b>#$order_id</b> has been <b style='color:#0d6efd;'>DELIVERED</b>!</p>
+                <p>Please check your items. Kindly log in to your account, visit your <b>My Purchases</b> page, and click the <b>'Order Received'</b> button to confirm that you have safely received your order.</p>
+                <div style='background:#f8f9fa; padding:12px; border-left:4px solid #0d6efd; margin:15px 0;'>
+                    <p style='margin:0; font-size:13px; color:#555;'>
+                        <b>Note:</b> If you do not mark this order as received within <b>3 days (72 hours)</b>, the system will automatically mark it as <b>Completed</b>.
+                    </p>
+                </div>
+                <br>
+                <h4>Best regards,<br>R. Taipan Construction Supply and Services, OPC</h4>
+            </div>
+        ";
     } elseif ($current_status == 'completed') {
         $emailBody = "
-            <h3>Hi " . htmlspecialchars($order['fullname']) . ",</h3>
-            <p>Your order <b>#$order_id</b> status has been <b>DELIVERED</b>.</p>
-            <p>Thank you for choosing <b>R. Taipan Construction Supply and Services, OPC.</b> We sincerely appreciate your trust and support, and we look forward to serving you again in the future.</p>
-            <br>
-            <h4>Best regards,<br>R. Taipan Construction Supply and Services, OPC</h4>
+            <div style='font-family:Arial,sans-serif; color:#333; line-height:1.6;'>
+                <h3>Hi " . htmlspecialchars($order['fullname']) . ",</h3>
+                <p>Your order <b>#$order_id</b> is now <b style='color:#198754;'>COMPLETED</b>.</p>
+                <p>Thank you for choosing <b>R. Taipan Construction Supply and Services, OPC.</b> We sincerely appreciate your trust and support, and we look forward to serving you again in the future.</p>
+                <br>
+                <h4>Best regards,<br>R. Taipan Construction Supply and Services, OPC</h4>
+            </div>
         ";
     } else {
         $emailBody = "
@@ -398,13 +436,19 @@ if (isset($_POST['update_status'])) {
         // I-log sa Audit Trail
         logAdminAction($pdo, $admin_id, $admin_name, 'admin', 'Order Declined', "Declined Order #$order_id. Reason: $decline_reason");
     } else {
-        $stmt = $pdo->prepare("UPDATE orders SET status = ? WHERE id = ?");
-        $stmt->execute([$new_status, $order_id]);
+        if ($new_status === 'delivered') {
+            $stmt = $pdo->prepare("UPDATE orders SET status = ?, delivered_at = NOW() WHERE id = ?");
+            $stmt->execute([$new_status, $order_id]);
+        } else {
+            $stmt = $pdo->prepare("UPDATE orders SET status = ? WHERE id = ?");
+            $stmt->execute([$new_status, $order_id]);
+        }
 
-        // I-log sa Audit Trail ang iba pang status updates (Preparing, Out for Delivery, Completed)
+        // I-log sa Audit Trail ang iba pang status updates (Preparing, Out for Delivery, Delivered, Completed)
         $actionTitle = 'Order Status Update';
         if ($new_status === 'preparing') $actionTitle = 'Order Preparing';
         elseif ($new_status === 'out_for_delivery') $actionTitle = 'Order Out for Delivery';
+        elseif ($new_status === 'delivered') $actionTitle = 'Order Delivered';
         elseif ($new_status === 'completed') $actionTitle = 'Order Completed';
 
         logAdminAction($pdo, $admin_id, $admin_name, 'admin', $actionTitle, "Updated Order #$order_id status to " . strtoupper($new_status));
@@ -695,6 +739,8 @@ body{
                                 echo 'bg-success';
                             } elseif ($st == 'declined' || $st == 'cancelled') {
                                 echo 'bg-danger';
+                            } elseif ($st == 'delivered') {
+                                echo 'bg-primary';
                             } else {
                                 echo 'bg-info';
                             }
@@ -752,11 +798,22 @@ body{
                                     </button>
                                 
                                 <?php elseif($row['status'] == 'out_for_delivery'): ?>
-                                    <button type="submit" name="status" value="completed" class="btn btn-primary btn-sm"
+                                    <button type="submit" name="status" value="delivered" class="btn btn-primary btn-sm"
                                         <?php if ($hasPendingCancel): ?>
                                             onclick="return interceptPendingCancel(event, <?php echo $oid; ?>);"
                                         <?php endif; ?>>
-                                        Complete Order
+                                        <i class="bi bi-box-seam me-1"></i> Mark as Delivered
+                                    </button>
+
+                                <?php elseif($row['status'] == 'delivered'): ?>
+                                    <span class="badge bg-primary mb-1"><i class="bi bi-box-seam me-1"></i> Delivered</span>
+                                    <div class="small text-muted" style="font-size:11px;">Waiting for Customer Confirmation</div>
+                                    <button type="submit" name="status" value="completed" class="btn btn-outline-success btn-sm mt-1" style="font-size:11px;"
+                                        title="Complete order manually or override auto-complete"
+                                        <?php if ($hasPendingCancel): ?>
+                                            onclick="return interceptPendingCancel(event, <?php echo $oid; ?>);"
+                                        <?php endif; ?>>
+                                        <i class="bi bi-check2-circle"></i> Complete Order
                                     </button>
 
                                 <?php elseif($row['status'] == 'declined'): ?>
@@ -775,7 +832,7 @@ body{
                                     <span class="badge bg-danger mb-1">Order Cancelled</span>
 
                                 <?php elseif($row['status'] == 'completed'): ?>
-                                    <span class="text-success small fw-bold">Order Delivered</span>
+                                    <span class="text-success small fw-bold"><i class="bi bi-check-circle-fill me-1"></i> Order Completed</span>
 
                                 <?php else: ?>
                                     <span class="text-muted small"><?php echo ucfirst($row['status']); ?></span>

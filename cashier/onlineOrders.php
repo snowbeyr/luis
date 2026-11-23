@@ -73,7 +73,7 @@ $online_orders = $online_orders_stmt->fetchAll(PDO::FETCH_ASSOC);
                                     <i class="bi bi-printer me-2"></i>View & Print Receipt
                                 </button>
 
-                                <?php if (in_array($row['status'], ['preparing', 'out_for_delivery', 'completed'])): ?>
+                                <?php if (in_array($row['status'], ['preparing', 'out_for_delivery', 'delivered', 'completed'])): ?>
                                     <form method="POST" onsubmit="return confirm('Remove this order from the cashier list?')">
                                         <input type="hidden" name="order_id" value="<?php echo $row['id']; ?>">
                                         <button type="submit" name="remove_order" class="btn btn-outline-danger w-100">
