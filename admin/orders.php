@@ -808,13 +808,6 @@ body{
                                 <?php elseif($row['status'] == 'delivered'): ?>
                                     <span class="badge bg-primary mb-1"><i class="bi bi-box-seam me-1"></i> Delivered</span>
                                     <div class="small text-muted" style="font-size:11px;">Waiting for Customer Confirmation</div>
-                                    <button type="submit" name="status" value="completed" class="btn btn-outline-success btn-sm mt-1" style="font-size:11px;"
-                                        title="Complete order manually or override auto-complete"
-                                        <?php if ($hasPendingCancel): ?>
-                                            onclick="return interceptPendingCancel(event, <?php echo $oid; ?>);"
-                                        <?php endif; ?>>
-                                        <i class="bi bi-check2-circle"></i> Complete Order
-                                    </button>
 
                                 <?php elseif($row['status'] == 'declined'): ?>
                                     <span class="badge bg-danger mb-1">Order Declined</span>

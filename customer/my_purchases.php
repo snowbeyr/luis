@@ -678,8 +678,8 @@ foreach ($allOrders as $o) {
         .stepper-track {
             position: absolute;
             top: 19px;
-            left: 10%;
-            right: 10%;
+            left: 8.33%;
+            right: 8.33%;
             height: 3px;
             background: #e2e8f0;
             z-index: 1;
@@ -1245,6 +1245,10 @@ foreach ($allOrders as $o) {
                                 <div class="stepper-label">Out for Delivery</div>
                             </div>
                             <div class="stepper-step" id="step-delivered">
+                                <div class="stepper-icon"><i class="bi bi-box-seam"></i></div>
+                                <div class="stepper-label">Delivered</div>
+                            </div>
+                            <div class="stepper-step" id="step-completed">
                                 <div class="stepper-icon"><i class="bi bi-check2-circle"></i></div>
                                 <div class="stepper-label">Completed</div>
                             </div>
@@ -1390,7 +1394,7 @@ foreach ($allOrders as $o) {
 
             // Stepper logic
             const status = (order.status || 'pending').toLowerCase().trim();
-            const steps = ['placed', 'confirmed', 'preparing', 'shipping', 'delivered'];
+            const steps = ['placed', 'confirmed', 'preparing', 'shipping', 'delivered', 'completed'];
             steps.forEach(s => {
                 const el = document.getElementById('step-' + s);
                 if (el) el.className = 'stepper-step';
@@ -1401,31 +1405,48 @@ foreach ($allOrders as $o) {
 
             if (status === 'completed') {
                 stepperFill.style.width = '100%';
-                steps.forEach(s => document.getElementById('step-' + s).classList.add('completed'));
+                steps.forEach(s => {
+                    const el = document.getElementById('step-' + s);
+                    if (el) el.classList.add('completed');
+                });
                 alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-success-subtle text-success border border-success-subtle';
                 alertBox.innerHTML = '<i class="bi bi-check-circle-fill me-1"></i> Order successfully delivered and completed!';
             } else if (status === 'delivered') {
-                stepperFill.style.width = '85%';
-                ['placed', 'confirmed', 'preparing', 'shipping'].forEach(s => document.getElementById('step-' + s).classList.add('completed'));
-                document.getElementById('step-delivered').classList.add('active');
+                stepperFill.style.width = '80%';
+                ['placed', 'confirmed', 'preparing', 'shipping'].forEach(s => {
+                    const el = document.getElementById('step-' + s);
+                    if (el) el.classList.add('completed');
+                });
+                const elDelivered = document.getElementById('step-delivered');
+                if (elDelivered) elDelivered.classList.add('active');
                 alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-primary-subtle text-primary border border-primary-subtle';
                 alertBox.innerHTML = '<i class="bi bi-box-seam me-1"></i> Your package has been delivered! Please inspect items and click "Order Received".';
             } else if (status === 'out_for_delivery') {
-                stepperFill.style.width = '75%';
-                ['placed', 'confirmed', 'preparing'].forEach(s => document.getElementById('step-' + s).classList.add('completed'));
-                document.getElementById('step-shipping').classList.add('active');
+                stepperFill.style.width = '60%';
+                ['placed', 'confirmed', 'preparing'].forEach(s => {
+                    const el = document.getElementById('step-' + s);
+                    if (el) el.classList.add('completed');
+                });
+                const elShipping = document.getElementById('step-shipping');
+                if (elShipping) elShipping.classList.add('active');
                 alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-info-subtle text-primary border border-info-subtle';
                 alertBox.innerHTML = '<i class="bi bi-truck me-1"></i> Your parcel is out for delivery! Please keep your lines open.';
             } else if (status === 'preparing') {
-                stepperFill.style.width = '50%';
-                ['placed', 'confirmed'].forEach(s => document.getElementById('step-' + s).classList.add('completed'));
-                document.getElementById('step-preparing').classList.add('active');
+                stepperFill.style.width = '40%';
+                ['placed', 'confirmed'].forEach(s => {
+                    const el = document.getElementById('step-' + s);
+                    if (el) el.classList.add('completed');
+                });
+                const elPrep = document.getElementById('step-preparing');
+                if (elPrep) elPrep.classList.add('active');
                 alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-warning-subtle text-warning-emphasis border border-warning-subtle';
                 alertBox.innerHTML = '<i class="bi bi-box-seam me-1"></i> The hardware store is currently preparing your ordered items.';
             } else if (status === 'approved') {
-                stepperFill.style.width = '25%';
-                document.getElementById('step-placed').classList.add('completed');
-                document.getElementById('step-confirmed').classList.add('active');
+                stepperFill.style.width = '20%';
+                const elPlaced = document.getElementById('step-placed');
+                if (elPlaced) elPlaced.classList.add('completed');
+                const elConfirmed = document.getElementById('step-confirmed');
+                if (elConfirmed) elConfirmed.classList.add('active');
                 alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-warning-subtle text-warning-emphasis border border-warning-subtle';
                 alertBox.innerHTML = '<i class="bi bi-check2 me-1"></i> Order approved! Scheduled for preparation.';
             } else if (status === 'cancelled' || status === 'declined') {
@@ -1434,8 +1455,9 @@ foreach ($allOrders as $o) {
                 alertBox.innerHTML = `<i class="bi bi-x-circle-fill me-1"></i> This order was ${status.toUpperCase()}.`;
             } else {
                 // Pending
-                stepperFill.style.width = '5%';
-                document.getElementById('step-placed').classList.add('active');
+                stepperFill.style.width = '4%';
+                const elPlaced = document.getElementById('step-placed');
+                if (elPlaced) elPlaced.classList.add('active');
                 alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-light text-secondary border';
                 alertBox.innerHTML = '<i class="bi bi-clock-history me-1"></i> Order placed. Waiting for store confirmation.';
             }
