@@ -1048,10 +1048,6 @@ foreach ($allOrders as $o) {
                                             <td class="text-muted">Merchandise Subtotal:</td>
                                             <td class="text-end fw-semibold text-dark">₱<span id="mdlSubtotal">0.00</span></td>
                                         </tr>
-                                        <tr>
-                                            <td class="text-muted">Shipping Fee:</td>
-                                            <td class="text-end text-success fw-semibold">FREE (₱0.00)</td>
-                                        </tr>
                                         <tr class="border-top">
                                             <td class="fw-bold text-dark pt-2">Order Total:</td>
                                             <td class="text-end pt-2">

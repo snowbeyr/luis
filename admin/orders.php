@@ -847,7 +847,7 @@ body{
                     <i class="bi bi-shield-lock-fill fs-2 me-3 text-danger"></i>
                     <div>
                         <strong class="d-block text-danger" id="warnOrderTitle">Order Status Update Blocked</strong>
-                        <span class="small text-dark" id="warnOrderSubtitle">May pending cancellation request ang order na ito sa Customer Service Request.</span>
+                        <span class="small text-dark" id="warnOrderSubtitle">This order has a pending cancellation request in Customer Service Requests.</span>
                     </div>
                 </div>
                 <div class="card bg-light border p-3 mb-3">
@@ -855,13 +855,13 @@ body{
                     <div class="fw-bold text-dark" id="warnOrderReason">---</div>
                 </div>
                 <div class="alert alert-warning small mb-0">
-                    <i class="bi bi-info-circle-fill me-1"></i> Kailangan mo munang <strong>i-approve o i-decline</strong> ang cancellation request sa <strong>Customer Service Request (Items Request)</strong> bago ka makapag-update ng order status dito sa Orders.
+                    <i class="bi bi-info-circle-fill me-1"></i> You must first <strong>approve or decline</strong> the cancellation request under <strong>Customer Service Request (Items Request)</strong> before you can update the order status in the Orders module.
                 </div>
             </div>
             <div class="modal-footer bg-light d-flex justify-content-between">
                 <button type="button" class="btn btn-secondary btn-sm px-3" data-bs-dismiss="modal">Close</button>
                 <a href="ItemsRequest.php" class="btn btn-danger btn-sm px-3 fw-semibold shadow-sm">
-                    <i class="bi bi-arrow-right-circle me-1"></i> Pumunta sa Customer Service Request
+                    <i class="bi bi-arrow-right-circle me-1"></i> Customer Service Request
                 </a>
             </div>
         </div>
