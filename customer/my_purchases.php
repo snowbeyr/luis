@@ -69,15 +69,85 @@ try {
         }
     }
 
+    // Helper: Normalize item name & photo based on whether it is a main item or a variant
+    if (!function_exists('formatOrderItemDetails')) {
+        function formatOrderItemDetails(
+            ?string $rawProductName,
+            ?string $rawVariantName,
+            ?string $mainProductName,
+            ?string $mainProductImage,
+            ?string $variantImage,
+            ?int $variantId = null
+        ): array {
+            $rawProductName = trim((string)$rawProductName);
+            $rawVariantName = trim((string)$rawVariantName);
+            $mainProductName = trim((string)$mainProductName);
+            $mainProductImage = trim((string)$mainProductImage);
+            $variantImage = trim((string)$variantImage);
+
+            $isVariant = (!empty($variantId) || $rawVariantName !== '' || $variantImage !== '');
+
+            // 1. Resolve Image:
+            // Kapag variant item, gamitin ang variant_image kung available; kung wala, fallback sa main product image.
+            // Kapag main item, main product image ang gagamitin.
+            $imageRaw = '';
+            if ($isVariant && !empty($variantImage)) {
+                $imageRaw = $variantImage;
+            } elseif (!empty($mainProductImage)) {
+                $imageRaw = $mainProductImage;
+            }
+
+            $finalImage = !empty($imageRaw) ? getProductImageSrc($imageRaw) : '../assets/images/no-image.png';
+
+            // 2. Resolve Clean Name:
+            if (!$isVariant) {
+                // Main item: ipakita ang main item name
+                $finalName = $rawProductName !== '' ? $rawProductName : ($mainProductName !== '' ? $mainProductName : 'Hardware Item');
+            } else {
+                // Variant item: alisin ang duplicate formatting gaya ng "Gravel (1 Elf) (Gravel (1 Elf))"
+                if ($rawVariantName === '') {
+                    $finalName = $rawProductName !== '' ? $rawProductName : 'Hardware Item';
+                } else {
+                    if ($rawProductName === '') {
+                        $finalName = $rawVariantName;
+                    } elseif (strcasecmp($rawProductName, $rawVariantName) === 0) {
+                        $finalName = $rawVariantName;
+                    } elseif (stripos($rawProductName, $rawVariantName) !== false) {
+                        $finalName = $rawProductName;
+                    } elseif (!empty($mainProductName) && stripos($rawVariantName, $mainProductName) !== false) {
+                        $finalName = $rawVariantName;
+                    } else {
+                        $cleanedRaw = preg_replace('/\s*\([^)]*\)$/', '', $rawProductName);
+                        if (stripos($rawVariantName, $cleanedRaw) !== false) {
+                            $finalName = $rawVariantName;
+                        } else {
+                            $finalName = $rawProductName . ' (' . $rawVariantName . ')';
+                        }
+                    }
+                }
+            }
+
+            return [
+                'name' => $finalName,
+                'image' => $finalImage
+            ];
+        }
+    }
+
     // Fetch all items from order_items table for these orders
     $orderIds = array_column($allOrders, 'id');
     $dbItemsByOrder = [];
     if (!empty($orderIds)) {
         $inPlaceholders = implode(',', array_fill(0, count($orderIds), '?'));
         $oiStmt = $pdo->prepare("
-            SELECT oi.*, p.image AS product_image 
+            SELECT oi.*, 
+                   p.image AS product_image,
+                   p.product_name AS main_product_name,
+                   pv.variant_image,
+                   pv.variant_name AS pv_variant_name
             FROM order_items oi 
             LEFT JOIN products p ON oi.product_id = p.id 
+            LEFT JOIN product_variants pv ON oi.variant_id = pv.id
             WHERE oi.order_id IN ($inPlaceholders)
             ORDER BY oi.id ASC
         ");
@@ -95,15 +165,23 @@ try {
         // 1. Check order_items table first
         if (!empty($dbItemsByOrder[$oid])) {
             foreach ($dbItemsByOrder[$oid] as $dbItem) {
-                $pName = trim((string) ($dbItem['product_name'] ?? 'Hardware Item'));
-                if (!empty($dbItem['variant_name'])) {
-                    $pName .= ' (' . trim($dbItem['variant_name']) . ')';
-                }
+                $vId = !empty($dbItem['variant_id']) ? (int)$dbItem['variant_id'] : null;
+                $rawVName = trim((string)($dbItem['variant_name'] ?? ($dbItem['pv_variant_name'] ?? '')));
+
+                $details = formatOrderItemDetails(
+                    $dbItem['product_name'] ?? '',
+                    $rawVName,
+                    $dbItem['main_product_name'] ?? '',
+                    $dbItem['product_image'] ?? '',
+                    $dbItem['variant_image'] ?? '',
+                    $vId
+                );
+
+                $pName = $details['name'];
+                $pImg  = $details['image'];
                 $pQty = (int) ($dbItem['qty'] ?? 1);
                 if ($pQty <= 0) $pQty = 1;
                 $pPrice = (float) ($dbItem['price'] ?? 0);
-                $pImgRaw = trim((string) ($dbItem['product_image'] ?? ''));
-                $pImg = !empty($pImgRaw) ? getProductImageSrc($pImgRaw) : '../assets/images/no-image.png';
                 $pSubtotal = (float) ($dbItem['subtotal'] ?? ($pPrice * $pQty));
 
                 $parsedItems[] = [
@@ -128,15 +206,24 @@ try {
             if (is_array($cartObj)) {
                 foreach ($cartObj as $cItem) {
                     if (!is_array($cItem)) continue;
-                    $pName = trim((string) ($cItem['name'] ?? ($cItem['product_name'] ?? ($cItem['title'] ?? 'Hardware Item'))));
-                    if (!empty($cItem['variant_name'])) {
-                        $pName .= ' (' . trim($cItem['variant_name']) . ')';
-                    }
+                    $vId = !empty($cItem['variant_id']) ? (int)$cItem['variant_id'] : null;
+                    $rawVName = trim((string)($cItem['variant_name'] ?? ''));
+                    $cImg = trim((string)($cItem['image'] ?? ($cItem['product_image'] ?? '')));
+
+                    $details = formatOrderItemDetails(
+                        $cItem['name'] ?? ($cItem['product_name'] ?? ($cItem['title'] ?? 'Hardware Item')),
+                        $rawVName,
+                        '',
+                        $cImg,
+                        $cImg,
+                        $vId
+                    );
+
+                    $pName = $details['name'];
+                    $pImg  = $details['image'];
                     $pQty = (int) ($cItem['qty'] ?? ($cItem['quantity'] ?? 1));
                     if ($pQty <= 0) $pQty = 1;
                     $pPrice = (float) ($cItem['price'] ?? ($cItem['unit_price'] ?? 0));
-                    $pImgRaw = trim((string) ($cItem['image'] ?? ($cItem['product_image'] ?? '')));
-                    $pImg = !empty($pImgRaw) ? getProductImageSrc($pImgRaw) : '../assets/images/no-image.png';
                     $pSubtotal = $pPrice * $pQty;
 
                     $parsedItems[] = [

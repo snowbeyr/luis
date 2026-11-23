@@ -37,6 +37,49 @@ if (empty($prefill_email) && !empty($_SESSION['user_id'])) {
     } catch (Exception $e) {}
 }
 
+$isDirectMode = (!empty($prefill_order_id) && !empty($prefill_email));
+
+// Helper: Normalize item name without duplicates (e.g. avoid "Gravel (1 Elf) (Gravel (1 Elf))")
+if (!function_exists('resolveCleanItemName')) {
+    function resolveCleanItemName(?string $rawName, ?string $rawVariant, ?string $mainName, ?int $vId = null): string {
+        $rawName = trim((string)$rawName);
+        $rawVariant = trim((string)$rawVariant);
+        $mainName = trim((string)$mainName);
+        $isVariant = (!empty($vId) || $rawVariant !== '');
+
+        if (!$isVariant) {
+            return $rawName !== '' ? $rawName : ($mainName !== '' ? $mainName : 'Hardware Item');
+        }
+
+        if ($rawVariant === '') {
+            return $rawName !== '' ? $rawName : 'Hardware Item';
+        }
+
+        if ($rawName === '') {
+            return $rawVariant;
+        }
+
+        if (strcasecmp($rawName, $rawVariant) === 0) {
+            return $rawVariant;
+        }
+
+        if (stripos($rawName, $rawVariant) !== false) {
+            return $rawName;
+        }
+
+        if (!empty($mainName) && stripos($rawVariant, $mainName) !== false) {
+            return $rawVariant;
+        }
+
+        $cleanedRaw = preg_replace('/\s*\([^)]*\)$/', '', $rawName);
+        if (stripos($rawVariant, $cleanedRaw) !== false) {
+            return $rawVariant;
+        }
+
+        return $rawName . ' (' . $rawVariant . ')';
+    }
+}
+
 // ========================================================
 // API ENDPOINT: LIVE FETCH OF ITEMS & ORDER INFO (PDO)
 // ========================================================
@@ -105,22 +148,63 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_items') {
                 $pending_req_type = strtoupper($pending_row['request_type']);
             }
 
-            // Parse cart items safely
+            // Parse items: Check order_items first with variants join
             $items = [];
-            $cart_raw = $order_data['cart'] ?? '';
-            $cart_obj = is_string($cart_raw) ? json_decode($cart_raw, true) : $cart_raw;
+            $oi_stmt = $pdo->prepare("
+                SELECT oi.*, 
+                       p.product_name AS main_product_name,
+                       pv.variant_name AS pv_variant_name
+                FROM order_items oi
+                LEFT JOIN products p ON oi.product_id = p.id
+                LEFT JOIN product_variants pv ON oi.variant_id = pv.id
+                WHERE oi.order_id = :order_id
+                ORDER BY oi.id ASC
+            ");
+            $oi_stmt->execute([':order_id' => $order_data['id']]);
+            $db_order_items = $oi_stmt->fetchAll();
 
-            if (is_array($cart_obj)) {
-                foreach ($cart_obj as $cart_item) {
-                    $p_name = $cart_item['name'] ?? ($cart_item['product_name'] ?? 'Item');
-                    $p_price = floatval($cart_item['price'] ?? 0);
-                    $p_qty = intval($cart_item['qty'] ?? 1);
+            if (!empty($db_order_items)) {
+                foreach ($db_order_items as $oi) {
+                    $vId = !empty($oi['variant_id']) ? (int)$oi['variant_id'] : null;
+                    $rawVName = trim((string)($oi['variant_name'] ?? ($oi['pv_variant_name'] ?? '')));
+                    $cleanedName = resolveCleanItemName(
+                        $oi['product_name'] ?? '',
+                        $rawVName,
+                        $oi['main_product_name'] ?? '',
+                        $vId
+                    );
+                    $p_price = floatval($oi['price'] ?? 0);
+                    $p_qty = intval($oi['qty'] ?? 1);
                     $items[] = [
-                        'product_name' => $p_name,
+                        'product_name' => $cleanedName,
                         'price' => $p_price,
                         'qty' => $p_qty,
-                        'subtotal' => $p_price * $p_qty
+                        'subtotal' => floatval($oi['subtotal'] ?? ($p_price * $p_qty))
                     ];
+                }
+            } else {
+                // Fallback to cart JSON
+                $cart_raw = $order_data['cart'] ?? '';
+                $cart_obj = is_string($cart_raw) ? json_decode($cart_raw, true) : $cart_raw;
+                if (is_array($cart_obj)) {
+                    foreach ($cart_obj as $cart_item) {
+                        $vId = !empty($cart_item['variant_id']) ? (int)$cart_item['variant_id'] : null;
+                        $rawVName = trim((string)($cart_item['variant_name'] ?? ''));
+                        $cleanedName = resolveCleanItemName(
+                            $cart_item['name'] ?? ($cart_item['product_name'] ?? 'Item'),
+                            $rawVName,
+                            '',
+                            $vId
+                        );
+                        $p_price = floatval($cart_item['price'] ?? 0);
+                        $p_qty = intval($cart_item['qty'] ?? 1);
+                        $items[] = [
+                            'product_name' => $cleanedName,
+                            'price' => $p_price,
+                            'qty' => $p_qty,
+                            'subtotal' => $p_price * $p_qty
+                        ];
+                    }
                 }
             }
 
@@ -399,22 +483,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
                         </div>
                     </div>
                     
-                    <div class="row g-3 mb-4">
-                        <div class="col-md-6">
-                            <label class="form-label fw-semibold">Order ID / Number</label>
-                            <input type="number" name="order_id" id="order_id" class="form-control" placeholder="e.g. 1024"
-                                   value="<?php echo htmlspecialchars($prefill_order_id, ENT_QUOTES, 'UTF-8'); ?>" required>
+                    <?php if ($isDirectMode): ?>
+                        <!-- Direct Action from My Purchases: Inputs and Verify button are removed from UI -->
+                        <input type="hidden" name="order_id" id="order_id" value="<?php echo htmlspecialchars($prefill_order_id, ENT_QUOTES, 'UTF-8'); ?>">
+                        <input type="hidden" name="email" id="email" value="<?php echo htmlspecialchars($prefill_email, ENT_QUOTES, 'UTF-8'); ?>">
+                        <button type="button" id="btnVerify" class="d-none"></button>
+                        
+                        <div class="d-flex justify-content-between align-items-center mb-4 pb-3 border-bottom">
+                            <div class="d-flex align-items-center gap-2">
+                                <span class="badge bg-primary fs-6 px-3 py-2">
+                                    <i class="bi bi-receipt me-1"></i> Order #<?php echo htmlspecialchars($prefill_order_id, ENT_QUOTES, 'UTF-8'); ?>
+                                </span>
+                                <span class="text-muted small">Account: <strong><?php echo htmlspecialchars($prefill_email, ENT_QUOTES, 'UTF-8'); ?></strong></span>
+                            </div>
+                            <a href="my_purchases.php" class="btn btn-secondary btn-sm px-3">
+                                <i class="bi bi-arrow-left me-1"></i> Back to Purchases
+                            </a>
                         </div>
-                        <div class="col-md-6">
-                            <label class="form-label fw-semibold">Account Email Address</label>
-                            <input type="email" name="email" id="email" class="form-control" placeholder="yourname@email.com"
-                                   value="<?php echo htmlspecialchars($prefill_email, ENT_QUOTES, 'UTF-8'); ?>" required>
+                        <div id="directLoadingState" class="text-center py-4 text-muted">
+                            <div class="spinner-border text-primary spinner-border-sm me-2" role="status"></div>
+                            Loading verified order & receipt preview...
                         </div>
-                        <div class="col-12 text-end">
-                            <button type="button" id="btnVerify" class="btn btn-primary px-4"><i class="bi bi-shield-check"></i> Verify Order</button>
-                            <button type="button" class="btn btn-secondary px-4" onclick="window.location.href='my_purchases.php';"><i class="bi bi-arrow-left"></i> Back to Purchases</button>
+                    <?php else: ?>
+                        <div class="row g-3 mb-4">
+                            <div class="col-md-6">
+                                <label class="form-label fw-semibold">Order ID / Number</label>
+                                <input type="number" name="order_id" id="order_id" class="form-control" placeholder="e.g. 1024"
+                                       value="<?php echo htmlspecialchars($prefill_order_id, ENT_QUOTES, 'UTF-8'); ?>" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label fw-semibold">Account Email Address</label>
+                                <input type="email" name="email" id="email" class="form-control" placeholder="yourname@email.com"
+                                       value="<?php echo htmlspecialchars($prefill_email, ENT_QUOTES, 'UTF-8'); ?>" required>
+                            </div>
+                            <div class="col-12 text-end">
+                                <button type="button" id="btnVerify" class="btn btn-primary px-4"><i class="bi bi-shield-check"></i> Verify Order</button>
+                                <button type="button" class="btn btn-secondary px-4" onclick="window.location.href='my_purchases.php';"><i class="bi bi-arrow-left"></i> Back to Purchases</button>
+                            </div>
                         </div>
-                    </div>
+                    <?php endif; ?>
                     
                     <div id="errorWrapper" class="alert alert-danger d-none card-custom mb-4"></div>
 
@@ -508,6 +615,9 @@ document.getElementById('btnVerify').addEventListener('click', function() {
     .then(text => {
         try {
             const data = JSON.parse(text);
+            const directLoading = document.getElementById('directLoadingState');
+            if (directLoading) directLoading.remove();
+
             if(data.success) {
                 errorWrapper.classList.add('d-none');
                 formBodyWrapper.classList.remove('d-none');
@@ -535,19 +645,24 @@ document.getElementById('btnVerify').addEventListener('click', function() {
                     }
                 }
 
-                // Smooth scroll to actions box
-                setTimeout(() => {
-                    const targetSection = document.getElementById('requestActionsBox');
-                    if (targetSection) {
-                        targetSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                    }
-                }, 200);
+                // Smooth scroll to actions box only for manual lookup (not direct mode where receipt preview is at the top)
+                const isDirectHidden = document.getElementById('order_id')?.type === 'hidden';
+                if (!isDirectHidden) {
+                    setTimeout(() => {
+                        const targetSection = document.getElementById('requestActionsBox');
+                        if (targetSection) {
+                            targetSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        }
+                    }, 200);
+                }
             } else {
                 formBodyWrapper.classList.add('d-none');
                 errorWrapper.classList.remove('d-none');
                 errorWrapper.innerHTML = `<strong>Error:</strong> ${data.message}`;
             }
         } catch(e) {
+            const directLoading = document.getElementById('directLoadingState');
+            if (directLoading) directLoading.remove();
             console.error("Raw response:", text);
             formBodyWrapper.classList.add('d-none');
             errorWrapper.classList.remove('d-none');
