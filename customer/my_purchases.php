@@ -1145,11 +1145,6 @@ foreach ($allOrders as $o) {
                                                 <i class="bi bi-clock-history me-1 text-primary"></i>Note: If not confirmed within 3 days (72 hours), this order will automatically be marked as Completed.
                                             </div>
                                         </div>
-                                        <div>
-                                            <button type="button" class="btn btn-success btn-sm fw-bold px-3 py-1 shadow-sm" onclick="openConfirmReceivedModal(<?php echo (int)$order['id']; ?>)">
-                                                <i class="bi bi-check2-circle me-1"></i> Order Received
-                                            </button>
-                                        </div>
                                     </div>
                                 </div>
                             <?php endif; ?>
