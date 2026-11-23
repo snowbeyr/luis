@@ -316,6 +316,27 @@ if (isset($_POST['update_status'])) {
     $new_status = $_POST['status'];
     $decline_reason = $_POST['decline_reason'] ?? '';
 
+    // GUARD: Check if order has an active pending cancellation request in customer_requests
+    $chk_cancel = $pdo->prepare("
+        SELECT id, reason 
+        FROM customer_requests 
+        WHERE order_number = ? 
+          AND LOWER(TRIM(request_type)) = 'cancel' 
+          AND (LOWER(TRIM(status)) = 'pending' OR status IS NULL)
+        LIMIT 1
+    ");
+    $chk_cancel->execute([(string)$order_id]);
+    $pending_cancel = $chk_cancel->fetch(PDO::FETCH_ASSOC);
+
+    if ($pending_cancel) {
+        $cancel_reason = addslashes($pending_cancel['reason'] ?? 'Customer requested cancellation.');
+        echo "<script>
+            alert('Action Blocked: Order #$order_id currently has an active pending Cancellation Request.\\n\\nYou must Approve or Decline the cancellation request in Items Request / Customer Service before updating the order status.'); 
+            window.location.href = 'orders.php';
+        </script>";
+        exit();
+    }
+
     $stmt = $pdo->prepare("SELECT status, cart, payment_method FROM orders WHERE id = ?");
     $stmt->execute([$order_id]);
     $order = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -417,6 +438,20 @@ if (isset($_POST['update_status'])) {
 if (isset($_POST['send_to_cashier'])) {
     $order_id = filter_var($_POST['order_id'] ?? 0, FILTER_VALIDATE_INT);
     
+    // GUARD: Check if order has an active pending cancellation request
+    $chk_cancel = $pdo->prepare("
+        SELECT id FROM customer_requests 
+        WHERE order_number = ? 
+          AND LOWER(TRIM(request_type)) = 'cancel' 
+          AND (LOWER(TRIM(status)) = 'pending' OR status IS NULL)
+        LIMIT 1
+    ");
+    $chk_cancel->execute([(string)$order_id]);
+    if ($chk_cancel->fetch()) {
+        echo "<script>alert('Action Blocked: Order #$order_id has an active pending Cancellation Request. Please approve or decline the cancellation request first.'); window.location.href='orders.php';</script>";
+        exit();
+    }
+
     $stmt = $pdo->prepare("SELECT sent_to_cashier, status FROM orders WHERE id = ?");
     $stmt->execute([$order_id]);
     $order_data = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -441,6 +476,25 @@ if (isset($_POST['send_to_cashier'])) {
 
 // Fetch orders via PDO
 $orders_result = $pdo->query("SELECT * FROM orders ORDER BY id DESC");
+
+// Fetch active pending cancellation requests from customer_requests
+$pendingCancellations = [];
+try {
+    $cancel_stmt = $pdo->query("
+        SELECT id, order_number, reason, details 
+        FROM customer_requests 
+        WHERE LOWER(TRIM(request_type)) = 'cancel' 
+          AND (LOWER(TRIM(status)) = 'pending' OR status IS NULL)
+    ");
+    while ($cRow = $cancel_stmt->fetch(PDO::FETCH_ASSOC)) {
+        $cOid = (int) $cRow['order_number'];
+        if ($cOid > 0) {
+            $pendingCancellations[$cOid] = $cRow;
+        }
+    }
+} catch (Throwable $e) {
+    error_log("Failed to load pending cancellations: " . $e->getMessage());
+}
 ?>
 
 <!DOCTYPE html>
@@ -601,6 +655,23 @@ body{
         <h4 class="mb-0 fs-5 fw-bold text-dark">📦 Orders Management</h4>
     </div>
 
+    <?php if (!empty($pendingCancellations)): ?>
+        <div class="alert alert-danger d-flex align-items-center justify-content-between shadow-sm rounded-3 mb-3 border-danger p-3" role="alert">
+            <div class="d-flex align-items-center">
+                <i class="bi bi-exclamation-octagon-fill fs-2 me-3 text-danger"></i>
+                <div>
+                    <h6 class="fw-bold mb-1 text-danger"><i class="bi bi-lock-fill me-1"></i> Active Cancellation Request Pending Review</h6>
+                    <div class="small text-dark">
+                        Order(s) <strong>#<?php echo implode(', #', array_keys($pendingCancellations)); ?></strong> have pending cancellation requests from customers. Status updates for these orders are <strong>locked</strong> until approved or declined in Customer Service.
+                    </div>
+                </div>
+            </div>
+            <a href="ItemsRequest.php" class="btn btn-danger btn-sm fw-semibold text-nowrap ms-3 shadow-sm">
+                <i class="bi bi-arrow-right-circle me-1"></i> Review in Items Request
+            </a>
+        </div>
+    <?php endif; ?>
+
     <div class="table-responsive bg-white p-3 rounded shadow-sm">
         <table class="table table-hover align-middle">
             <thead class="table-light">
@@ -619,9 +690,20 @@ body{
                 <?php while($row = $orders_result->fetch(PDO::FETCH_ASSOC)): 
                     $row['proof_of_payment_resolved'] = !empty($row['proof_of_payment']) ? getProductImageSrc($row['proof_of_payment']) : '';
                     $row['refund_receipt_resolved'] = !empty($row['refund_receipt']) ? getProductImageSrc($row['refund_receipt']) : '';
+                    $oid = (int)$row['id'];
+                    $hasPendingCancel = isset($pendingCancellations[$oid]);
                 ?>
-                <tr id="order-<?php echo $row['id']; ?>">
-                    <td class="text-center">#<?php echo $row['id']; ?></td>
+                <tr id="order-<?php echo $row['id']; ?>" class="<?php echo $hasPendingCancel ? 'table-danger-subtle' : ''; ?>">
+                    <td class="text-center">
+                        <strong>#<?php echo $row['id']; ?></strong>
+                        <?php if ($hasPendingCancel): ?>
+                            <div>
+                                <span class="badge bg-danger shadow-sm" style="font-size: 0.72rem;" title="Has active customer cancellation request">
+                                    <i class="bi bi-exclamation-triangle-fill"></i> Cancel Req.
+                                </span>
+                            </div>
+                        <?php endif; ?>
+                    </td>
                     <td class="text-center"><strong><?php echo htmlspecialchars($row['fullname']); ?></strong></td>
                     
                     <td class="text-center">
@@ -645,6 +727,13 @@ body{
                         ?>">
                             <?php echo strtoupper($row['status']); ?>
                         </span>
+                        <?php if ($hasPendingCancel): ?>
+                            <div class="mt-1">
+                                <span class="badge bg-danger-subtle text-danger border border-danger-subtle small fw-semibold">
+                                    <i class="bi bi-clock-history me-1"></i> Cancellation Pending
+                                </span>
+                            </div>
+                        <?php endif; ?>
                     </td>
                     <td class="text-center small text-muted">
                         <?php echo date('M d, Y', strtotime($row['order_date'])); ?>
@@ -655,7 +744,17 @@ body{
                         </button>
                     </td>
                     <td class="text-center"> 
-                        <?php if($row['status'] == 'pending'): ?>
+                        <?php if ($hasPendingCancel): ?>
+                            <button type="button" class="btn btn-sm btn-danger fw-semibold shadow-sm mb-1" 
+                                    onclick="showCancelWarning(<?php echo (int)$row['id']; ?>, <?php echo htmlspecialchars(json_encode($pendingCancellations[$oid]['reason'] ?? 'Customer requested cancellation.'), ENT_QUOTES, 'UTF-8'); ?>)">
+                                <i class="bi bi-lock-fill me-1"></i> Action Locked
+                            </button>
+                            <div>
+                                <a href="ItemsRequest.php" class="small text-danger fw-bold text-decoration-none" title="Review in Items Request">
+                                    <i class="bi bi-box-arrow-up-right me-1"></i> Resolve Request
+                                </a>
+                            </div>
+                        <?php elseif ($row['status'] == 'pending'): ?>
                             <form method="POST" class="d-inline">
                                 <input type="hidden" name="order_id" value="<?php echo $row['id']; ?>">
                                 <button type="submit" name="status" value="approved" class="btn btn-success btn-sm mb-1">Approve</button>
@@ -733,14 +832,53 @@ body{
             <div class="modal-body bg-dark py-4">
                 <div class="thermal-preview" id="receiptContent"></div>
             </div>
-            <div class="modal-footer justify-content-between">
+            <div class="modal-footer justify-content-between align-items-center">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <div id="receiptCancelWarning" class="text-danger small fw-bold d-none">
+                    <i class="bi bi-exclamation-octagon-fill me-1"></i> Locked: Pending Cancellation Request
+                </div>
                 <form method="POST" action="orders.php">
                     <input type="hidden" name="order_id" id="modal_order_id">
-                    <button type="submit" name="send_to_cashier" class="btn btn-warning">
+                    <button type="submit" name="send_to_cashier" id="btnSendToCashier" class="btn btn-warning">
                         Send to Cashier
                     </button>
                 </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- CANCELLATION REQUEST WARNING MODAL -->
+<div class="modal fade" id="cancelWarningModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow">
+            <div class="modal-header bg-danger text-white">
+                <h5 class="modal-title fw-bold">
+                    <i class="bi bi-exclamation-octagon-fill me-2"></i> Action Blocked: Pending Cancellation
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body p-4 text-start">
+                <div class="alert alert-danger d-flex align-items-center mb-3">
+                    <i class="bi bi-shield-lock-fill fs-2 me-3 text-danger"></i>
+                    <div>
+                        <strong class="d-block text-danger" id="warnOrderTitle">Order Status Locked</strong>
+                        <span class="small text-dark">This order currently has an active cancellation request filed by the customer.</span>
+                    </div>
+                </div>
+                <div class="card bg-light border p-3 mb-3">
+                    <div class="small text-muted mb-1 fw-semibold">Customer's Stated Reason:</div>
+                    <div class="fw-bold text-dark" id="warnOrderReason">---</div>
+                </div>
+                <p class="text-secondary small mb-0">
+                    <i class="bi bi-info-circle me-1"></i> You must first <strong>Approve</strong> or <strong>Decline</strong> the customer's cancellation request in <strong>Items Request / Customer Service</strong> before you can proceed with updating this order's status.
+                </p>
+            </div>
+            <div class="modal-footer bg-light d-flex justify-content-between">
+                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+                <a href="ItemsRequest.php" class="btn btn-danger btn-sm fw-semibold">
+                    <i class="bi bi-arrow-right-circle me-1"></i> Go to Items Request
+                </a>
             </div>
         </div>
     </div>
@@ -1189,9 +1327,35 @@ function viewReceipt(data) {
     `;
 
     document.getElementById('receiptContent').innerHTML = fullReceiptHtml;
+
+    // Check if this order has an active pending cancellation request
+    const pendingCancelIds = <?php echo json_encode(array_keys($pendingCancellations)); ?>;
+    const isCancelPending = pendingCancelIds.includes(Number(data.id));
+    const btnCashier = document.getElementById('btnSendToCashier');
+    const warnCashier = document.getElementById('receiptCancelWarning');
+
+    if (btnCashier) {
+        if (isCancelPending) {
+            btnCashier.classList.add('d-none');
+            btnCashier.disabled = true;
+            if (warnCashier) warnCashier.classList.remove('d-none');
+        } else {
+            btnCashier.classList.remove('d-none');
+            btnCashier.disabled = false;
+            if (warnCashier) warnCashier.classList.add('d-none');
+        }
+    }
+
     let receiptModal = new bootstrap.Modal(document.getElementById('receiptModal'));
     receiptModal.show();
     document.activeElement.blur();
+}
+
+function showCancelWarning(orderId, reason) {
+    document.getElementById('warnOrderTitle').textContent = `Order #${orderId} Status Locked`;
+    document.getElementById('warnOrderReason').textContent = reason || 'Customer requested cancellation of this order.';
+    const modal = new bootstrap.Modal(document.getElementById('cancelWarningModal'));
+    modal.show();
 }
 
 document.addEventListener("DOMContentLoaded", function() {
