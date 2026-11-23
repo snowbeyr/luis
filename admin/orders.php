@@ -786,7 +786,7 @@ body{
                                         <?php if ($hasPendingCancel): ?>
                                             onclick="return interceptPendingCancel(event, <?php echo $oid; ?>);"
                                         <?php endif; ?>>
-                                        Preparing
+                                         Mark as Preparing
                                     </button>
                                 
                                 <?php elseif($row['status'] == 'preparing'): ?>
@@ -794,7 +794,7 @@ body{
                                         <?php if ($hasPendingCancel): ?>
                                             onclick="return interceptPendingCancel(event, <?php echo $oid; ?>);"
                                         <?php endif; ?>>
-                                        Out for Delivery
+                                       Mark as Out for Delivery
                                     </button>
                                 
                                 <?php elseif($row['status'] == 'out_for_delivery'): ?>
