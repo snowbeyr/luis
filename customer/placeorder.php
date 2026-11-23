@@ -391,13 +391,14 @@ if (isset($_POST['place_order'])) {
             100% { background-color: #fff; border-color: #dee2e6; }
         }
 
-        /* Payment Details Dark Card (matches official preview) */
+        /* Payment Details Light Card */
         .payment-details-card {
-            background-color: #0d1b2a;
+            background-color: #ffffff;
+            border: 1px solid #e2e8f0;
             border-radius: 16px;
             padding: 18px;
-            color: #ffffff;
-            box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+            color: #1e293b;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
             margin-bottom: 16px;
         }
         .payment-details-header {
@@ -414,17 +415,19 @@ if (isset($_POST['place_order'])) {
             display: flex;
             align-items: center;
             justify-content: center;
-            color: white;
+            color: #ffffff;
             font-size: 18px;
         }
         .payment-inner-box {
-            background-color: #17263c;
+            background-color: #f8fafc;
+            border: 1px solid #e2e8f0;
             border-radius: 12px;
             padding: 14px;
             margin-bottom: 12px;
         }
         .payment-field-box {
-            background-color: #17263c;
+            background-color: #f8fafc;
+            border: 1px solid #e2e8f0;
             border-radius: 10px;
             padding: 10px 14px;
             margin-bottom: 10px;
@@ -434,7 +437,7 @@ if (isset($_POST['place_order'])) {
         }
         .payment-field-label {
             font-size: 0.72rem;
-            color: #94a3b8;
+            color: #64748b;
             text-transform: uppercase;
             font-weight: 600;
             letter-spacing: 0.5px;
@@ -443,13 +446,14 @@ if (isset($_POST['place_order'])) {
         .payment-field-value {
             font-size: 1.05rem;
             font-weight: 700;
-            color: #ffffff;
+            color: #0f172a;
         }
         .qr-preview-thumb {
             width: 105px;
             height: 105px;
             object-fit: contain;
             background: #ffffff;
+            border: 1px solid #e2e8f0;
             border-radius: 8px;
             padding: 4px;
             cursor: pointer;
@@ -457,7 +461,15 @@ if (isset($_POST['place_order'])) {
         }
         .qr-preview-thumb:hover {
             transform: scale(1.04);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+        }
+        .btn-copy-clip {
+            color: #64748b;
+            transition: color 0.2s, transform 0.1s;
+        }
+        .btn-copy-clip:hover {
+            color: #0f172a;
+            transform: scale(1.1);
         }
     </style>
 </head>
@@ -652,13 +664,13 @@ if (isset($_POST['place_order'])) {
 
                     <!-- ONLINE PAYMENT FIELDS WITH AUTOMATIC TESSERACT OCR SCANNER -->
                     <div id="online_payment_fields" class="col-12 d-none bg-light p-3 border rounded">
-                        <!-- GCASH ACCOUNT DETAILS CARD -->
+                        <!-- GCASH ACCOUNT DETAILS CARD (LIGHT THEME) -->
                         <div id="gcash_details_card" class="payment-details-card d-none">
                             <div class="payment-details-header">
                                 <div class="payment-details-icon">
                                     <i class="bi bi-phone"></i>
                                 </div>
-                                <h6 class="fw-bold text-white mb-0">GCash Account Details</h6>
+                                <h6 class="fw-bold text-dark mb-0">GCash Account Details</h6>
                             </div>
 
                             <!-- QR & Scan Instruction Box -->
@@ -669,8 +681,8 @@ if (isset($_POST['place_order'])) {
                                      onclick="openQrEnlargeModal('GCash')"
                                      onerror="this.src='../assets/images/no-image.png';">
                                 <div class="flex-grow-1">
-                                    <div class="small fw-bold text-info text-uppercase mb-1" style="letter-spacing: 0.5px;">SCAN QR CODE OR SEND TO NUMBER</div>
-                                    <div class="small text-light mb-2" style="font-size: 0.82rem; line-height: 1.4;">Open your GCash app, tap "Scan QR" or use "Express Send" to the number below.</div>
+                                    <div class="small fw-bold text-primary text-uppercase mb-1" style="letter-spacing: 0.5px;">SCAN QR CODE OR SEND TO NUMBER</div>
+                                    <div class="small text-muted mb-2" style="font-size: 0.82rem; line-height: 1.4;">Open your GCash app, tap "Scan QR" or use "Express Send" to the number below.</div>
                                     <span role="button" class="text-success small fw-semibold d-inline-flex align-items-center" onclick="openQrEnlargeModal('GCash')">
                                         <i class="bi bi-zoom-in me-1"></i>Tap QR to enlarge
                                     </span>
@@ -683,7 +695,7 @@ if (isset($_POST['place_order'])) {
                                     <div class="payment-field-label">GCASH ACCOUNT NAME</div>
                                     <div class="payment-field-value" id="val_gcash_name">Ronil Taipan</div>
                                 </div>
-                                <button type="button" class="btn btn-sm btn-link text-white text-decoration-none p-1" onclick="copyToClipboard('Ronil Taipan', this)" title="Copy Name">
+                                <button type="button" class="btn btn-sm btn-link text-decoration-none btn-copy-clip p-1" onclick="copyToClipboard('Ronil Taipan', this)" title="Copy Name">
                                     <i class="bi bi-copy fs-5"></i>
                                 </button>
                             </div>
@@ -694,19 +706,19 @@ if (isset($_POST['place_order'])) {
                                     <div class="payment-field-label">GCASH NUMBER</div>
                                     <div class="payment-field-value" id="val_gcash_num">09073595023</div>
                                 </div>
-                                <button type="button" class="btn btn-sm btn-link text-white text-decoration-none p-1" onclick="copyToClipboard('09073595023', this)" title="Copy Number">
+                                <button type="button" class="btn btn-sm btn-link text-decoration-none btn-copy-clip p-1" onclick="copyToClipboard('09073595023', this)" title="Copy Number">
                                     <i class="bi bi-copy fs-5"></i>
                                 </button>
                             </div>
                         </div>
 
-                        <!-- MAYA ACCOUNT DETAILS CARD -->
+                        <!-- MAYA ACCOUNT DETAILS CARD (LIGHT THEME) -->
                         <div id="maya_details_card" class="payment-details-card d-none">
                             <div class="payment-details-header">
                                 <div class="payment-details-icon" style="background-color: #06b6d4;">
                                     <i class="bi bi-wallet2"></i>
                                 </div>
-                                <h6 class="fw-bold text-white mb-0">Maya Account Details</h6>
+                                <h6 class="fw-bold text-dark mb-0">Maya Account Details</h6>
                             </div>
 
                             <!-- QR & Scan Instruction Box -->
@@ -718,7 +730,7 @@ if (isset($_POST['place_order'])) {
                                      onerror="this.src='../assets/images/no-image.png';">
                                 <div class="flex-grow-1">
                                     <div class="small fw-bold text-info text-uppercase mb-1" style="letter-spacing: 0.5px;">SCAN QR CODE OR SEND TO NUMBER</div>
-                                    <div class="small text-light mb-2" style="font-size: 0.82rem; line-height: 1.4;">Open your Maya app, tap "Scan QR" or send money to the number below.</div>
+                                    <div class="small text-muted mb-2" style="font-size: 0.82rem; line-height: 1.4;">Open your Maya app, tap "Scan QR" or send money to the number below.</div>
                                     <span role="button" class="text-info small fw-semibold d-inline-flex align-items-center" onclick="openQrEnlargeModal('Maya')">
                                         <i class="bi bi-zoom-in me-1"></i>Tap QR to enlarge
                                     </span>
@@ -731,7 +743,7 @@ if (isset($_POST['place_order'])) {
                                     <div class="payment-field-label">MAYA ACCOUNT NAME</div>
                                     <div class="payment-field-value" id="val_maya_name">Melanie Taipan</div>
                                 </div>
-                                <button type="button" class="btn btn-sm btn-link text-white text-decoration-none p-1" onclick="copyToClipboard('Melanie Taipan', this)" title="Copy Name">
+                                <button type="button" class="btn btn-sm btn-link text-decoration-none btn-copy-clip p-1" onclick="copyToClipboard('Melanie Taipan', this)" title="Copy Name">
                                     <i class="bi bi-copy fs-5"></i>
                                 </button>
                             </div>
@@ -742,7 +754,7 @@ if (isset($_POST['place_order'])) {
                                     <div class="payment-field-label">MAYA NUMBER</div>
                                     <div class="payment-field-value" id="val_maya_num">09682770376</div>
                                 </div>
-                                <button type="button" class="btn btn-sm btn-link text-white text-decoration-none p-1" onclick="copyToClipboard('09682770376', this)" title="Copy Number">
+                                <button type="button" class="btn btn-sm btn-link text-decoration-none btn-copy-clip p-1" onclick="copyToClipboard('09682770376', this)" title="Copy Number">
                                     <i class="bi bi-copy fs-5"></i>
                                 </button>
                             </div>
@@ -780,24 +792,24 @@ if (isset($_POST['place_order'])) {
     </div>
 </div>
 
-<!-- QR ENLARGE MODAL -->
+<!-- QR ENLARGE MODAL (LIGHT THEME) -->
 <div class="modal fade" id="qrEnlargeModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content border-0 shadow-lg" style="background-color: #0d1b2a; color: #fff; border-radius: 16px;">
-            <div class="modal-header border-bottom border-secondary py-3">
-                <h6 class="modal-title fw-bold text-white d-flex align-items-center gap-2" id="qrModalTitle">
+        <div class="modal-content border-0 shadow-lg bg-white" style="border-radius: 16px;">
+            <div class="modal-header border-bottom py-3">
+                <h6 class="modal-title fw-bold text-dark d-flex align-items-center gap-2" id="qrModalTitle">
                     <i class="bi bi-qr-code text-success"></i> Payment QR Code
                 </h6>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body text-center p-4">
-                <img id="qrModalImg" src="" alt="QR Code" class="img-fluid rounded-3 bg-white p-2 shadow" style="max-height: 480px; width: auto;">
-                <div class="mt-3 small text-secondary" id="qrModalSubtitle">
+                <img id="qrModalImg" src="" alt="QR Code" class="img-fluid rounded-3 bg-white p-2 border shadow-sm" style="max-height: 480px; width: auto;">
+                <div class="mt-3 small text-muted" id="qrModalSubtitle">
                     Scan using your mobile e-wallet app to pay.
                 </div>
             </div>
-            <div class="modal-footer border-top border-secondary py-2 justify-content-between">
-                <span class="small text-light" id="qrModalAccountInfo"></span>
+            <div class="modal-footer border-top py-2 justify-content-between bg-light">
+                <span class="small text-dark" id="qrModalAccountInfo"></span>
                 <button type="button" class="btn btn-secondary btn-sm px-3" data-bs-dismiss="modal">Close</button>
             </div>
         </div>
