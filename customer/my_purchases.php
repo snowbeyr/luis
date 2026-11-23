@@ -79,9 +79,23 @@ try {
             ?string $variantImage,
             ?int $variantId = null
         ): array {
-            $rawProductName = trim((string)$rawProductName);
-            $rawVariantName = trim((string)$rawVariantName);
-            $mainProductName = trim((string)$mainProductName);
+            $dedupe = function(string $s): string {
+                $s = trim($s);
+                while (preg_match('/^(.+?)\s*\(\s*\1\s*\)$/i', $s, $m)) {
+                    $s = trim($m[1]);
+                }
+                while (preg_match('/^(.{3,}?)\s+\1$/i', $s, $m)) {
+                    $s = trim($m[1]);
+                }
+                while (preg_match('/^(.+?\(([^)]+)\))\s*\(\s*\2\s*\)$/i', $s, $m)) {
+                    $s = trim($m[1]);
+                }
+                return $s;
+            };
+
+            $rawProductName = $dedupe((string)$rawProductName);
+            $rawVariantName = $dedupe((string)$rawVariantName);
+            $mainProductName = $dedupe((string)$mainProductName);
             $mainProductImage = trim((string)$mainProductImage);
             $variantImage = trim((string)$variantImage);
 
@@ -126,6 +140,8 @@ try {
                     }
                 }
             }
+
+            $finalName = $dedupe($finalName);
 
             return [
                 'name' => $finalName,

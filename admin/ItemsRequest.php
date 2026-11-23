@@ -1142,6 +1142,83 @@ document.addEventListener("DOMContentLoaded", function() {
     }
 });
 
+// Helper: Extract Reference Number across GCash, Maya, and Bank refund receipts
+function extractReferenceNumber(text) {
+    if (!text) return '';
+    const cleanText = text.replace(/\r/g, '');
+    const lines = cleanText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+
+    let phoneDigits = [];
+    for (let line of lines) {
+        let pMatches = line.match(/(?:\+?63\s*9\d{2}[\s\-]?\d{3}[\s\-]?\d{4}|09\d{2}[\s\-]?\d{3}[\s\-]?\d{4})/g);
+        if (pMatches) {
+            for (let pm of pMatches) {
+                phoneDigits.push(pm.replace(/\D/g, ''));
+            }
+        }
+    }
+
+    const isPhone = (str) => {
+        let digits = str.replace(/\D/g, '');
+        if (phoneDigits.includes(digits)) return true;
+        if (digits.length === 11 && digits.startsWith('09')) return true;
+        if (digits.length === 12 && digits.startsWith('639')) return true;
+        return false;
+    };
+
+    const refLabelRegex = /(?:Ref(?:\.|erence)?\s*(?:No\.?|ID|Num(?:ber)?|Code)?|Transaction\s*(?:ID|No\.?|Number)?|Trace\s*(?:No\.?|Number)?|InstaPay\s*Ref(?:erence)?|Confirmation\s*(?:No\.?|ID|Number)?)\s*:?/i;
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (refLabelRegex.test(line)) {
+            let afterLabel = line.replace(refLabelRegex, '').trim();
+            let cleanedCandidate = afterLabel.replace(/[^A-Za-z0-9]/g, '');
+            if (cleanedCandidate.length >= 8 && cleanedCandidate.length <= 30 && !isPhone(afterLabel)) {
+                return cleanedCandidate;
+            }
+
+            for (let j = 1; j <= 2 && (i + j) < lines.length; j++) {
+                let nextLine = lines[i + j].trim();
+                let nextClean = nextLine.replace(/[^A-Za-z0-9]/g, '');
+                if (/^(?:Amount|PHP|₱|Date|Time|Sent|To|From|Fee)/i.test(nextLine)) break;
+                if (nextClean.length >= 8 && nextClean.length <= 30 && !isPhone(nextLine)) {
+                    return nextClean;
+                }
+            }
+        }
+    }
+
+    // GCash 13-digit pattern (e.g. 0023 123 456789 or 9023 123 456789)
+    const gcash13Pattern = /\b([0-9][0-9\s\-]{11,16}[0-9])\b/g;
+    let m;
+    while ((m = gcash13Pattern.exec(cleanText)) !== null) {
+        let digits = m[1].replace(/\D/g, '');
+        if (digits.length === 13 && !isPhone(digits)) {
+            return digits;
+        }
+    }
+
+    // Maya 12-char pattern (e.g. ABCD 1234 EFGH)
+    const mayaPattern = /\b([A-Za-z0-9]{4}[\s\-][A-Za-z0-9]{4}[\s\-][A-Za-z0-9]{4})\b/g;
+    while ((m = mayaPattern.exec(cleanText)) !== null) {
+        let candidate = m[1].replace(/[\s\-]/g, '');
+        if (candidate.length === 12 && !isPhone(candidate)) {
+            return candidate.toUpperCase();
+        }
+    }
+
+    // Standalone 9 to 16 digit numbers (bank confirmation / InstaPay / trace)
+    const standaloneNumberPattern = /\b\d{9,16}\b/g;
+    while ((m = standaloneNumberPattern.exec(cleanText)) !== null) {
+        let num = m[0].trim();
+        if (!isPhone(num) && !num.startsWith('09') && !num.startsWith('639')) {
+            return num;
+        }
+    }
+
+    return '';
+}
+
 async function processRefundOCR(fileInput, rowId) {
     const file = fileInput.files[0];
     if (!file) return;
@@ -1166,62 +1243,24 @@ async function processRefundOCR(fileInput, rowId) {
             }
         });
 
-        const text = result.data.text;
-        let detectedRef = '';
-
-        const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-        let foundPhone = '';
-        for (let i = 0; i < lines.length; i++) {
-            let pMatch = lines[i].match(/(?:\+?63\s*9\d{2}[\s\-]?\d{3}[\s\-]?\d{4}|09\d{2}[\s\-]?\d{3}[\s\-]?\d{4})/);
-            if (pMatch) {
-                foundPhone = pMatch[0].replace(/\D/g, '').trim();
-                break;
-            }
-        }
-
-        let refMatch = text.match(/(?:Reference\s*(?:ID|No\.?|Num(?:ber)?)|Ref\.?\s*(?:No\.?|ID|Num(?:ber)?)?|Transaction\s*(?:ID|No\.?)|Trace\s*No\.?|InstaPay\s*Ref)\s*:?\s*([A-Z0-9\-_]{8,30})/i);
-        
-        if (refMatch) {
-            let cleaned = refMatch[1].trim();
-            let cleanRefDigits = cleaned.replace(/\D/g, '');
-            if (cleaned.length >= 8 && cleaned.length <= 26 && (!foundPhone || cleanRefDigits !== foundPhone)) {
-                detectedRef = cleaned;
-            }
-        }
-
-        if (!detectedRef) {
-            const allNumberMatches = text.match(/\b\d{10,20}\b/g);
-            if (allNumberMatches) {
-                for (let num of allNumberMatches) {
-                    let cleanNum = num.trim();
-                    if (foundPhone && cleanNum === foundPhone) continue;
-                    if (cleanNum.startsWith('09') || cleanNum.startsWith('639')) continue;
-                    detectedRef = cleanNum;
-                    break;
-                }
-            }
-        }
-
-        if (!detectedRef) {
-            let mayaHexMatch = text.match(/\b([A-Z0-9]{4}\s+[A-Z0-9]{4}\s+[A-Z0-9]{4})\b/i);
-            if (mayaHexMatch) {
-                detectedRef = mayaHexMatch[1].replace(/\s+/g, '').trim();
-            }
-        }
+        const text = result.data.text || '';
+        console.log("Refund OCR Extracted Text:\n", text);
+        let detectedRef = extractReferenceNumber(text);
 
         if (detectedRef) {
             refInput.value = detectedRef;
-            statusBox.classList.remove('alert-info', 'alert-danger');
+            statusBox.classList.remove('alert-info', 'alert-danger', 'alert-warning');
             statusBox.classList.add('alert-success');
             statusText.innerHTML = `✓ Reference Number successfully detected: <b>${detectedRef}</b>`;
         } else {
-            statusBox.classList.remove('alert-info', 'alert-success');
+            statusBox.classList.remove('alert-info', 'alert-success', 'alert-danger');
             statusBox.classList.add('alert-warning');
             statusText.innerHTML = '⚠️ Reference number not automatically detected. Please type it manually.';
         }
 
     } catch (error) {
-        statusBox.classList.remove('alert-info', 'alert-success');
+        console.error("Refund OCR Error:", error);
+        statusBox.classList.remove('alert-info', 'alert-success', 'alert-danger');
         statusBox.classList.add('alert-warning');
         statusText.innerHTML = '⚠️ OCR scanning failed. Please enter the reference number manually.';
     }

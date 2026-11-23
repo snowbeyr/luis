@@ -42,9 +42,23 @@ $isDirectMode = (!empty($prefill_order_id) && !empty($prefill_email));
 // Helper: Normalize item name without duplicates (e.g. avoid "Gravel (1 Elf) (Gravel (1 Elf))")
 if (!function_exists('resolveCleanItemName')) {
     function resolveCleanItemName(?string $rawName, ?string $rawVariant, ?string $mainName, ?int $vId = null): string {
-        $rawName = trim((string)$rawName);
-        $rawVariant = trim((string)$rawVariant);
-        $mainName = trim((string)$mainName);
+        $dedupe = function(string $s): string {
+            $s = trim($s);
+            while (preg_match('/^(.+?)\s*\(\s*\1\s*\)$/i', $s, $m)) {
+                $s = trim($m[1]);
+            }
+            while (preg_match('/^(.{3,}?)\s+\1$/i', $s, $m)) {
+                $s = trim($m[1]);
+            }
+            while (preg_match('/^(.+?\(([^)]+)\))\s*\(\s*\2\s*\)$/i', $s, $m)) {
+                $s = trim($m[1]);
+            }
+            return $s;
+        };
+
+        $rawName = $dedupe((string)$rawName);
+        $rawVariant = $dedupe((string)$rawVariant);
+        $mainName = $dedupe((string)$mainName);
         $isVariant = (!empty($vId) || $rawVariant !== '');
 
         if (!$isVariant) {
@@ -76,7 +90,7 @@ if (!function_exists('resolveCleanItemName')) {
             return $rawVariant;
         }
 
-        return $rawName . ' (' . $rawVariant . ')';
+        return $dedupe($rawName . ' (' . $rawVariant . ')');
     }
 }
 

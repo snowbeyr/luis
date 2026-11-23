@@ -106,22 +106,12 @@ if (isset($_POST['place_order'])) {
     $sent_to = !empty($_POST['sent_to']) ? trim($_POST['sent_to']) : null;
     $detected_paid_amount = !empty($_POST['paid_amount']) ? (float)$_POST['paid_amount'] : 0;
 
-    // BACKEND STRICT VALIDATION FOR ONLINE PAYMENTS (GCash / Maya)
+    // ONLINE PAYMENTS VALIDATION (GCash / Maya)
     if (in_array($payment_method, ['GCash', 'Maya'])) {
-        if (empty($ref_no) || $detected_paid_amount <= 0) {
-            die("<script>alert('Order Failed: Invalid receipt photo. No valid Reference Number or Paid Amount detected by the OCR scanner.'); history.back();</script>");
+        // Ensure customer uploaded a proof of payment screenshot
+        if (empty($_FILES['proof_of_payment']['name'])) {
+            die("<script>alert('Order Failed: Please upload your proof of payment receipt screenshot before submitting.'); history.back();</script>");
         }
-
-        // Compute required payment amount based on payment scheme
-        $required_amount = ($grand_total >= 5000 && $payment_scheme === '50_percent') ? ($grand_total * 0.5) : $grand_total;
-
-        // BACKEND AMOUNT MATCHING VALIDATION (BAWAL KULANG)
-        if ($detected_paid_amount < ($required_amount - 0.01)) {
-            $formatted_req = number_format($required_amount, 2);
-            $formatted_paid = number_format($detected_paid_amount, 2);
-            die("<script>alert('Order Failed: Insufficient Payment Amount! Required: ₱{$formatted_req}, but receipt amount detected is only ₱{$formatted_paid}. Please send the complete amount.'); history.back();</script>");
-        }
-
         $paid_amount = $detected_paid_amount;
     } else {
         $paid_amount = 0;
@@ -608,7 +598,7 @@ if (isset($_POST['place_order'])) {
 
                         <label class="form-label small fw-bold">Upload Proof of Payment (GCash / Maya / Bank Transfer Screenshot)</label>
                         <input type="file" name="proof_of_payment" id="proof_of_payment_input" class="form-control mb-1" accept=".jpg,.jpeg,.png,.webp" onchange="processReceiptOCR(this)">
-                        <small class="text-muted d-block mb-2"><i>Note: Upload direct official screenshot from GCash, Maya, or Bank Transfer.</i></small>
+                        <small class="text-muted d-block mb-2"><i>Note: Upload direct official screenshot from GCash, Maya, or Bank Transfer.(Jpeg, Png, Webp)</i></small>
                     </div>
 
                     <div class="col-12 form-check ps-4">
@@ -705,6 +695,179 @@ function toggleSubmitButton() {
     }
 }
 
+// Helper: Extract Exact Payment Amount from OCR Text (avoids fees and balances)
+function extractExactPaymentAmount(text, requiredAmount) {
+    if (!text) return '';
+    const cleanText = text.replace(/\r/g, '');
+    const lines = cleanText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+
+    const isIgnoredLine = (line) => {
+        return /(?:fee|service\s*fee|convenience\s*fee|balance|available\s*balance|remaining\s*balance|credit|discount)/i.test(line);
+    };
+
+    const cleanNum = (str) => {
+        return str.replace(/,/g, '').replace(/\s+/g, '').replace(/\.\s+/g, '.').trim();
+    };
+
+    const amtPattern = /(?:PHP|₱)?\s*([0-9]{1,3}(?:[,\s][0-9]{3})*(?:\.\s*[0-9]{2})|[0-9]+(?:\.\s*[0-9]{2}))/gi;
+    let candidates = [];
+
+    // Pass 1: Labeled amount lines (e.g. "Total Amount Sent", "Amount Sent", "Amount Paid", "Payment Amount", "Amount", "Sent")
+    const labelRegex = /(?:Total\s*Amount\s*(?:Sent|Paid)?|Amount\s*(?:Sent|Paid)?|Sent\s*Amount|Payment\s*Amount|Total\s*Paid|Amount|Sent|Total)\b/i;
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (isIgnoredLine(line)) continue;
+
+        if (labelRegex.test(line)) {
+            // Check current line
+            let matches = [...line.matchAll(amtPattern)];
+            for (let m of matches) {
+                let val = parseFloat(cleanNum(m[1]));
+                if (!isNaN(val) && val > 0) {
+                    candidates.push({ val: val, priority: 1, line: line });
+                }
+            }
+
+            // Check next line
+            if (i + 1 < lines.length && !isIgnoredLine(lines[i + 1])) {
+                let nextMatches = [...lines[i + 1].matchAll(amtPattern)];
+                for (let m of nextMatches) {
+                    let val = parseFloat(cleanNum(m[1]));
+                    if (!isNaN(val) && val > 0) {
+                        candidates.push({ val: val, priority: 2, line: lines[i + 1] });
+                    }
+                }
+            }
+        }
+    }
+
+    // Pass 2: Lines with Currency symbols PHP / ₱ that are NOT fee lines
+    for (let line of lines) {
+        if (isIgnoredLine(line)) continue;
+        if (/(?:PHP|₱)/i.test(line)) {
+            let matches = [...line.matchAll(amtPattern)];
+            for (let m of matches) {
+                let val = parseFloat(cleanNum(m[1]));
+                if (!isNaN(val) && val > 0) {
+                    candidates.push({ val: val, priority: 3, line: line });
+                }
+            }
+        }
+    }
+
+    // Pass 3: All other monetary values on non-fee lines
+    for (let line of lines) {
+        if (isIgnoredLine(line)) continue;
+        let matches = [...line.matchAll(amtPattern)];
+        for (let m of matches) {
+            let val = parseFloat(cleanNum(m[1]));
+            if (!isNaN(val) && val > 0) {
+                candidates.push({ val: val, priority: 4, line: line });
+            }
+        }
+    }
+
+    if (candidates.length === 0) return '';
+
+    // If any candidate matches requiredAmount exactly (tolerance 0.05)
+    for (let c of candidates) {
+        if (Math.abs(c.val - requiredAmount) <= 0.05) {
+            return c.val.toFixed(2);
+        }
+    }
+
+    // Filter out trivial amounts (fees <= 25 if required > 50)
+    let filtered = candidates.filter(c => {
+        if (requiredAmount > 50 && c.val <= 25) return false;
+        return true;
+    });
+
+    if (filtered.length > 0) {
+        filtered.sort((a, b) => a.priority - b.priority);
+        return filtered[0].val.toFixed(2);
+    }
+
+    return candidates[0].val.toFixed(2);
+}
+
+// Helper: Extract Reference Number across GCash, Maya, and Bank receipts
+function extractReferenceNumber(text) {
+    if (!text) return '';
+    const cleanText = text.replace(/\r/g, '');
+    const lines = cleanText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+
+    let phoneDigits = [];
+    for (let line of lines) {
+        let pMatches = line.match(/(?:\+?63\s*9\d{2}[\s\-]?\d{3}[\s\-]?\d{4}|09\d{2}[\s\-]?\d{3}[\s\-]?\d{4})/g);
+        if (pMatches) {
+            for (let pm of pMatches) {
+                phoneDigits.push(pm.replace(/\D/g, ''));
+            }
+        }
+    }
+
+    const isPhone = (str) => {
+        let digits = str.replace(/\D/g, '');
+        if (phoneDigits.includes(digits)) return true;
+        if (digits.length === 11 && digits.startsWith('09')) return true;
+        if (digits.length === 12 && digits.startsWith('639')) return true;
+        return false;
+    };
+
+    const refLabelRegex = /(?:Ref(?:\.|erence)?\s*(?:No\.?|ID|Num(?:ber)?|Code)?|Transaction\s*(?:ID|No\.?|Number)?|Trace\s*(?:No\.?|Number)?|InstaPay\s*Ref(?:erence)?|Confirmation\s*(?:No\.?|ID|Number)?)\s*:?/i;
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (refLabelRegex.test(line)) {
+            let afterLabel = line.replace(refLabelRegex, '').trim();
+            let cleanedCandidate = afterLabel.replace(/[^A-Za-z0-9]/g, '');
+            if (cleanedCandidate.length >= 8 && cleanedCandidate.length <= 30 && !isPhone(afterLabel)) {
+                return cleanedCandidate;
+            }
+
+            for (let j = 1; j <= 2 && (i + j) < lines.length; j++) {
+                let nextLine = lines[i + j].trim();
+                let nextClean = nextLine.replace(/[^A-Za-z0-9]/g, '');
+                if (/^(?:Amount|PHP|₱|Date|Time|Sent|To|From|Fee)/i.test(nextLine)) break;
+                if (nextClean.length >= 8 && nextClean.length <= 30 && !isPhone(nextLine)) {
+                    return nextClean;
+                }
+            }
+        }
+    }
+
+    // GCash 13-digit pattern (e.g. 0023 123 456789 or 9023 123 456789)
+    const gcash13Pattern = /\b([0-9][0-9\s\-]{11,16}[0-9])\b/g;
+    let m;
+    while ((m = gcash13Pattern.exec(cleanText)) !== null) {
+        let digits = m[1].replace(/\D/g, '');
+        if (digits.length === 13 && !isPhone(digits)) {
+            return digits;
+        }
+    }
+
+    // Maya 12-char pattern (e.g. ABCD 1234 EFGH)
+    const mayaPattern = /\b([A-Za-z0-9]{4}[\s\-][A-Za-z0-9]{4}[\s\-][A-Za-z0-9]{4})\b/g;
+    while ((m = mayaPattern.exec(cleanText)) !== null) {
+        let candidate = m[1].replace(/[\s\-]/g, '');
+        if (candidate.length === 12 && !isPhone(candidate)) {
+            return candidate.toUpperCase();
+        }
+    }
+
+    // Standalone 9 to 16 digit numbers (bank confirmation / InstaPay / trace)
+    const standaloneNumberPattern = /\b\d{9,16}\b/g;
+    while ((m = standaloneNumberPattern.exec(cleanText)) !== null) {
+        let num = m[0].trim();
+        if (!isPhone(num) && !num.startsWith('09') && !num.startsWith('639')) {
+            return num;
+        }
+    }
+
+    return '';
+}
+
 async function processReceiptOCR(fileInput) {
     const file = fileInput.files[0];
     if (!file) return;
@@ -725,6 +888,20 @@ async function processReceiptOCR(fileInput) {
     statusBox.classList.add('alert-info');
     statusText.innerHTML = '<div class="spinner-border spinner-border-sm me-1" role="status"></div> Scanning receipt image via OCR...';
 
+    const renderDetailsSummary = (ref, amt, reqAmt, sentTo, dt) => {
+        let h = '<hr class="my-2"><div class="small text-dark">';
+        if (ref) h += `<div>Ref No: <b>${ref}</b></div>`;
+        if (amt) {
+            let fAmt = parseFloat(amt).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            let fReq = reqAmt.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            h += `<div>Detected Payment Amount: <b>₱${fAmt}</b> (Required: ₱${fReq})</div>`;
+        }
+        if (sentTo) h += `<div>Recipient: <b>${sentTo}</b></div>`;
+        if (dt) h += `<div>Date & Time: <b>${dt}</b></div>`;
+        h += '</div>';
+        return h;
+    };
+
     try {
         const result = await Tesseract.recognize(
             file,
@@ -739,131 +916,53 @@ async function processReceiptOCR(fileInput) {
             }
         );
 
-        const text = result.data.text;
+        const text = result.data.text || '';
         console.log("OCR Extracted Raw Text:\n", text);
 
-        const legitBankKeywords = [
-            'gcash', 'g-xchange', 'maya', 'paymaya', 'maribank', 'instapay', 'pesonet',
-            'express send', 'sent money', 'transaction history', 'transfer successful',
-            'payment successful', 'amount sent', 'bdo', 'bpi', 'unionbank', 'gotyme',
-            'landbank', 'seabank', 'maya bank', 'reference id', 'reference no', 'ref no',
-            'created on', 'send money via', 'service fee', 'invoice no'
-        ];
-
         const lowerText = text.toLowerCase();
-        const hasLegitBrandKeyword = legitBankKeywords.some(keyword => lowerText.includes(keyword));
+        const requiredAmount = getRequiredPaymentAmount();
 
-        if (!hasLegitBrandKeyword) {
-            statusBox.classList.remove('alert-info');
-            statusBox.classList.add('alert-danger');
-            statusText.innerHTML = '❌ <b>Invalid Receipt Photo!</b> Only official GCash, Maya, or Bank transfer screenshots are accepted. Please upload a clear official receipt.';
-            fileInput.value = "";
-            return;
-        }
-
-        let detectedRef = '';
-        let detectedAmount = '';
-        let detectedDateTime = '';
-        let detectedSentTo = '';
-
-        const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+        // 1. Detect Phone Number & Recipient Name
         let foundPhone = '';
-        let phoneLineIndex = -1;
+        let detectedSentTo = '';
+        const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
         for (let i = 0; i < lines.length; i++) {
             let pMatch = lines[i].match(/(?:\+?63\s*9\d{2}[\s\-]?\d{3}[\s\-]?\d{4}|09\d{2}[\s\-]?\d{3}[\s\-]?\d{4})/);
             if (pMatch) {
                 foundPhone = pMatch[0].trim();
-                phoneLineIndex = i;
+                if (i > 0) {
+                    let potentialName = lines[i - 1].replace(/Express\s*Send|Sent\s*via\s*GCash|GCash|Amount|Total/gi, '').trim();
+                    if (potentialName.length >= 2) {
+                        detectedSentTo = `${potentialName} ${foundPhone}`.trim();
+                    } else {
+                        detectedSentTo = foundPhone;
+                    }
+                } else {
+                    detectedSentTo = foundPhone;
+                }
                 break;
             }
-        }
-
-        if (phoneLineIndex > 0) {
-            let potentialName = lines[phoneLineIndex - 1];
-            potentialName = potentialName.replace(/Express\s*Send|Sent\s*via\s*GCash|GCash|Amount/gi, '').trim();
-            
-            if (potentialName.length >= 2) {
-                detectedSentTo = `${potentialName} ${foundPhone}`.trim();
-            } else {
-                detectedSentTo = foundPhone;
-            }
-        } else if (foundPhone) {
-            detectedSentTo = foundPhone;
         }
 
         if (!detectedSentTo) {
             let labeledRecipient = text.match(/(?:Sent\s*(?:money\s*)?to|To)\s*:?\s*([A-Z0-9\s•\.\*\+\-]{4,35})/i);
             if (labeledRecipient) {
                 let cleanedName = labeledRecipient[1].replace(/G-Xchange|Inc\.|Gcash|Maya|InstaPay/gi, '').trim();
-                if (cleanedName.length >= 4) {
+                if (cleanedName.length >= 3) {
                     detectedSentTo = cleanedName;
                 }
             }
         }
 
-        let refMatch = text.match(/(?:Reference\s*(?:ID|No\.?|Num(?:ber)?)|Ref\.?\s*(?:No\.?|ID|Num(?:ber)?)?|Transaction\s*(?:ID|No\.?)|Trace\s*No\.?|InstaPay\s*Ref)\s*:?\s*([A-Z0-9\-_]{8,30})/i);
-        
-        if (refMatch) {
-            let cleaned = refMatch[1].trim();
-            let cleanPhoneDigits = foundPhone.replace(/\D/g, '');
-            let cleanRefDigits = cleaned.replace(/\D/g, '');
+        // 2. Extract Reference Number
+        let detectedRef = extractReferenceNumber(text);
 
-            if (cleaned.length >= 8 && cleaned.length <= 26 && (!cleanPhoneDigits || cleanRefDigits !== cleanPhoneDigits)) {
-                detectedRef = cleaned;
-            }
-        }
+        // 3. Extract Exact Payment Amount
+        let detectedAmount = extractExactPaymentAmount(text, requiredAmount);
 
-        if (!detectedRef) {
-            let mayaHexMatch = text.match(/\b([A-Z0-9]{4}\s+[A-Z0-9]{4}\s+[A-Z0-9]{4})\b/i);
-            if (mayaHexMatch) {
-                detectedRef = mayaHexMatch[1].replace(/\s+/g, '').trim();
-            }
-        }
-
-        if (!detectedRef) {
-            let spaceSeparatedMatch = text.match(/\b\d{3,4}\s+\d{3,4}\s+\d{3,4}(?:\s+\d{1,4})?\b/);
-            if (spaceSeparatedMatch) {
-                let candidate = spaceSeparatedMatch[0].replace(/\s+/g, '').trim();
-                let cleanPhoneDigits = foundPhone.replace(/\D/g, '');
-                if (!cleanPhoneDigits || candidate !== cleanPhoneDigits) {
-                    detectedRef = candidate;
-                }
-            }
-        }
-
-        const isFakeGeneratorPattern = (ref) => {
-            const cleanRef = ref.toUpperCase().replace(/[\s\-_]/g, '');
-            if (/^G\d{2,4}12345678/i.test(cleanRef) || /^G1709123456/i.test(cleanRef)) return true;
-            if (/12345678|23456789|34567890|98765432|87654321/.test(cleanRef)) return true;
-            if (/(\d)\1{7,}/.test(cleanRef)) return true;
-            return false;
-        };
-
-        if (detectedRef && isFakeGeneratorPattern(detectedRef)) {
-            statusBox.classList.remove('alert-info');
-            statusBox.classList.add('alert-danger');
-            statusText.innerHTML = `❌ <b>Fake Receipt Detected!</b> Reference Number (<b>${detectedRef}</b>) matches a known fake receipt template format. Please upload an official receipt screenshot.`;
-            fileInput.value = "";
-            return;
-        }
-
-        let amountMatch = text.match(/(?:Total\s*Amount\s*(?:Sent)?|Amount\s*Sent|Sent\s*Amount|Amount|Sent|Paid)\s*:?\s*[-–]?\s*(?:PHP|₱)?\s*([\d,]+\.\d{2})/i);
-        
-        if (amountMatch) {
-            detectedAmount = amountMatch[1].replace(/,/g, '');
-        } else {
-            let currencyMatch = text.match(/(?:PHP|₱)\s*([\d,]+\.\d{2})/i);
-            if (currencyMatch) {
-                detectedAmount = currencyMatch[1].replace(/,/g, '');
-            } else {
-                let fallbackAmount = text.match(/\b[\d,]+\.\d{2}\b/);
-                if (fallbackAmount) {
-                    detectedAmount = fallbackAmount[0].replace(/,/g, '');
-                }
-            }
-        }
-
+        // 4. Extract Date & Time
+        let detectedDateTime = '';
         let dateTimeMatch = text.match(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}(?:\s*,?\s*\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?)?\b/i);
         if (!dateTimeMatch) {
             dateTimeMatch = text.match(/(?:\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4})\s*(?:\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?)?/i);
@@ -872,57 +971,86 @@ async function processReceiptOCR(fileInput) {
             detectedDateTime = dateTimeMatch[0].trim();
         }
 
-        if (!detectedRef || !detectedAmount) {
-            statusBox.classList.remove('alert-info');
-            statusBox.classList.add('alert-danger');
-            statusText.innerHTML = '❌ <b>Invalid Payment Receipt!</b> No valid Reference Number or Amount detected. Please upload an official GCash, Maya, or Bank payment receipt screenshot.';
-            fileInput.value = "";
-            return;
+        // Populate hidden inputs with detected values so backend receives them
+        if (detectedRef) refInput.value = detectedRef;
+        if (detectedAmount) paidInput.value = detectedAmount;
+        if (detectedDateTime) dtInput.value = detectedDateTime;
+        if (detectedSentTo) sentToInput.value = detectedSentTo;
+
+        // 5. Check for Incorrect Recipient Number
+        // Authorized store recipients: Melanie Taipan, R**L T. / Roel, 09074565632, R. Taipan
+        const cleanPhoneDigits = foundPhone.replace(/\D/g, '');
+        const isOfficialPhone = cleanPhoneDigits === '09074565632' || cleanPhoneDigits.endsWith('9074565632');
+        const hasOfficialName = /taipan|melanie|roel|r[\s\*\.]{1,4}t/i.test(lowerText) || /taipan|melanie|roel|r[\s\*\.]{1,4}t/i.test(detectedSentTo);
+
+        let isIncorrectRecipient = false;
+        if (foundPhone && !isOfficialPhone && !hasOfficialName) {
+            isIncorrectRecipient = true;
+        } else if (detectedSentTo && detectedSentTo.length >= 4 && !isOfficialPhone && !hasOfficialName) {
+            // Recipient explicitly identified and doesn't match official store details
+            if (!/gcash|maya|merchant|bank|transfer|payment/i.test(detectedSentTo)) {
+                isIncorrectRecipient = true;
+            }
         }
 
-        const parsedAmount = parseFloat(detectedAmount);
-        const requiredAmount = getRequiredPaymentAmount();
+        // 6. Evaluate the 4 Validation States:
+        statusBox.classList.remove('alert-info', 'alert-success', 'alert-danger', 'alert-warning');
 
-        if (parsedAmount < (requiredAmount - 0.01)) {
-            statusBox.classList.remove('alert-info');
-            statusBox.classList.add('alert-danger');
-            
-            let reqStr = requiredAmount.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-            let paidStr = parsedAmount.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-            
-            statusText.innerHTML = `❌ <b>Insufficient Payment Amount!</b><br>Amount Due: <b>₱${reqStr}</b><br>Amount Sent on Receipt: <b>₱${paidStr}</b><br><small class="text-dark">Please upload a receipt with the exact required amount to proceed.</small>`;
-            fileInput.value = "";
-            return;
+        if (isIncorrectRecipient) {
+            // STATE 4: Incorrect Recipient Number
+            statusBox.classList.add('alert-warning');
+            statusText.innerHTML = `
+                <div class="fw-bold fs-6 mb-1 text-dark">
+                    <i class="bi bi-exclamation-diamond-fill text-warning me-1"></i>Incorrect Recipient Number
+                </div>
+                <div>Your payment appears to have been sent to a different account number instead of the official account number displayed in our QR code. Payments sent to unauthorized account numbers cannot be automatically verified and will require manual review by our staff before your order can be approved.</div>
+                ${renderDetailsSummary(detectedRef, detectedAmount, requiredAmount, detectedSentTo, detectedDateTime)}
+            `;
+        } else if (!detectedAmount || parseFloat(detectedAmount) <= 0 || text.trim().length < 15) {
+            // STATE 3: Unable to Read Receipt
+            statusBox.classList.add('alert-warning');
+            statusText.innerHTML = `
+                <div class="fw-bold fs-6 mb-1 text-dark">
+                    <i class="bi bi-question-circle-fill text-warning me-1"></i>Unable to Read Receipt
+                </div>
+                <div>We couldn't accurately read your receipt. Please make sure the uploaded image is clear and readable. Your payment will require manual verification. Our staff will also check whether the payment was sent to the correct account number displayed in our official QR code.</div>
+                ${renderDetailsSummary(detectedRef, detectedAmount, requiredAmount, detectedSentTo, detectedDateTime)}
+            `;
+        } else {
+            const parsedAmount = parseFloat(detectedAmount);
+            if (Math.abs(parsedAmount - requiredAmount) <= 0.05) {
+                // STATE 1: Exact Amount Detected
+                statusBox.classList.add('alert-success');
+                statusText.innerHTML = `
+                    <div class="fw-bold fs-6 mb-1 text-success">
+                        <i class="bi bi-check-circle-fill me-1"></i>Exact Amount Detected
+                    </div>
+                    <div>Your payment amount matches the expected amount. Please ensure that your payment was sent to the correct account number displayed in our official QR code. Our staff will verify your payment before approving your order.</div>
+                    ${renderDetailsSummary(detectedRef, detectedAmount, requiredAmount, detectedSentTo, detectedDateTime)}
+                `;
+            } else {
+                // STATE 2: Amount Mismatch Detected
+                statusBox.classList.add('alert-warning');
+                statusText.innerHTML = `
+                    <div class="fw-bold fs-6 mb-1 text-dark">
+                        <i class="bi bi-exclamation-triangle-fill text-warning me-1"></i>Amount Mismatch Detected
+                    </div>
+                    <div>The detected payment amount does not match the expected amount. You may still submit your order, but our staff will manually review your payment before approval. Please also ensure that the payment was sent to the correct account number displayed in our official QR code.</div>
+                    ${renderDetailsSummary(detectedRef, detectedAmount, requiredAmount, detectedSentTo, detectedDateTime)}
+                `;
+            }
         }
-
-        refInput.value = detectedRef;
-        paidInput.value = detectedAmount;
-        dtInput.value = detectedDateTime ? detectedDateTime : "N/A";
-        sentToInput.value = detectedSentTo ? detectedSentTo : "N/A";
-
-        statusBox.classList.remove('alert-info');
-        statusBox.classList.add('alert-success');
-        
-        let message = `
-            <strong>✓Receipt Scanned Successfully!</strong><br>
-            <small class="text-success">Payment verified! Amount sent matches the total required due.</small><br>
-        `;
-        message += `Ref No: <b>${detectedRef}</b>`;
-        message += `<br>Amount Sent: <b>₱${parsedAmount.toLocaleString('en-US', {minimumFractionDigits: 2})}</b>`;
-        if (detectedSentTo !== '') {
-            message += `<br>Sent To: <b>${detectedSentTo}</b>`;
-        }
-        if (detectedDateTime !== '') {
-            message += `<br>Date & Time: <b>${detectedDateTime}</b>`;
-        }
-        statusText.innerHTML = message;
 
     } catch (error) {
         console.error("OCR Reading Error:", error);
-        statusBox.classList.remove('alert-info');
-        statusBox.classList.add('alert-danger');
-        statusText.innerHTML = '❌ Could not process image. Please upload a clear valid payment receipt screenshot.';
-        fileInput.value = "";
+        statusBox.classList.remove('alert-info', 'alert-success', 'alert-danger');
+        statusBox.classList.add('alert-warning');
+        statusText.innerHTML = `
+            <div class="fw-bold fs-6 mb-1 text-dark">
+                <i class="bi bi-question-circle-fill text-warning me-1"></i>Unable to Read Receipt
+            </div>
+            <div>We couldn't accurately read your receipt. Please make sure the uploaded image is clear and readable. Your payment will require manual verification. Our staff will also check whether the payment was sent to the correct account number displayed in our official QR code.</div>
+        `;
     }
 }
 
