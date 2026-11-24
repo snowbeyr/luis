@@ -15,8 +15,6 @@ $transaction_id = (int)($_POST['transaction_id'] ?? 0);
 $correction_type = trim($_POST['correction_type'] ?? '');
 $reason = trim($_POST['reason'] ?? '');
 $other_details = trim($_POST['other_details'] ?? '');
-$is_late_requested = !empty($_POST['is_late_request']) && ($_POST['is_late_request'] === '1' || $_POST['is_late_request'] === 'true');
-$late_reason = trim($_POST['late_reason'] ?? '');
 $original_items_json = $_POST['original_items'] ?? '';
 $corrected_items_json = $_POST['corrected_items'] ?? '';
 
@@ -55,9 +53,15 @@ if ($correction_type === 'Incorrect Payment Information') {
         echo json_encode(['status' => 'error', 'message' => 'Please provide the actual amount received from the customer.']);
         exit();
     }
-    if (($proposed_payment_method === 'GCash' || $proposed_payment_method === 'Maya') && empty($proposed_reference_number)) {
-        echo json_encode(['status' => 'error', 'message' => 'Sender mobile number is mandatory when selecting ' . $proposed_payment_method . '.']);
-        exit();
+    if ($proposed_payment_method === 'GCash' || $proposed_payment_method === 'Maya') {
+        if (empty($proposed_reference_number)) {
+            echo json_encode(['status' => 'error', 'message' => 'Sender mobile number is mandatory when selecting ' . $proposed_payment_method . '.']);
+            exit();
+        }
+        if (!preg_match('/^09\d{9}$/', $proposed_reference_number)) {
+            echo json_encode(['status' => 'error', 'message' => 'Invalid Sender Mobile Number. It must be exactly 11 digits and start with "09" (e.g. 09171234567). Letters are not allowed.']);
+            exit();
+        }
     }
 }
 
@@ -103,30 +107,18 @@ try {
     $is_past_deadline = ($now > $deadline_timestamp);
     $deadline_datetime_str = date('Y-m-d H:i:s', $deadline_timestamp);
 
-    // Enforce 24-Hour Rule Server-Side
+    // Enforce 24-Hour Rule Server-Side strictly
     if ($is_past_deadline) {
-        if (!$is_late_requested) {
-            echo json_encode([
-                'status' => 'error',
-                'code' => 'DEADLINE_EXPIRED',
-                'message' => 'The 24-hour correction request period has expired. Please submit a Late Correction Request for Owner review.'
-            ]);
-            exit();
-        }
-
-        if (empty($late_reason)) {
-            echo json_encode([
-                'status' => 'error',
-                'message' => 'A mandatory explanation describing why the correction was not reported within 24 hours is required for late correction requests.'
-            ]);
-            exit();
-        }
-
-        $is_late = true;
-    } else {
-        $is_late = false;
-        $late_reason = null; // Normal request does not need late reason
+        echo json_encode([
+            'status' => 'error',
+            'code' => 'DEADLINE_EXPIRED',
+            'message' => 'The 24-hour correction request period has expired. Corrections are strictly no longer permitted for this transaction.'
+        ]);
+        exit();
     }
+
+    $is_late = false;
+    $late_reason = null;
 
     // 4. Lock check: Disallow duplicate requests while one is pending review or settlement
     $stmt_lock = $pdo->prepare("
@@ -317,13 +309,12 @@ try {
         }
     }
 
-    $action = $is_late ? "POS Late Correction Submitted" : "POS Correction Submitted";
+    $action = "POS Correction Submitted";
     $diff_fmt = $payment_diff > 0 ? "+₱" . number_format($payment_diff, 2) : "-₱" . number_format(abs($payment_diff), 2);
-    $late_note = $is_late ? " [LATE REQUEST - Deadline expired on $deadline_datetime_str. Reason: $late_reason]" : "";
     $payment_note = ($correction_type === 'Incorrect Payment Information') 
         ? " [Payment Info: Paid ₱" . number_format($orig_amount_paid, 2) . " -> ₱" . number_format($proposed_amount_paid, 2) . ", Actual Rec'd: ₱" . number_format($actual_amount_received, 2) . " ($payment_status), Method: $proposed_payment_method" . (!empty($proposed_reference_number) ? " (Sender: $proposed_reference_number)" : "") . "]"
         : "";
-    $details = "Cashier $cashier_name submitted {$action} #$request_id for POS Transaction #$transaction_id. Type: $correction_type. Proposed Total: ₱" . number_format($prop_total, 2) . " (Diff: $diff_fmt).{$payment_note} Reason: $reason{$late_note}";
+    $details = "Cashier $cashier_name submitted {$action} #$request_id for POS Transaction #$transaction_id. Type: $correction_type. Proposed Total: ₱" . number_format($prop_total, 2) . " (Diff: $diff_fmt).{$payment_note} Reason: $reason";
     $ip = $_SERVER['REMOTE_ADDR'] ?? 'N/A';
 
     $stmt_audit = $pdo->prepare("INSERT INTO audit_log (user_id, username, role, action, details, ip_address) VALUES (?, ?, 'cashier', ?, ?, ?)");
@@ -331,15 +322,10 @@ try {
 
     $pdo->commit();
 
-    $success_msg = $is_late
-        ? "Late correction request submitted successfully! Because this transaction was completed more than 24 hours ago, it has been submitted as a Late Correction for Owner review and override."
-        : "Correction request submitted successfully! Your request has been queued for Owner review.";
-
     echo json_encode([
         'status' => 'success',
-        'message' => $success_msg,
-        'request_id' => $request_id,
-        'is_late' => $is_late
+        'message' => 'Correction request submitted successfully! Your request has been queued for Owner review.',
+        'request_id' => $request_id
     ]);
 } catch (Exception $e) {
     if ($pdo->inTransaction()) {

@@ -54,7 +54,6 @@ try {
         }
 
         $diff = (float)$req['payment_difference'];
-        $is_late = !empty($req['is_late_request']);
 
         // Look up owner ID for audit constraint safety
         if ($owner_id <= 0) {
@@ -76,18 +75,13 @@ try {
                     SET owner_id = ?, 
                         owner_name = ?, 
                         reviewed_at = CURRENT_TIMESTAMP,
-                        owner_remarks = ?,
-                        late_reviewed_by = CASE WHEN is_late_request = TRUE THEN ? ELSE late_reviewed_by END,
-                        late_reviewed_at = CASE WHEN is_late_request = TRUE THEN CURRENT_TIMESTAMP ELSE late_reviewed_at END,
-                        late_review_remarks = CASE WHEN is_late_request = TRUE THEN ? ELSE late_review_remarks END
+                        owner_remarks = ?
                     WHERE id = ?
                 ");
-                $upd_rev->execute([$owner_id, $owner_name, $owner_remarks, $owner_name, $owner_remarks, $request_id]);
+                $upd_rev->execute([$owner_id, $owner_name, $owner_remarks, $request_id]);
 
                 if ($req['correction_type'] === 'Incorrect Payment Information') {
                     $msg = "Payment correction request approved and completed! Recorded payment details, method, and transaction balances have been synchronized.";
-                } elseif ($is_late) {
-                    $msg = "Late correction request approved with owner override and automatically completed! Inventory has been synchronized.";
                 } else {
                     $msg = "Correction request approved and automatically completed! Since there was no financial difference, inventory has been synchronized.";
                 }
@@ -112,27 +106,21 @@ try {
                 owner_id = ?, 
                 owner_name = ?, 
                 reviewed_at = CURRENT_TIMESTAMP,
-                owner_remarks = ?,
-                late_reviewed_by = CASE WHEN is_late_request = TRUE THEN ? ELSE late_reviewed_by END,
-                late_reviewed_at = CASE WHEN is_late_request = TRUE THEN CURRENT_TIMESTAMP ELSE late_reviewed_at END,
-                late_review_remarks = CASE WHEN is_late_request = TRUE THEN ? ELSE late_review_remarks END
+                owner_remarks = ?
             WHERE id = ?
         ");
-        $stmt_app->execute([$new_status, $owner_id, $owner_name, $owner_remarks, $owner_name, $owner_remarks, $request_id]);
+        $stmt_app->execute([$new_status, $owner_id, $owner_name, $owner_remarks, $request_id]);
 
         // Audit Log
-        $action_log = $is_late ? "POS Late Correction Approved (Owner Override)" : "POS Correction Approved";
+        $action_log = "POS Correction Approved";
         $diff_fmt = $diff > 0 ? "+₱" . number_format($diff, 2) : "-₱" . number_format(abs($diff), 2);
-        $late_audit = $is_late ? " [Owner Override granted for late request]" : "";
-        $details_log = "Owner $owner_name approved {$action_log} #$request_id for POS Receipt #{$req['transaction_id']}. Financial diff: $diff_fmt. Status set to: $new_status. Remarks: {$owner_remarks}{$late_audit}";
+        $details_log = "Owner $owner_name approved {$action_log} #$request_id for POS Receipt #{$req['transaction_id']}. Financial diff: $diff_fmt. Status set to: $new_status. Remarks: {$owner_remarks}";
         $ip = $_SERVER['REMOTE_ADDR'] ?? 'N/A';
 
         $stmt_audit = $pdo->prepare("INSERT INTO audit_log (user_id, username, role, action, details, ip_address) VALUES (?, ?, 'owner', ?, ?, ?)");
         $stmt_audit->execute([$owner_id, $owner_name, $action_log, $details_log, $ip]);
 
-        $msg = $is_late
-            ? "Late correction request approved with Owner Override! Status updated to '$new_status'. Payment/refund can now proceed to settlement."
-            : "Correction request approved! Status updated to '$new_status'. Payment/refund can now be settled.";
+        $msg = "Correction request approved! Status updated to '$new_status'. Payment/refund can now be settled.";
 
         echo json_encode([
             'status' => 'success',
@@ -147,8 +135,6 @@ try {
             echo json_encode(['status' => 'error', 'message' => 'A rejection reason is mandatory when rejecting a correction request.']);
             exit();
         }
-
-        $is_late = !empty($req['is_late_request']);
 
         if ($owner_id <= 0) {
             $stmt_u = $pdo->prepare("SELECT id FROM users WHERE username = ? LIMIT 1");
@@ -166,20 +152,17 @@ try {
                 owner_remarks = ?,
                 owner_id = ?, 
                 owner_name = ?, 
-                reviewed_at = CURRENT_TIMESTAMP,
-                late_reviewed_by = CASE WHEN is_late_request = TRUE THEN ? ELSE late_reviewed_by END,
-                late_reviewed_at = CASE WHEN is_late_request = TRUE THEN CURRENT_TIMESTAMP ELSE late_reviewed_at END,
-                late_review_remarks = CASE WHEN is_late_request = TRUE THEN ? ELSE late_review_remarks END
+                reviewed_at = CURRENT_TIMESTAMP
             WHERE id = ?
         ");
-        $stmt_rej->execute([$rejection_reason, $rejection_reason, $owner_id, $owner_name, $owner_name, $rejection_reason, $request_id]);
+        $stmt_rej->execute([$rejection_reason, $rejection_reason, $owner_id, $owner_name, $request_id]);
 
         // Unlock transaction
         $stmt_unl = $pdo->prepare("UPDATE pos_transaction SET correction_status = 'none' WHERE id = ?");
         $stmt_unl->execute([$req['transaction_id']]);
 
         // Audit Log
-        $action_log = $is_late ? "POS Late Correction Rejected" : "POS Correction Rejected";
+        $action_log = "POS Correction Rejected";
         $details_log = "Owner $owner_name rejected {$action_log} #$request_id for POS Receipt #{$req['transaction_id']}. Reason: $rejection_reason";
         $ip = $_SERVER['REMOTE_ADDR'] ?? 'N/A';
 
@@ -198,6 +181,17 @@ try {
         $payment_method = trim($_POST['payment_method'] ?? 'Cash');
         $payment_reference = trim($_POST['payment_reference'] ?? '');
         $amount = isset($_POST['amount']) ? (float)$_POST['amount'] : null;
+
+        if (in_array(strtolower($payment_method), ['gcash', 'maya'])) {
+            if (empty($payment_reference)) {
+                echo json_encode(['status' => 'error', 'message' => "Sender mobile number is required for {$payment_method} settlement."]);
+                exit();
+            }
+            if (!preg_match('/^09\d{9}$/', $payment_reference)) {
+                echo json_encode(['status' => 'error', 'message' => "Invalid sender mobile number for {$payment_method}. It must be strictly 11 digits and start with '09' (e.g. 09171234567)."]);
+                exit();
+            }
+        }
 
         list($exec_success, $exec_msg) = executeCorrectionSettlement($pdo, $request_id, $owner_name, $payment_method, $payment_reference, $amount);
         if ($exec_success) {
