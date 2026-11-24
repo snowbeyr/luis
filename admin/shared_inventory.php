@@ -668,9 +668,6 @@ $recent_movements = $movements_stmt->fetchAll(PDO::FETCH_ASSOC);
                             <span class="fw-bold text-secondary small text-uppercase">
                                 <i class="bi bi-diagram-2"></i> Connected Selling Variants (<?= count($variants); ?>)
                             </span>
-                            <small class="text-muted">
-                                Formula: <code>Available Units = floor(Physical Stock / Conversion Factor)</code>
-                            </small>
                         </div>
 
                         <?php if (empty($variants)): ?>

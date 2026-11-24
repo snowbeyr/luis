@@ -412,11 +412,6 @@ placeholder="Sold To">
 </h4>
 </div>
 
-<div class="d-flex justify-content-between align-items-center mb-2">
-<span class="small fw-bold text-muted">PAYMENT METHOD</span>
-<span class="badge bg-success text-white fw-bold"><i class="bi bi-cash-stack me-1"></i>CASH ONLY</span>
-</div>
-
 <input
 type="number"
 id="amountPaid"
@@ -726,7 +721,6 @@ ${formatLine("Sold To:", soldTo)}
 --------------------------------
 ${cartHTML}--------------------------------
 ${formatLine("TOTAL AMOUNT:", "Php " + total.toFixed(2), true)}
-${formatLine("Payment Method:", "CASH")}
 ${formatLine("Amount Paid:", "Php " + paid.toFixed(2))}
 ${formatLine("CHANGE:", "Php " + change.toFixed(2), true)}
 --------------------------------
