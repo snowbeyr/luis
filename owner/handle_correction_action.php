@@ -84,9 +84,13 @@ try {
                 ");
                 $upd_rev->execute([$owner_id, $owner_name, $owner_remarks, $owner_name, $owner_remarks, $request_id]);
 
-                $msg = $is_late 
-                    ? "Late correction request approved with owner override and automatically completed! Inventory has been synchronized."
-                    : "Correction request approved and automatically completed! Since there was no financial difference, inventory has been synchronized.";
+                if ($req['correction_type'] === 'Incorrect Payment Information') {
+                    $msg = "Payment correction request approved and completed! Recorded payment details, method, and transaction balances have been synchronized.";
+                } elseif ($is_late) {
+                    $msg = "Late correction request approved with owner override and automatically completed! Inventory has been synchronized.";
+                } else {
+                    $msg = "Correction request approved and automatically completed! Since there was no financial difference, inventory has been synchronized.";
+                }
 
                 echo json_encode([
                     'status' => 'success',

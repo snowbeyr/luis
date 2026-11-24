@@ -41,6 +41,26 @@ if (!in_array($correction_type, $allowed_types, true)) {
     exit();
 }
 
+$proposed_amount_paid = isset($_POST['proposed_amount_paid']) && $_POST['proposed_amount_paid'] !== '' ? (float)$_POST['proposed_amount_paid'] : null;
+$actual_amount_received = isset($_POST['actual_amount_received']) && $_POST['actual_amount_received'] !== '' ? (float)$_POST['actual_amount_received'] : null;
+$proposed_payment_method = trim($_POST['proposed_payment_method'] ?? 'Cash');
+$proposed_reference_number = trim($_POST['proposed_reference_number'] ?? '');
+
+if ($correction_type === 'Incorrect Payment Information') {
+    if ($proposed_amount_paid === null || $proposed_amount_paid < 0) {
+        echo json_encode(['status' => 'error', 'message' => 'Please provide a valid proposed paid amount.']);
+        exit();
+    }
+    if ($actual_amount_received === null || $actual_amount_received < 0) {
+        echo json_encode(['status' => 'error', 'message' => 'Please provide the actual amount received from the customer.']);
+        exit();
+    }
+    if (($proposed_payment_method === 'GCash' || $proposed_payment_method === 'Maya') && empty($proposed_reference_number)) {
+        echo json_encode(['status' => 'error', 'message' => 'Sender mobile number is mandatory when selecting ' . $proposed_payment_method . '.']);
+        exit();
+    }
+}
+
 // 2. Validate Reason
 if (empty($reason)) {
     echo json_encode(['status' => 'error', 'message' => 'Please provide a clear reason / explanation for this correction request.']);
@@ -171,6 +191,33 @@ try {
         $settlement_type = 'refund';
     }
 
+    // Payment fields preparation
+    $orig_amount_paid = (float)($transaction['amount_paid'] ?? $transaction['total_amount'] ?? 0);
+    $orig_payment_method = $transaction['payment_method'] ?? 'Cash';
+    $orig_reference_number = $transaction['reference_number'] ?? '';
+
+    if ($correction_type === 'Incorrect Payment Information') {
+        $payment_correction_balance = 0;
+        $payment_status = 'Fully Paid';
+        if ($actual_amount_received !== null) {
+            if ($actual_amount_received < $prop_total) {
+                $payment_correction_balance = $prop_total - $actual_amount_received;
+                $payment_status = 'Partially Paid';
+            } elseif ($actual_amount_received > $prop_total) {
+                $payment_status = 'Overpaid';
+            } else {
+                $payment_status = 'Fully Paid';
+            }
+        }
+    } else {
+        $proposed_amount_paid = $orig_amount_paid;
+        $actual_amount_received = (float)($transaction['actual_amount_received'] ?? $orig_amount_paid);
+        $proposed_payment_method = $orig_payment_method;
+        $proposed_reference_number = $orig_reference_number;
+        $payment_correction_balance = (float)($transaction['outstanding_balance'] ?? 0);
+        $payment_status = $transaction['payment_status'] ?? 'Fully Paid';
+    }
+
     $pdo->beginTransaction();
 
     // 7. Insert into pos_correction_requests
@@ -179,8 +226,23 @@ try {
             transaction_id, cashier_name, cashier_id, correction_type, reason,
             other_details, is_late_request, correction_deadline, late_reason,
             evidence_path, original_total, proposed_total, payment_difference,
-            status, settlement_type, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending Review', ?, CURRENT_TIMESTAMP)
+            status, settlement_type,
+            original_amount_paid, proposed_amount_paid, actual_amount_received,
+            original_payment_method, proposed_payment_method,
+            original_reference_number, proposed_reference_number,
+            payment_correction_balance, payment_status,
+            created_at
+        ) VALUES (
+            ?, ?, ?, ?, ?,
+            ?, ?, ?, ?,
+            ?, ?, ?, ?,
+            'Pending Review', ?,
+            ?, ?, ?,
+            ?, ?,
+            ?, ?,
+            ?, ?,
+            CURRENT_TIMESTAMP
+        )
     ");
     $stmt_req->execute([
         $transaction_id,
@@ -196,7 +258,16 @@ try {
         $orig_total,
         $prop_total,
         $payment_diff,
-        $settlement_type
+        $settlement_type,
+        $orig_amount_paid,
+        $proposed_amount_paid,
+        $actual_amount_received,
+        $orig_payment_method,
+        $proposed_payment_method,
+        $orig_reference_number,
+        $proposed_reference_number,
+        $payment_correction_balance,
+        $payment_status
     ]);
     $request_id = $pdo->lastInsertId();
 
@@ -249,7 +320,10 @@ try {
     $action = $is_late ? "POS Late Correction Submitted" : "POS Correction Submitted";
     $diff_fmt = $payment_diff > 0 ? "+₱" . number_format($payment_diff, 2) : "-₱" . number_format(abs($payment_diff), 2);
     $late_note = $is_late ? " [LATE REQUEST - Deadline expired on $deadline_datetime_str. Reason: $late_reason]" : "";
-    $details = "Cashier $cashier_name submitted {$action} #$request_id for POS Transaction #$transaction_id. Type: $correction_type. Proposed Total: ₱" . number_format($prop_total, 2) . " (Diff: $diff_fmt). Reason: $reason{$late_note}";
+    $payment_note = ($correction_type === 'Incorrect Payment Information') 
+        ? " [Payment Info: Paid ₱" . number_format($orig_amount_paid, 2) . " -> ₱" . number_format($proposed_amount_paid, 2) . ", Actual Rec'd: ₱" . number_format($actual_amount_received, 2) . " ($payment_status), Method: $proposed_payment_method" . (!empty($proposed_reference_number) ? " (Sender: $proposed_reference_number)" : "") . "]"
+        : "";
+    $details = "Cashier $cashier_name submitted {$action} #$request_id for POS Transaction #$transaction_id. Type: $correction_type. Proposed Total: ₱" . number_format($prop_total, 2) . " (Diff: $diff_fmt).{$payment_note} Reason: $reason{$late_note}";
     $ip = $_SERVER['REMOTE_ADDR'] ?? 'N/A';
 
     $stmt_audit = $pdo->prepare("INSERT INTO audit_log (user_id, username, role, action, details, ip_address) VALUES (?, ?, 'cashier', ?, ?, ?)");

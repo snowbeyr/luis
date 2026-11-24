@@ -593,6 +593,84 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
                             </div>
                         </div>
 
+                        <!-- Specific Fields for Incorrect Payment Information Category -->
+                        <div class="col-12" id="paymentCorrectionContainer" style="display: none;">
+                            <div class="card border-primary p-3" style="background-color: #f0f7ff;">
+                                <h6 class="fw-bold text-primary mb-3">
+                                    <i class="bi bi-credit-card-2-front me-2"></i>Payment Information Correction Details
+                                </h6>
+                                <div class="row g-3">
+                                    <!-- Original Recorded Paid Amount (Read-only) -->
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-bold text-muted">Original Recorded Paid Amount</label>
+                                        <input type="text" id="corr_orig_paid_amount" class="form-control bg-white fw-bold" readonly>
+                                    </div>
+                                    <!-- Original Payment Method (Read-only) -->
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-bold text-muted">Original Payment Method</label>
+                                        <input type="text" id="corr_orig_payment_method" class="form-control bg-white" readonly>
+                                    </div>
+                                    <!-- Original Sender / Ref Number (Read-only) -->
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-bold text-muted">Original Sender / Ref Number</label>
+                                        <input type="text" id="corr_orig_ref_number" class="form-control bg-white" readonly>
+                                    </div>
+
+                                    <!-- Proposed Correct Paid Amount -->
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-bold text-dark">
+                                            Proposed Correct Paid Amount <span class="text-danger">*</span>
+                                        </label>
+                                        <div class="input-group">
+                                            <span class="input-group-text">₱</span>
+                                            <input type="number" step="0.01" min="0" name="proposed_amount_paid" id="corr_prop_paid_amount" class="form-control fw-bold" placeholder="0.00" oninput="calculatePaymentCorrectionBalance()">
+                                        </div>
+                                        <small class="text-muted">Amount that should have been recorded as paid.</small>
+                                    </div>
+
+                                    <!-- Actual Amount Received -->
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-bold text-dark">
+                                            Actual Amount Received <span class="text-danger">*</span>
+                                        </label>
+                                        <div class="input-group">
+                                            <span class="input-group-text">₱</span>
+                                            <input type="number" step="0.01" min="0" name="actual_amount_received" id="corr_actual_amount_received" class="form-control fw-bold" placeholder="0.00" oninput="calculatePaymentCorrectionBalance()">
+                                        </div>
+                                        <small class="text-muted">Real money or e-wallet actually received from customer.</small>
+                                    </div>
+
+                                    <!-- Proposed Payment Method -->
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-bold text-dark">
+                                            Payment Method <span class="text-danger">*</span>
+                                        </label>
+                                        <select name="proposed_payment_method" id="corr_prop_payment_method" class="form-select" onchange="handlePropPaymentMethodChange()">
+                                            <option value="Cash" selected>Cash</option>
+                                            <option value="GCash">GCash</option>
+                                            <option value="Maya">Maya</option>
+                                        </select>
+                                    </div>
+
+                                    <!-- Proposed Sender Number (Only visible for GCash / Maya) -->
+                                    <div class="col-md-6" id="corr_sender_num_group" style="display: none;">
+                                        <label class="form-label small fw-bold text-dark">
+                                            Sender Mobile Number (GCash / Maya) <span class="text-danger">*</span>
+                                        </label>
+                                        <input type="text" name="proposed_reference_number" id="corr_prop_reference_number" class="form-control" placeholder="e.g. 09171234567">
+                                        <small class="text-muted">Customer's phone number used as sender.</small>
+                                    </div>
+
+                                    <!-- Live Balance / Payment Status Feedback Banner -->
+                                    <div class="col-12">
+                                        <div id="paymentBalanceStatusBanner" class="alert alert-secondary py-2 mb-0 small">
+                                            <!-- Dynamically calculated -->
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                         <div class="col-12">
                             <label class="form-label fw-bold">Explanation / Reason for Correction <span class="text-danger">*</span></label>
                             <textarea name="reason" id="corr_reason" class="form-control" rows="2" placeholder="Describe why this correction is needed and what customer agreement was made..." required></textarea>
@@ -746,16 +824,17 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
 
                     <div class="mb-3">
                         <label class="form-label fw-bold">Payment / Payout Method</label>
-                        <select name="payment_method" class="form-select" required>
+                        <select name="payment_method" id="settle_payment_method" class="form-select" onchange="handleSettleMethodChange()" required>
                             <option value="Cash" selected>Cash</option>
                             <option value="GCash">GCash</option>
                             <option value="Maya">Maya</option>
                         </select>
                     </div>
 
-                    <div class="mb-3">
-                        <label class="form-label fw-bold">Reference Number (if E-Wallet / Bank)</label>
-                        <input type="text" name="payment_reference" class="form-control" placeholder="e.g. 1002349823">
+                    <div class="mb-3" id="settle_sender_num_group" style="display: none;">
+                        <label class="form-label fw-bold">Sender Mobile Number (GCash / Maya) <span class="text-danger" id="settle_sender_req_star" style="display:none;">*</span></label>
+                        <input type="text" name="payment_reference" id="settle_payment_reference" class="form-control" placeholder="e.g. 09171234567">
+                        <small class="text-muted">Enter the customer's GCash or Maya phone number used for the transaction.</small>
                     </div>
 
                     <div class="text-end mt-4">
@@ -832,15 +911,34 @@ function handleCorrectionTypeChange() {
     const othersInput = document.getElementById('corr_other_details');
     const helpText = document.getElementById('typeHelpText');
     const reasonInput = document.getElementById('corr_reason');
+    const payContainer = document.getElementById('paymentCorrectionContainer');
+    const propPaidInput = document.getElementById('corr_prop_paid_amount');
+    const actualRecInput = document.getElementById('corr_actual_amount_received');
 
     if (typeSelect.value === 'Others') {
         othersContainer.style.display = 'block';
         othersInput.required = true;
+        if (payContainer) payContainer.style.display = 'none';
+        if (propPaidInput) propPaidInput.required = false;
+        if (actualRecInput) actualRecInput.required = false;
         helpText.innerText = "Please provide detailed specifics about the error in the field below.";
         reasonInput.placeholder = "Describe the circumstance that resulted in this error...";
+    } else if (typeSelect.value === 'Incorrect Payment Information') {
+        othersContainer.style.display = 'none';
+        othersInput.required = false;
+        if (payContainer) payContainer.style.display = 'block';
+        if (propPaidInput) propPaidInput.required = true;
+        if (actualRecInput) actualRecInput.required = true;
+        helpText.innerText = "Correct recorded paid amount, payment method, sender mobile number, or actual amount received.";
+        reasonInput.placeholder = "Explain the payment correction (e.g. wrong paid amount typed, customer paid via GCash/Maya, underpayment/overpayment)...";
+        handlePropPaymentMethodChange();
+        calculatePaymentCorrectionBalance();
     } else {
         othersContainer.style.display = 'none';
         othersInput.required = false;
+        if (payContainer) payContainer.style.display = 'none';
+        if (propPaidInput) propPaidInput.required = false;
+        if (actualRecInput) actualRecInput.required = false;
 
         if (typeSelect.value === 'Wrong Product Input') {
             helpText.innerText = "Identify the incorrectly recorded product in the original list and replace it with the intended product.";
@@ -848,10 +946,52 @@ function handleCorrectionTypeChange() {
         } else if (typeSelect.value === 'Incorrect Quantity') {
             helpText.innerText = "Adjust the quantity of the item(s) to match what the customer actually received.";
             reasonInput.placeholder = "Explain how the quantity error occurred and what the verified quantity is...";
-        } else if (typeSelect.value === 'Incorrect Payment Information') {
-            helpText.innerText = "Correct payment details, reference information, or tendered amounts subject to owner review.";
-            reasonInput.placeholder = "Explain the payment correction (e.g. customer switched to GCash, wrong reference number recorded)...";
         }
+    }
+}
+
+function handlePropPaymentMethodChange() {
+    let methodEl = document.getElementById('corr_prop_payment_method');
+    if (!methodEl) return;
+    let method = methodEl.value;
+    let group = document.getElementById('corr_sender_num_group');
+    let input = document.getElementById('corr_prop_reference_number');
+    if (!group || !input) return;
+
+    if (method === 'GCash' || method === 'Maya') {
+        group.style.display = 'block';
+        input.required = true;
+    } else {
+        group.style.display = 'none';
+        input.required = false;
+        input.value = '';
+    }
+}
+
+function calculatePaymentCorrectionBalance() {
+    let origTotal = currentOriginalCart.reduce((acc, i) => acc + i.subtotal, 0);
+    let propTotal = currentCorrectionCart.reduce((acc, i) => acc + i.subtotal, 0);
+    let targetTotal = propTotal > 0 ? propTotal : origTotal;
+
+    let propPaidInput = document.getElementById('corr_prop_paid_amount');
+    let actualRecInput = document.getElementById('corr_actual_amount_received');
+    let banner = document.getElementById('paymentBalanceStatusBanner');
+    if (!banner) return;
+
+    let propPaid = parseFloat(propPaidInput ? propPaidInput.value : 0) || 0;
+    let actualRec = parseFloat(actualRecInput ? actualRecInput.value : 0) || 0;
+
+    let bal = targetTotal - actualRec;
+    if (bal > 0.001) {
+        banner.className = 'alert alert-warning py-2 mb-0 small';
+        banner.innerHTML = `<i class="bi bi-exclamation-triangle-fill me-1 text-warning"></i> <b>Underpaid Transaction:</b> Customer owes an outstanding balance of <strong>₱${bal.toFixed(2)}</strong>. Status will remain <strong>Partially Paid</strong> upon approval.`;
+    } else if (bal < -0.001) {
+        let overpay = Math.abs(bal);
+        banner.className = 'alert alert-info py-2 mb-0 small';
+        banner.innerHTML = `<i class="bi bi-info-circle-fill me-1 text-info"></i> <b>Overpayment / Change Due:</b> Customer overpaid by <strong>₱${overpay.toFixed(2)}</strong>. Refund/change process will apply upon approval.`;
+    } else {
+        banner.className = 'alert alert-success py-2 mb-0 small';
+        banner.innerHTML = `<i class="bi bi-check-circle-fill me-1 text-success"></i> <b>Fully Paid:</b> Actual money received matches the transaction total of ₱${targetTotal.toFixed(2)}. Remaining balance: ₱0.00.`;
     }
 }
 
@@ -892,6 +1032,7 @@ function openCorrectionModal(txId, isLate, txDateStr, deadlineStr) {
     document.getElementById('corr_reason').value = '';
     document.getElementById('corr_other_details').value = '';
     document.getElementById('othersDetailsContainer').style.display = 'none';
+    document.getElementById('paymentCorrectionContainer').style.display = 'none';
     document.getElementById('originalItemsTbody').innerHTML = '<tr><td colspan="4" class="text-center py-3 text-muted">Loading...</td></tr>';
     document.getElementById('correctedItemsTbody').innerHTML = '<tr><td colspan="5" class="text-center py-3 text-muted">Loading...</td></tr>';
 
@@ -902,6 +1043,23 @@ function openCorrectionModal(txId, isLate, txDateStr, deadlineStr) {
         document.getElementById('corr_receipt_date').innerText = txDateStr || tx.transaction_date || 'N/A';
         document.getElementById('corr_receipt_deadline').innerText = deadlineStr || 'N/A';
         document.getElementById('corr_receipt_orig_total').innerText = '₱' + parseFloat(tx.total_amount || 0).toFixed(2);
+
+        // Populate Payment Correction Original Information
+        let origPaid = parseFloat(tx.amount_paid || tx.total_amount || 0);
+        let actualRec = parseFloat(tx.actual_amount_received || tx.amount_paid || tx.total_amount || 0);
+        let origMethod = tx.payment_method || 'Cash';
+        let origRef = tx.reference_number || 'N/A';
+
+        document.getElementById('corr_orig_paid_amount').value = '₱' + origPaid.toFixed(2);
+        document.getElementById('corr_orig_payment_method').value = origMethod;
+        document.getElementById('corr_orig_ref_number').value = origRef;
+
+        document.getElementById('corr_prop_paid_amount').value = origPaid.toFixed(2);
+        document.getElementById('corr_actual_amount_received').value = actualRec.toFixed(2);
+        document.getElementById('corr_prop_payment_method').value = (origMethod === 'GCash' || origMethod === 'Maya') ? origMethod : 'Cash';
+        document.getElementById('corr_prop_reference_number').value = (tx.reference_number && tx.reference_number !== 'N/A') ? tx.reference_number : '';
+        handlePropPaymentMethodChange();
+        calculatePaymentCorrectionBalance();
 
         let items = [];
         if (Array.isArray(data)) items = data;
@@ -1146,11 +1304,34 @@ document.getElementById('correctionForm').addEventListener('submit', function(e)
 });
 
 // 4. SETTLE MODAL (COLLECT PAYMENT OR ISSUE REFUND)
+function handleSettleMethodChange() {
+    let methodEl = document.getElementById('settle_payment_method');
+    if (!methodEl) return;
+    let method = methodEl.value;
+    let group = document.getElementById('settle_sender_num_group');
+    let input = document.getElementById('settle_payment_reference');
+    let star = document.getElementById('settle_sender_req_star');
+    if (!group || !input) return;
+
+    if (method === 'GCash' || method === 'Maya') {
+        group.style.display = 'block';
+        input.required = true;
+        if (star) star.style.display = 'inline';
+    } else {
+        group.style.display = 'none';
+        input.required = false;
+        input.value = '';
+        if (star) star.style.display = 'none';
+    }
+}
+
 function openSettleModal(reqId, type, amount) {
     document.getElementById('settle_request_id').value = reqId;
     document.getElementById('settle_type').value = type;
     document.getElementById('settle_amount_input').value = amount.toFixed(2);
     document.getElementById('settle_amount_display').value = '₱' + amount.toFixed(2);
+    document.getElementById('settle_payment_method').value = 'Cash';
+    handleSettleMethodChange();
 
     let title = document.getElementById('settleModalTitle');
     let banner = document.getElementById('settleBanner');
@@ -1257,13 +1438,27 @@ function viewTransactionReceipt(txId) {
                 <span>₱${total.toFixed(2)}</span>
             </div>
             <div class="d-flex justify-content-between small text-muted mb-1">
+                <span>Payment Method:</span>
+                <span>${tx.payment_method || 'Cash'}</span>
+            </div>
+            ${(tx.payment_method === 'GCash' || tx.payment_method === 'Maya') && tx.reference_number ? `
+            <div class="d-flex justify-content-between small text-muted mb-1">
+                <span>Sender Mobile No:</span>
+                <span>${tx.reference_number}</span>
+            </div>` : ''}
+            <div class="d-flex justify-content-between small text-muted mb-1">
                 <span>Amount Paid:</span>
                 <span>₱${paid.toFixed(2)}</span>
             </div>
+            ${parseFloat(tx.outstanding_balance || 0) > 0 ? `
+            <div class="d-flex justify-content-between small fw-bold text-danger mb-1">
+                <span>Remaining Balance:</span>
+                <span>₱${parseFloat(tx.outstanding_balance).toFixed(2)} (${tx.payment_status || 'Partially Paid'})</span>
+            </div>` : `
             <div class="d-flex justify-content-between small fw-bold text-success mb-1">
                 <span>Change:</span>
                 <span>₱${change.toFixed(2)}</span>
-            </div>
+            </div>`}
             <div class="receipt-line mt-2"></div>
             <div class="text-center mt-3">
                 <small class="fw-bold d-block">Thank you for your purchase!</small>
@@ -1374,12 +1569,17 @@ function printCorrectedReceipt(reqId) {
             ${diffSummaryHtml}
             <div class="d-flex justify-content-between small text-muted mb-1">
                 <span>Settlement Method:</span>
-                <span>${req.payment_method || 'Cash'}</span>
+                <span>${req.proposed_payment_method || req.payment_method || 'Cash'}</span>
             </div>
-            ${req.payment_reference ? `
+            ${(req.proposed_payment_method === 'GCash' || req.proposed_payment_method === 'Maya' || req.payment_method === 'GCash' || req.payment_method === 'Maya') && (req.proposed_reference_number || req.payment_reference) ? `
             <div class="d-flex justify-content-between small text-muted mb-1">
-                <span>Ref Number:</span>
-                <span>${req.payment_reference}</span>
+                <span>Sender Mobile No:</span>
+                <span>${req.proposed_reference_number || req.payment_reference}</span>
+            </div>` : ''}
+            ${parseFloat(req.payment_correction_balance || 0) > 0 ? `
+            <div class="d-flex justify-content-between small fw-bold text-danger mb-1">
+                <span>Remaining Balance:</span>
+                <span>₱${parseFloat(req.payment_correction_balance).toFixed(2)} (${req.payment_status || 'Partially Paid'})</span>
             </div>` : ''}
 
             <div class="receipt-line mt-2"></div>

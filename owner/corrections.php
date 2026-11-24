@@ -824,6 +824,65 @@ function openDetailsModal(reqId) {
             </div>
         ` : '';
 
+        // Payment Information Comparison Card for Incorrect Payment Information
+        let paymentInfoCard = '';
+        if (r.correction_type === 'Incorrect Payment Information') {
+            let origPaid = parseFloat(r.original_amount_paid || r.original_total || 0).toFixed(2);
+            let propPaid = parseFloat(r.proposed_amount_paid || 0).toFixed(2);
+            let actualRec = parseFloat(r.actual_amount_received || 0).toFixed(2);
+            let bal = parseFloat(r.payment_correction_balance || 0);
+            let statusBadge = '';
+            if (r.payment_status === 'Partially Paid') {
+                statusBadge = `<span class="badge bg-warning text-dark"><i class="bi bi-exclamation-triangle-fill me-1"></i>Partially Paid (Balance: ₱${bal.toFixed(2)})</span>`;
+            } else if (r.payment_status === 'Overpaid') {
+                statusBadge = `<span class="badge bg-info text-dark"><i class="bi bi-arrow-return-left me-1"></i>Overpaid / Change Due</span>`;
+            } else {
+                statusBadge = `<span class="badge bg-success"><i class="bi bi-check-circle-fill me-1"></i>Fully Paid</span>`;
+            }
+
+            paymentInfoCard = `
+                <!-- PAYMENT INFORMATION CORRECTION COMPARISON -->
+                <div class="card border-primary mb-3" style="background-color: #f8fbff;">
+                    <div class="card-header bg-primary text-white py-2 d-flex justify-content-between align-items-center">
+                        <h6 class="mb-0 fw-bold"><i class="bi bi-credit-card-2-front me-2"></i>Payment Information Correction Details</h6>
+                        <span class="badge bg-white text-primary fw-bold">Payment Correction</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <!-- Original Recorded Payment -->
+                            <div class="col-md-6">
+                                <div class="bg-white p-3 rounded border h-100 shadow-sm">
+                                    <h6 class="fw-bold text-secondary mb-2"><i class="bi bi-clock-history me-1"></i>ORIGINAL PAYMENT RECORD</h6>
+                                    <table class="table table-sm table-borderless mb-0">
+                                        <tr><td class="text-muted" style="width: 150px;">Recorded Paid:</td><td class="fw-bold">₱${origPaid}</td></tr>
+                                        <tr><td class="text-muted">Payment Method:</td><td><span class="badge bg-secondary">${r.original_payment_method || 'Cash'}</span></td></tr>
+                                        <tr><td class="text-muted">Sender / Ref:</td><td>${r.original_reference_number || 'N/A'}</td></tr>
+                                    </table>
+                                </div>
+                            </div>
+                            <!-- Proposed Correct Payment -->
+                            <div class="col-md-6">
+                                <div class="bg-white p-3 rounded border border-primary h-100 shadow-sm">
+                                    <h6 class="fw-bold text-primary mb-2"><i class="bi bi-pencil-square me-1"></i>PROPOSED CORRECT PAYMENT</h6>
+                                    <table class="table table-sm table-borderless mb-0">
+                                        <tr><td class="text-muted" style="width: 150px;">Proposed Paid:</td><td class="fw-bold text-primary">₱${propPaid}</td></tr>
+                                        <tr><td class="text-muted">Actual Received:</td><td class="fw-bold text-success">₱${actualRec}</td></tr>
+                                        <tr><td class="text-muted">Payment Method:</td><td><span class="badge bg-primary">${r.proposed_payment_method || 'Cash'}</span></td></tr>
+                                        <tr><td class="text-muted">Sender Mobile / Ref:</td><td class="fw-bold">${r.proposed_reference_number || 'N/A'}</td></tr>
+                                        <tr><td class="text-muted">Payment Status:</td><td>${statusBadge}</td></tr>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                        ${bal > 0 ? `
+                        <div class="alert alert-warning mt-3 mb-0 small">
+                            <i class="bi bi-exclamation-circle-fill me-1"></i><strong>Underpayment Notice:</strong> Customer owes an outstanding balance of <strong>₱${bal.toFixed(2)}</strong>. Upon approval, this transaction will be recorded with status <strong>Partially Paid</strong> and not marked as fully paid.
+                        </div>` : ''}
+                    </div>
+                </div>
+            `;
+        }
+
         body.innerHTML = `
             <!-- Top Metadata -->
             <div class="card bg-light border p-3 mb-3">
@@ -852,6 +911,8 @@ function openDetailsModal(reqId) {
                 <p class="mb-2">${r.reason}</p>
                 <div><strong class="small text-muted text-uppercase me-2">Supporting Evidence:</strong> ${evidenceHtml}</div>
             </div>
+
+            ${paymentInfoCard}
 
             <!-- BEFORE & AFTER COMPARISON -->
             <div class="row g-3 mb-3">
@@ -1047,7 +1108,7 @@ function ownerSettle(reqId, status, amount) {
 
     let ref = "";
     if (method.toLowerCase() !== "cash") {
-        ref = prompt("Enter reference number for " + method + ":", "");
+        ref = prompt("Enter sender mobile number for " + method + ":", "");
     }
 
     fetch('handle_correction_action.php', {
@@ -1119,11 +1180,22 @@ function viewTransactionReceipt(txId) {
                 <span>TOTAL AMOUNT:</span><span>₱${total.toFixed(2)}</span>
             </div>
             <div class="d-flex justify-content-between small text-muted mb-1">
+                <span>Payment Method:</span><span>${tx.payment_method || 'Cash'}</span>
+            </div>
+            ${(tx.payment_method === 'GCash' || tx.payment_method === 'Maya') && tx.reference_number ? `
+            <div class="d-flex justify-content-between small text-muted mb-1">
+                <span>Sender Mobile No:</span><span>${tx.reference_number}</span>
+            </div>` : ''}
+            <div class="d-flex justify-content-between small text-muted mb-1">
                 <span>Amount Paid:</span><span>₱${paid.toFixed(2)}</span>
             </div>
+            ${parseFloat(tx.outstanding_balance || 0) > 0 ? `
+            <div class="d-flex justify-content-between small fw-bold text-danger mb-1">
+                <span>Remaining Balance:</span><span>₱${parseFloat(tx.outstanding_balance).toFixed(2)} (${tx.payment_status || 'Partially Paid'})</span>
+            </div>` : `
             <div class="d-flex justify-content-between small fw-bold text-success mb-1">
                 <span>Change:</span><span>₱${change.toFixed(2)}</span>
-            </div>
+            </div>`}
             <div class="receipt-line mt-2"></div>
             <div class="text-center mt-3"><small class="fw-bold d-block">Thank you for your purchase!</small></div>
         `;
@@ -1222,12 +1294,17 @@ function printCorrectedReceipt(reqId) {
             ${diffSummaryHtml}
             <div class="d-flex justify-content-between small text-muted mb-1">
                 <span>Settlement Method:</span>
-                <span>${req.payment_method || 'Cash'}</span>
+                <span>${req.proposed_payment_method || req.payment_method || 'Cash'}</span>
             </div>
-            ${req.payment_reference ? `
+            ${(req.proposed_payment_method === 'GCash' || req.proposed_payment_method === 'Maya' || req.payment_method === 'GCash' || req.payment_method === 'Maya') && (req.proposed_reference_number || req.payment_reference) ? `
             <div class="d-flex justify-content-between small text-muted mb-1">
-                <span>Ref Number:</span>
-                <span>${req.payment_reference}</span>
+                <span>Sender Mobile No:</span>
+                <span>${req.proposed_reference_number || req.payment_reference}</span>
+            </div>` : ''}
+            ${parseFloat(req.payment_correction_balance || 0) > 0 ? `
+            <div class="d-flex justify-content-between small fw-bold text-danger mb-1">
+                <span>Remaining Balance:</span>
+                <span>₱${parseFloat(req.payment_correction_balance).toFixed(2)} (${req.payment_status || 'Partially Paid'})</span>
             </div>` : ''}
 
             <div class="receipt-line mt-2"></div>

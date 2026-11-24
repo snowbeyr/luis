@@ -2,6 +2,44 @@
 // Centralized functions for Transaction Correction Management
 // R. Taipan Hardware POS & Inventory Management System
 
+if (!function_exists('ensureCorrectionPaymentColumns')) {
+    /**
+     * Ensures required payment correction columns exist in PostgreSQL/Supabase
+     */
+    function ensureCorrectionPaymentColumns($pdo) {
+        static $checked = false;
+        if ($checked) return;
+        try {
+            $pdo->exec("
+                ALTER TABLE pos_correction_requests 
+                ADD COLUMN IF NOT EXISTS original_amount_paid NUMERIC(12,2) DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS proposed_amount_paid NUMERIC(12,2) DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS actual_amount_received NUMERIC(12,2) DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS original_payment_method VARCHAR(50) DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS proposed_payment_method VARCHAR(50) DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS original_reference_number VARCHAR(100) DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS proposed_reference_number VARCHAR(100) DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS payment_correction_balance NUMERIC(12,2) DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS payment_status VARCHAR(50) DEFAULT NULL;
+
+                ALTER TABLE pos_transaction 
+                ADD COLUMN IF NOT EXISTS payment_method VARCHAR(50) DEFAULT 'Cash',
+                ADD COLUMN IF NOT EXISTS reference_number VARCHAR(100) DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS actual_amount_received NUMERIC(12,2) DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS outstanding_balance NUMERIC(12,2) DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS payment_status VARCHAR(50) DEFAULT 'Fully Paid';
+            ");
+            $checked = true;
+        } catch (Exception $e) {
+            error_log("ensureCorrectionPaymentColumns note: " . $e->getMessage());
+        }
+    }
+}
+
+if (isset($pdo) && $pdo instanceof PDO) {
+    ensureCorrectionPaymentColumns($pdo);
+}
+
 if (!function_exists('validateCorrectionStock')) {
     /**
      * Checks if replacement items have sufficient inventory stock.
@@ -192,19 +230,57 @@ if (!function_exists('executeCorrectionSettlement')) {
                 ]);
             }
 
-            // 5. Update pos_transaction total_amount and correction flags
+            // 5. Update pos_transaction total_amount, payment details, and correction flags
             $prop_total = (float)$req['proposed_total'];
+            $prop_paid = (isset($req['proposed_amount_paid']) && $req['proposed_amount_paid'] !== null) 
+                ? (float)$req['proposed_amount_paid'] 
+                : null;
+            $actual_rec = (isset($req['actual_amount_received']) && $req['actual_amount_received'] !== null) 
+                ? (float)$req['actual_amount_received'] 
+                : null;
+            $prop_method = (!empty($payment_method) && $payment_method !== 'None (Even Exchange)' && $payment_method !== 'N/A')
+                ? $payment_method
+                : (!empty($req['proposed_payment_method']) ? $req['proposed_payment_method'] : null);
+            $prop_ref = (!empty($payment_reference) && $payment_reference !== 'N/A')
+                ? $payment_reference 
+                : (!empty($req['proposed_reference_number']) ? $req['proposed_reference_number'] : null);
+            
+            // If payment method is Cash, clear reference / sender number
+            if ($prop_method === 'Cash') {
+                $prop_ref = null;
+            }
+
+            $balance = isset($req['payment_correction_balance']) ? (float)$req['payment_correction_balance'] : 0;
+            $status_val = !empty($req['payment_status']) ? $req['payment_status'] : 'Fully Paid';
+
             $upd_trans = $pdo->prepare("
                 UPDATE pos_transaction 
-                SET total_amount = ?, correction_status = 'corrected', is_corrected = TRUE
+                SET total_amount = ?, 
+                    amount_paid = COALESCE(?, amount_paid),
+                    actual_amount_received = COALESCE(?, actual_amount_received, amount_paid),
+                    payment_method = COALESCE(?, payment_method, 'Cash'),
+                    reference_number = ?,
+                    outstanding_balance = ?,
+                    payment_status = ?,
+                    correction_status = 'corrected', 
+                    is_corrected = TRUE
                 WHERE id = ?
             ");
-            $upd_trans->execute([$prop_total, $trans_id]);
+            $upd_trans->execute([
+                $prop_total,
+                $prop_paid,
+                $actual_rec,
+                $prop_method,
+                $prop_ref,
+                $balance,
+                $status_val,
+                $trans_id
+            ]);
 
             // 6. Mark correction request as Completed
             $settle_val = $amount_settled !== null ? (float)$amount_settled : (float)$req['payment_difference'];
-            $method_val = $payment_method ?? $req['payment_method'] ?? 'N/A';
-            $ref_val = $payment_reference ?? $req['payment_reference'] ?? '';
+            $method_val = $prop_method ?? $req['payment_method'] ?? 'N/A';
+            $ref_val = $prop_ref ?? $req['payment_reference'] ?? '';
 
             $upd_req = $pdo->prepare("
                 UPDATE pos_correction_requests
@@ -233,7 +309,11 @@ if (!function_exists('executeCorrectionSettlement')) {
             $role = $_SESSION['role'] ?? 'system';
             $action = "POS Correction Completed";
             $diff_str = $req['payment_difference'] > 0 ? "+₱" . number_format($req['payment_difference'], 2) : "-₱" . number_format(abs($req['payment_difference']), 2);
-            $details_log = "Completed Transaction Correction #$request_id for POS Receipt #$trans_id. Original: ₱" . number_format($req['original_total'], 2) . ", Corrected: ₱" . number_format($req['proposed_total'], 2) . " (Diff: $diff_str). Stock synchronized and payment settled by $settled_by.";
+            $pay_info_note = "";
+            if ($req['correction_type'] === 'Incorrect Payment Information') {
+                $pay_info_note = " [Payment Info Adjusted: Recorded Paid ₱" . number_format((float)($req['original_amount_paid'] ?? 0), 2) . " -> ₱" . number_format((float)($req['proposed_amount_paid'] ?? 0), 2) . ", Actual Rec'd: ₱" . number_format((float)($req['actual_amount_received'] ?? 0), 2) . " (" . ($req['payment_status'] ?? 'Fully Paid') . "), Method: " . ($prop_method ?? 'Cash') . ($prop_ref ? " (Sender: $prop_ref)" : "") . "]";
+            }
+            $details_log = "Completed Transaction Correction #$request_id for POS Receipt #$trans_id. Original: ₱" . number_format($req['original_total'], 2) . ", Corrected: ₱" . number_format($req['proposed_total'], 2) . " (Diff: $diff_str).{$pay_info_note} Stock synchronized and payment settled by $settled_by.";
             $ip_address = $_SERVER['REMOTE_ADDR'] ?? 'N/A';
 
             $audit_stmt = $pdo->prepare("INSERT INTO audit_log (user_id, username, role, action, details, ip_address) VALUES (?, ?, ?, ?, ?, ?)");
