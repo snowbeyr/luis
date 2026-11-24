@@ -15,6 +15,10 @@ if (isset($_POST['submit'])) {
     $cost_price = $_POST['cost_price'];
     $price = $_POST['price'];
     $category = $_POST['category'];
+    $unit = trim($_POST['unit'] ?? 'pcs');
+    if ($unit === '') {
+        $unit = 'pcs';
+    }
     $stock = $_POST['stock'];
     $description = trim($_POST['product_description']);
 
@@ -74,9 +78,9 @@ if (isset($_POST['submit'])) {
                                 $savePath = "https://drive.google.com/uc?export=view&id=" . $file_id;
 
                                 $query = "INSERT INTO products
-                                    (product_name, cost_price, price, category, image, stock, product_description)
+                                    (product_name, cost_price, price, category, unit, image, stock, product_description)
                                     VALUES
-                                    (:name, :cost_price, :price, :category, :image, :stock, :description)";
+                                    (:name, :cost_price, :price, :category, :unit, :image, :stock, :description)";
 
                                 $stmt = $pdo->prepare($query);
                                 $stmt->execute([
@@ -84,6 +88,7 @@ if (isset($_POST['submit'])) {
                                     ':cost_price' => $cost_price,
                                     ':price' => $price,
                                     ':category' => $category,
+                                    ':unit' => $unit,
                                     ':image' => $savePath,
                                     ':stock' => $stock,
                                     ':description' => $description
@@ -169,17 +174,23 @@ if (isset($_POST['submit'])) {
                             </div>
                         </div>
 
-                        <div class="mb-3">
-                            <label class="form-label fw-semibold">Category</label>
-                            <select name="category" class="form-select" required>
-                                <option value="" disabled selected>Select Category</option>
-                                <option value="Tools">Tools</option>
-                                <option value="Electrical">Electrical</option>
-                                <option value="Construction">Construction</option>
-                                <option value="Plumbing">Plumbing</option>
-                                <option value="Paint and Supplies">Paint and Supplies</option>
-                                <option value="Chemicals">Chemicals</option>
-                            </select>
+                        <div class="row g-3 mb-3">
+                            <div class="col-12 col-md-6">
+                                <label class="form-label fw-semibold">Category</label>
+                                <select name="category" class="form-select" required>
+                                    <option value="" disabled selected>Select Category</option>
+                                    <option value="Tools">Tools</option>
+                                    <option value="Electrical">Electrical</option>
+                                    <option value="Construction">Construction</option>
+                                    <option value="Plumbing">Plumbing</option>
+                                    <option value="Paint and Supplies">Paint and Supplies</option>
+                                    <option value="Chemicals">Chemicals</option>
+                                </select>
+                            </div>
+                            <div class="col-12 col-md-6">
+                                <label class="form-label fw-semibold">Unit of Measure</label>
+                                <input type="text" name="unit" class="form-control" placeholder="e.g. pcs, bag, kg" value="pcs" required>
+                            </div>
                         </div>
 
                         <div class="mb-3">

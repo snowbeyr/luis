@@ -116,6 +116,10 @@ function handleGoogleDriveVariantUpload($fileArray)
 if (isset($_POST['add_variant'])) {
     $variant_name = trim($_POST['variant_name'] ?? '');
     $variant_description = trim($_POST['variant_description'] ?? '');
+    $unit = trim($_POST['unit'] ?? 'pcs');
+    if ($unit === '') {
+        $unit = 'pcs';
+    }
     $cost_price = (float) ($_POST['cost_price'] ?? 0);
     $price = (float) ($_POST['price'] ?? 0);
     $stock = (int) ($_POST['stock'] ?? 0);
@@ -171,10 +175,10 @@ if (isset($_POST['add_variant'])) {
 
     $insert_sql = "
         INSERT INTO product_variants
-        (product_id, variant_name, variant_description,
+        (product_id, variant_name, variant_description, unit,
          cost_price, price, stock, variant_image)
         VALUES
-        (:product_id, :variant_name, :variant_description,
+        (:product_id, :variant_name, :variant_description, :unit,
          :cost_price, :price, :stock, :variant_image)
     ";
 
@@ -185,6 +189,7 @@ if (isset($_POST['add_variant'])) {
             'product_id' => $product_id,
             'variant_name' => $variant_name,
             'variant_description' => $variant_description,
+            'unit' => $unit,
             'cost_price' => $cost_price,
             'price' => $price,
             'stock' => $stock,
@@ -211,6 +216,10 @@ if (isset($_POST['update_variant'])) {
     $v_id = filter_input(INPUT_POST, 'edit_variant_id', FILTER_VALIDATE_INT) ?: 0;
     $v_name = trim($_POST['edit_variant_name'] ?? '');
     $v_desc = trim($_POST['edit_variant_description'] ?? '');
+    $v_unit = trim($_POST['edit_unit'] ?? 'pcs');
+    if ($v_unit === '') {
+        $v_unit = 'pcs';
+    }
     $v_cost = (float) ($_POST['edit_cost_price'] ?? 0);
     $v_price = (float) ($_POST['edit_price'] ?? 0);
     $v_stock = (int) ($_POST['edit_stock'] ?? 0);
@@ -256,6 +265,7 @@ if (isset($_POST['update_variant'])) {
         UPDATE product_variants
         SET variant_name = :variant_name,
             variant_description = :variant_description,
+            unit = :unit,
             cost_price = :cost_price,
             price = :price,
             stock = :stock
@@ -264,6 +274,7 @@ if (isset($_POST['update_variant'])) {
     $params = [
         'variant_name' => $v_name,
         'variant_description' => $v_desc,
+        'unit' => $v_unit,
         'cost_price' => $v_cost,
         'price' => $v_price,
         'stock' => $v_stock,
@@ -435,6 +446,10 @@ $variants_res = $stmt->fetchAll(PDO::FETCH_ASSOC);
                             <label class="form-label small fw-bold">Variant Description</label>
                             <textarea name="variant_description" class="form-control form-control-sm" rows="3"
                                 placeholder="Product details"></textarea>
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label small fw-bold">Unit of Measure</label>
+                            <input type="text" name="unit" value="pcs" required class="form-control form-control-sm" placeholder="e.g. pcs, kg, bag">
                         </div>
                         <div class="mb-2">
                             <label class="form-label small fw-bold">Cost Price (₱)</label>

@@ -33,6 +33,10 @@ if (isset($_POST['update'])) {
     $cost_price = $_POST['cost_price'];
     $price = $_POST['price'];
     $category = $_POST['category'];
+    $unit = trim($_POST['unit'] ?? 'pcs');
+    if ($unit === '') {
+        $unit = 'pcs';
+    }
     $stock = $_POST['stock'];
     $description = trim($_POST['product_description']);
 
@@ -115,6 +119,7 @@ if (isset($_POST['update'])) {
                 cost_price = :cost_price,
                 price = :price,
                 category = :category,
+                unit = :unit,
                 image = :image,
                 stock = :stock,
                 product_description = :description
@@ -127,6 +132,7 @@ if (isset($_POST['update'])) {
             ':cost_price' => $cost_price,
             ':price' => $price,
             ':category' => $category,
+            ':unit' => $unit,
             ':image' => $image_path,
             ':stock' => $stock,
             ':description' => $description,
@@ -215,16 +221,25 @@ if (isset($_POST['update'])) {
                         </div>
                     </div>
 
-                    <label class="form-label fw-bold">Category</label>
-                    <select name="category" class="form-control mb-3" required>
-                        <?php
-                        $cats = ["Tools", "Electrical", "Construction", "Plumbing", "Paint and Supplies", "Chemicals"];
-                        foreach ($cats as $cat) {
-                            $selected = (($row['category'] ?? '') === $cat) ? "selected" : "";
-                            echo "<option value=\"$cat\" $selected>$cat</option>";
-                        }
-                        ?>
-                    </select>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">Category</label>
+                            <select name="category" class="form-control mb-3" required>
+                                <?php
+                                $cats = ["Tools", "Electrical", "Construction", "Plumbing", "Paint and Supplies", "Chemicals"];
+                                foreach ($cats as $cat) {
+                                    $selected = (($row['category'] ?? '') === $cat) ? "selected" : "";
+                                    echo "<option value=\"$cat\" $selected>$cat</option>";
+                                }
+                                ?>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">Unit of Measure</label>
+                            <input type="text" name="unit" class="form-control mb-3"
+                                value="<?php echo htmlspecialchars($row['unit'] ?? 'pcs'); ?>" required>
+                        </div>
+                    </div>
 
                     <label class="form-label fw-bold">Stock Quantity</label>
                     <input type="number" name="stock" min="0" class="form-control mb-3"
