@@ -1644,7 +1644,6 @@ if (!function_exists('getQueryUrl')) {
                                 <th class="text-center" style="width: 70px;">#</th>
                                 <th style="min-width: 250px;">Product / Variant</th>
                                 <th style="width: 140px;">Category</th>
-                                <th class="text-center" style="width: 90px;">Unit</th>
                                 <th class="text-end" style="width: 150px;">Price</th>
                                 <th class="text-center" style="width: 100px;">Stock</th>
                                 <th class="text-center" style="width: 130px;">Status</th>
@@ -1682,12 +1681,70 @@ if (!function_exists('getQueryUrl')) {
                                     }
 
                                     $auto_expand = false;
-                                    if ($search !== '') {
-                                        foreach ($p_variants as $v_check) {
-                                            if (stripos($v_check['variant_name'], $search) !== false) {
-                                                $auto_expand = true;
-                                                break;
+                                    if ($has_variants) {
+                                        // 1. Status Filter (Auto-expand if low stock, out of stock, in stock, or archived match)
+                                        if ($status_filter === 'low_stock') {
+                                            foreach ($p_variants as $v_check) {
+                                                $st = (int) $v_check['stock'];
+                                                if ($st > 0 && $st <= 10) {
+                                                    $auto_expand = true;
+                                                    break;
+                                                }
                                             }
+                                            if (!$auto_expand && $p_stock > 0 && $p_stock <= 10) {
+                                                $auto_expand = true;
+                                            }
+                                        } elseif ($status_filter === 'out_of_stock') {
+                                            foreach ($p_variants as $v_check) {
+                                                $st = (int) $v_check['stock'];
+                                                if ($st <= 0) {
+                                                    $auto_expand = true;
+                                                    break;
+                                                }
+                                            }
+                                            if (!$auto_expand && $p_stock <= 0) {
+                                                $auto_expand = true;
+                                            }
+                                        } elseif ($status_filter === 'in_stock') {
+                                            foreach ($p_variants as $v_check) {
+                                                $st = (int) $v_check['stock'];
+                                                if ($st > 10) {
+                                                    $auto_expand = true;
+                                                    break;
+                                                }
+                                            }
+                                            if (!$auto_expand && $p_stock > 10) {
+                                                $auto_expand = true;
+                                            }
+                                        } elseif ($status_filter === 'archived') {
+                                            foreach ($p_variants as $v_check) {
+                                                if ((int) ($v_check['is_archived'] ?? 0) === 1) {
+                                                    $auto_expand = true;
+                                                    break;
+                                                }
+                                            }
+                                            if (!$auto_expand && $is_archived === 1) {
+                                                $auto_expand = true;
+                                            }
+                                        }
+
+                                        // 2. Search Filter (Auto-expand if product or variant matches search)
+                                        if ($search !== '') {
+                                            if (stripos($p['product_name'], $search) !== false) {
+                                                $auto_expand = true;
+                                            } else {
+                                                foreach ($p_variants as $v_check) {
+                                                    if (stripos($v_check['variant_name'], $search) !== false) {
+                                                        $auto_expand = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // 3. Category Filter (Auto-expand when filtered by category)
+                                        if ($category_filter !== '' && empty($status_filter)) {
+                                            $auto_expand = true;
                                         }
                                     }
 
@@ -1710,21 +1767,13 @@ if (!function_exists('getQueryUrl')) {
                                         </td>
 
                                         <td>
-                                            <div class="d-flex align-items-center gap-2">
-                                                <img src="<?= htmlspecialchars($img_src, ENT_QUOTES, 'UTF-8'); ?>" 
-                                                     alt="<?= htmlspecialchars($p['product_name']); ?>" 
-                                                     class="prod-thumb" 
-                                                     onclick="openProductImageZoom(this.src)" 
-                                                     title="Click to view large image"
-                                                     onerror="this.onerror=null; this.src='../assets/images/no-image.png';">
-                                                <div>
-                                                    <span class="fw-bold text-dark d-block"><?= htmlspecialchars($p['product_name']); ?></span>
-                                                    <?php if ($has_variants): ?>
-                                                        <span class="badge bg-secondary-subtle text-secondary border px-2 py-0" style="font-size: 0.75rem;">
-                                                            <?= count($p_variants); ?> variants
-                                                        </span>
-                                                    <?php endif; ?>
-                                                </div>
+                                            <div>
+                                                <span class="fw-bold text-dark d-block"><?= htmlspecialchars($p['product_name']); ?></span>
+                                                <?php if ($has_variants): ?>
+                                                    <span class="badge bg-secondary-subtle text-secondary border px-2 py-0" style="font-size: 0.75rem;">
+                                                        <?= count($p_variants); ?> variants
+                                                    </span>
+                                                <?php endif; ?>
                                             </div>
                                         </td>
 
@@ -1732,10 +1781,6 @@ if (!function_exists('getQueryUrl')) {
                                             <span class="badge bg-light text-dark border px-2 py-1">
                                                 <?= htmlspecialchars($p['category'] ?: 'Uncategorized'); ?>
                                             </span>
-                                        </td>
-
-                                        <td class="text-center fw-medium text-secondary">
-                                            <?= htmlspecialchars($p['unit'] ?: 'pcs'); ?>
                                         </td>
 
                                         <td class="text-end fw-bold text-success">
@@ -1821,12 +1866,6 @@ if (!function_exists('getQueryUrl')) {
                                                 <td>
                                                     <div class="d-flex align-items-center ps-3">
                                                         <i class="bi bi-arrow-return-right text-primary me-2 flex-shrink-0"></i>
-                                                        <img src="<?= htmlspecialchars($v_img, ENT_QUOTES, 'UTF-8'); ?>" 
-                                                             alt="<?= htmlspecialchars($v['variant_name']); ?>" 
-                                                             class="variant-thumb me-2" 
-                                                             onclick="openProductImageZoom(this.src)" 
-                                                             title="Click to view large image"
-                                                             onerror="this.onerror=null; this.src='../assets/images/no-image.png';">
                                                         <div>
                                                             <span class="fw-semibold text-dark"><?= htmlspecialchars($v['variant_name']); ?></span>
                                                             <span class="badge bg-info-subtle text-info border border-info-subtle ms-1" style="font-size: 0.72rem;">Variant</span>
@@ -1836,10 +1875,6 @@ if (!function_exists('getQueryUrl')) {
 
                                                 <td>
                                                     <span class="text-muted small"><?= htmlspecialchars($p['category'] ?: 'Uncategorized'); ?></span>
-                                                </td>
-
-                                                <td class="text-center text-muted small">
-                                                    <?= htmlspecialchars($v['unit'] ?: ($p['unit'] ?: 'pcs')); ?>
                                                 </td>
 
                                                 <td class="text-end fw-semibold text-success">
@@ -1895,7 +1930,7 @@ if (!function_exists('getQueryUrl')) {
                                 <?php endforeach; ?>
                             <?php else: ?>
                                 <tr>
-                                    <td colspan="8" class="text-center py-5 text-muted">
+                                    <td colspan="7" class="text-center py-5 text-muted">
                                         <i class="bi bi-box-seam display-4 d-block mb-2 text-secondary opacity-50"></i>
                                         <h5 class="fw-semibold">No products found</h5>
                                         <p class="small text-muted mb-0">Try adjusting your search or filter options to find what you are looking for.</p>
