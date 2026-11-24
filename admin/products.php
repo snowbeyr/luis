@@ -828,10 +828,28 @@ function getQueryUrl($params_to_update = [])
             background: #fff;
             cursor: zoom-in;
             transition: transform 0.2s ease;
+            flex-shrink: 0;
         }
 
         .prod-thumb:hover {
             transform: scale(1.08);
+        }
+
+        /* Variant Image Thumbnail */
+        .variant-thumb {
+            width: 32px;
+            height: 32px;
+            object-fit: cover;
+            border-radius: 5px;
+            border: 1px solid #e2e8f0;
+            background: #fff;
+            cursor: zoom-in;
+            transition: transform 0.2s ease;
+            flex-shrink: 0;
+        }
+
+        .variant-thumb:hover {
+            transform: scale(1.15);
         }
 
         /* Accordion Toggle Chevron */
@@ -1289,7 +1307,7 @@ function getQueryUrl($params_to_update = [])
                                             $v_status = '<span class="badge-status badge-in-stock"><i class="bi bi-check-circle-fill"></i> In Stock</span>';
                                         }
 
-                                        $v_img = !empty($v['variant_image']) ? getProductImageSrc($v['variant_image']) : '';
+                                        $v_img = !empty($v['variant_image']) ? getProductImageSrc($v['variant_image']) : $img_src;
                                     ?>
                                         <tr class="variant-row variant-row-<?= $p_id; ?> <?= $auto_expand ? '' : 'd-none'; ?>" id="variant-row-<?= $v_id; ?>">
                                             <!-- Hierarchical Number (e.g. 1.1) -->
@@ -1300,15 +1318,13 @@ function getQueryUrl($params_to_update = [])
                                             <!-- Variant Name & Connector -->
                                             <td>
                                                 <div class="d-flex align-items-center ps-3">
-                                                    <i class="bi bi-arrow-return-right text-primary me-2"></i>
-                                                    <?php if ($v_img): ?>
-                                                        <img src="<?= htmlspecialchars($v_img, ENT_QUOTES, 'UTF-8'); ?>" 
-                                                             alt="<?= htmlspecialchars($v['variant_name']); ?>" 
-                                                             class="prod-thumb me-2" 
-                                                             style="width: 32px; height: 32px;"
-                                                             onclick="openProductImageZoom(this.src)"
-                                                             onerror="this.onerror=null; this.src='../assets/images/no-image.png';">
-                                                    <?php endif; ?>
+                                                    <i class="bi bi-arrow-return-right text-primary me-2 flex-shrink-0"></i>
+                                                    <img src="<?= htmlspecialchars($v_img, ENT_QUOTES, 'UTF-8'); ?>" 
+                                                         alt="<?= htmlspecialchars($v['variant_name']); ?>" 
+                                                         class="variant-thumb me-2" 
+                                                         onclick="openProductImageZoom(this.src)" 
+                                                         title="Click to view large image"
+                                                         onerror="this.onerror=null; this.src='../assets/images/no-image.png';">
                                                     <div>
                                                         <span class="fw-semibold text-dark"><?= htmlspecialchars($v['variant_name']); ?></span>
                                                         <span class="badge bg-info-subtle text-info border border-info-subtle ms-1" style="font-size: 0.72rem;">Variant</span>
