@@ -432,7 +432,16 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
                                         <td>₱<?= number_format((float)$r['original_total'], 2); ?></td>
                                         <td class="fw-bold text-primary">₱<?= number_format((float)$r['proposed_total'], 2); ?></td>
                                         <td>
-                                            <?php if ($diff > 0): ?>
+                                            <?php if ($r['correction_type'] === 'Incorrect Payment Information'): ?>
+                                                <?php $cash_diff = isset($r['cash_discrepancy']) && $r['cash_discrepancy'] !== null ? (float)$r['cash_discrepancy'] : $diff; ?>
+                                                <?php if ($cash_diff > 0): ?>
+                                                    <span class="diff-badge-pos">+₱<?= number_format($cash_diff, 2); ?> (Cash Tendered)</span>
+                                                <?php elseif ($cash_diff < 0): ?>
+                                                    <span class="diff-badge-neg">-₱<?= number_format(abs($cash_diff), 2); ?> (Cash Tendered)</span>
+                                                <?php else: ?>
+                                                    <span class="diff-badge-zero">₱0.00 (Method/Ref)</span>
+                                                <?php endif; ?>
+                                            <?php elseif ($diff > 0): ?>
                                                 <span class="diff-badge-pos">+₱<?= number_format($diff, 2); ?> (Customer Pays)</span>
                                             <?php elseif ($diff < 0): ?>
                                                 <span class="diff-badge-neg">-₱<?= number_format(abs($diff), 2); ?> (Refund Due)</span>
@@ -549,48 +558,95 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
                         <!-- Specific Fields for Incorrect Payment Information Category -->
                         <div class="col-12" id="paymentCorrectionContainer" style="display: none;">
                             <div class="card border-primary p-3" style="background-color: #f0f7ff;">
-                                <h6 class="fw-bold text-primary mb-3">
-                                    <i class="bi bi-credit-card-2-front me-2"></i>Payment Information Correction Details
-                                </h6>
+                                <div class="d-flex justify-content-between align-items-center mb-3">
+                                    <h6 class="fw-bold text-primary mb-0">
+                                        <i class="bi bi-credit-card-2-front me-2"></i>Payment Information Correction Details
+                                    </h6>
+                                    <span class="badge bg-primary text-white">Payment & Cash Tendered Correction</span>
+                                </div>
+
+                                <input type="hidden" id="corr_orig_cash_tendered_raw" value="0">
+                                <input type="hidden" id="corr_orig_change_raw" value="0">
+
+                                <!-- Transaction Total vs Exchange Credit Separation -->
+                                <div class="row g-2 mb-3">
+                                    <div class="col-md-6">
+                                        <div class="bg-white p-2 rounded border">
+                                            <span class="small text-muted d-block fw-semibold">Transaction Total (Net Applied to Items):</span>
+                                            <span class="fs-6 fw-bold text-dark" id="corr_net_applied_display">₱0.00</span>
+                                            <small class="d-block text-muted" style="font-size: 0.75rem;">Total selling price of products purchased.</small>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <div class="bg-white p-2 rounded border border-success-subtle" style="background-color: #f7fff9;">
+                                            <span class="small text-success d-block fw-semibold"><i class="bi bi-arrow-repeat me-1"></i>Eligible Exchange Credit:</span>
+                                            <span class="fs-6 fw-bold text-success" id="corr_exchange_credit_display">₱0.00</span>
+                                            <small class="d-block text-muted" style="font-size: 0.75rem;">Calculated strictly from item unit prices. Cash tendered is NOT used as credit.</small>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <div class="row g-3">
-                                    <!-- Original Recorded Paid Amount (Read-only) -->
+                                    <!-- Original Recorded Cash Tendered (Read-only) -->
                                     <div class="col-md-4">
-                                        <label class="form-label small fw-bold text-muted">Original Recorded Paid Amount</label>
+                                        <label class="form-label small fw-bold text-muted">Original Recorded Cash Tendered</label>
                                         <input type="text" id="corr_orig_paid_amount" class="form-control bg-white fw-bold" readonly>
+                                        <small class="text-muted">Recorded money handed by customer.</small>
+                                    </div>
+                                    <!-- Original Recorded Change (Read-only) -->
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-bold text-muted">Original Recorded Change</label>
+                                        <input type="text" id="corr_orig_change_amount" class="form-control bg-white" readonly>
+                                        <small class="text-muted">Recorded change given.</small>
                                     </div>
                                     <!-- Original Payment Method (Read-only) -->
                                     <div class="col-md-4">
                                         <label class="form-label small fw-bold text-muted">Original Payment Method</label>
                                         <input type="text" id="corr_orig_payment_method" class="form-control bg-white" readonly>
-                                    </div>
-                                    <!-- Original Sender / Ref Number (Read-only) -->
-                                    <div class="col-md-4">
-                                        <label class="form-label small fw-bold text-muted">Original Sender / Ref Number</label>
-                                        <input type="text" id="corr_orig_ref_number" class="form-control bg-white" readonly>
+                                        <small class="text-muted" id="corr_orig_ref_preview">Ref: N/A</small>
+                                        <input type="hidden" id="corr_orig_ref_number">
                                     </div>
 
-                                    <!-- Proposed Correct Paid Amount -->
+                                    <!-- Proposed Correct Cash Tendered -->
                                     <div class="col-md-4">
                                         <label class="form-label small fw-bold text-dark">
-                                            Proposed Correct Paid Amount <span class="text-danger">*</span>
+                                            Proposed Correct Cash Tendered <span class="text-danger">*</span>
                                         </label>
                                         <div class="input-group">
                                             <span class="input-group-text">₱</span>
-                                            <input type="number" step="0.01" min="0" name="proposed_amount_paid" id="corr_prop_paid_amount" class="form-control fw-bold" placeholder="0.00" oninput="calculatePaymentCorrectionBalance()">
+                                            <input type="number" step="0.01" min="0" name="proposed_amount_paid" id="corr_prop_paid_amount" class="form-control fw-bold text-primary" placeholder="0.00" oninput="calculatePaymentCorrectionBalance()">
                                         </div>
-                                        <small class="text-muted">Amount that should have been recorded as paid.</small>
+                                        <small class="text-muted">Actual cash handed by customer (e.g. ₱500.00).</small>
+                                    </div>
+
+                                    <!-- Proposed Correct Change (Calculated) -->
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-bold text-dark">
+                                            Proposed Correct Change
+                                        </label>
+                                        <input type="text" id="corr_prop_change_amount" class="form-control bg-white fw-bold" readonly>
+                                        <small class="text-muted">Formula: Cash Tendered - Transaction Total.</small>
+                                    </div>
+
+                                    <!-- Calculated Cash Discrepancy -->
+                                    <div class="col-md-4">
+                                        <label class="form-label small fw-bold text-dark">
+                                            Cash Discrepancy (Difference)
+                                        </label>
+                                        <input type="text" id="corr_cash_discrepancy_display" class="form-control bg-white fw-bold" readonly>
+                                        <small class="text-muted">Proposed Tendered - Original Tendered.</small>
                                     </div>
 
                                     <!-- Actual Amount Received -->
                                     <div class="col-md-4">
                                         <label class="form-label small fw-bold text-dark">
-                                            Actual Amount Received <span class="text-danger">*</span>
+                                            Actual Money Received <span class="text-danger">*</span>
                                         </label>
                                         <div class="input-group">
                                             <span class="input-group-text">₱</span>
                                             <input type="number" step="0.01" min="0" name="actual_amount_received" id="corr_actual_amount_received" class="form-control fw-bold" placeholder="0.00" oninput="calculatePaymentCorrectionBalance()">
                                         </div>
-                                        <small class="text-muted">Real money or e-wallet actually received from customer.</small>
+                                        <small class="text-muted">Real physical cash received into drawer.</small>
                                     </div>
 
                                     <!-- Proposed Payment Method -->
@@ -606,12 +662,12 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
                                     </div>
 
                                     <!-- Proposed Sender Number (Only visible for GCash / Maya) -->
-                                    <div class="col-md-6" id="corr_sender_num_group" style="display: none;">
+                                    <div class="col-md-4" id="corr_sender_num_group" style="display: none;">
                                         <label class="form-label small fw-bold text-dark">
                                             Sender Mobile Number (GCash / Maya) <span class="text-danger">*</span>
                                         </label>
                                         <input type="text" name="proposed_reference_number" id="corr_prop_reference_number" class="form-control" placeholder="09xxxxxxxxx" maxlength="11" oninput="this.value = this.value.replace(/[^0-9]/g, '').slice(0, 11)">
-                                        <small class="text-muted">Must be 11 digits starting with 09 (e.g. 09171234567).</small>
+                                        <small class="text-muted">Must be 11 digits starting with 09.</small>
                                     </div>
 
                                     <!-- Live Balance / Payment Status Feedback Banner -->
@@ -901,6 +957,12 @@ function handleCorrectionTypeChange() {
             reasonInput.placeholder = "Explain how the quantity error occurred and what the verified quantity is...";
         }
     }
+
+    if (typeSelect.value === 'Incorrect Payment Information') {
+        calculatePaymentCorrectionBalance();
+    } else {
+        renderCorrectedItems();
+    }
 }
 
 function handlePropPaymentMethodChange() {
@@ -922,29 +984,78 @@ function handlePropPaymentMethodChange() {
 }
 
 function calculatePaymentCorrectionBalance() {
+    let typeSelect = document.getElementById('corr_type_select');
+    let isPaymentCorrection = typeSelect && typeSelect.value === 'Incorrect Payment Information';
+
     let origTotal = currentOriginalCart.reduce((acc, i) => acc + i.subtotal, 0);
     let propTotal = currentCorrectionCart.reduce((acc, i) => acc + i.subtotal, 0);
     let targetTotal = propTotal > 0 ? propTotal : origTotal;
 
+    // 1. Explicitly display Transaction Total and Exchange Credit
+    let netAppliedEl = document.getElementById('corr_net_applied_display');
+    let exchCreditEl = document.getElementById('corr_exchange_credit_display');
+    if (netAppliedEl) netAppliedEl.innerText = '₱' + targetTotal.toFixed(2);
+    if (exchCreditEl) exchCreditEl.innerText = '₱' + targetTotal.toFixed(2);
+
     let propPaidInput = document.getElementById('corr_prop_paid_amount');
     let actualRecInput = document.getElementById('corr_actual_amount_received');
     let banner = document.getElementById('paymentBalanceStatusBanner');
-    if (!banner) return;
 
-    let propPaid = parseFloat(propPaidInput ? propPaidInput.value : 0) || 0;
+    // 2. Original vs Proposed Cash Tendered
+    let origTendered = parseFloat(document.getElementById('corr_orig_cash_tendered_raw')?.value || 0);
+    let origChange = parseFloat(document.getElementById('corr_orig_change_raw')?.value || (origTendered >= targetTotal ? origTendered - targetTotal : 0));
+    let propTendered = parseFloat(propPaidInput ? propPaidInput.value : 0) || 0;
     let actualRec = parseFloat(actualRecInput ? actualRecInput.value : 0) || 0;
 
-    let bal = targetTotal - actualRec;
-    if (bal > 0.001) {
-        banner.className = 'alert alert-warning py-2 mb-0 small';
-        banner.innerHTML = `<i class="bi bi-exclamation-triangle-fill me-1 text-warning"></i> <b>Underpaid Transaction:</b> Customer owes an outstanding balance of <strong>₱${bal.toFixed(2)}</strong>. Status will remain <strong>Partially Paid</strong> upon approval.`;
-    } else if (bal < -0.001) {
-        let overpay = Math.abs(bal);
-        banner.className = 'alert alert-info py-2 mb-0 small';
-        banner.innerHTML = `<i class="bi bi-info-circle-fill me-1 text-info"></i> <b>Overpayment / Change Due:</b> Customer overpaid by <strong>₱${overpay.toFixed(2)}</strong>. Refund/change process will apply upon approval.`;
-    } else {
-        banner.className = 'alert alert-success py-2 mb-0 small';
-        banner.innerHTML = `<i class="bi bi-check-circle-fill me-1 text-success"></i> <b>Fully Paid:</b> Actual money received matches the transaction total of ₱${targetTotal.toFixed(2)}. Remaining balance: ₱0.00.`;
+    // 3. Formula: Change Given = Cash Tendered - Transaction Total
+    let propChange = propTendered >= targetTotal ? (propTendered - targetTotal) : 0;
+    let changeDiff = propChange - origChange;
+    let cashDiscrepancy = propTendered - origTendered;
+
+    let propChangeEl = document.getElementById('corr_prop_change_amount');
+    let cashDiscEl = document.getElementById('corr_cash_discrepancy_display');
+    if (propChangeEl) propChangeEl.value = '₱' + propChange.toFixed(2);
+    if (cashDiscEl) {
+        let prefix = cashDiscrepancy > 0 ? '+₱' : (cashDiscrepancy < 0 ? '-₱' : '₱');
+        cashDiscEl.value = prefix + Math.abs(cashDiscrepancy).toFixed(2);
+    }
+
+    if (banner) {
+        let bal = targetTotal - actualRec;
+        if (bal > 0.001) {
+            banner.className = 'alert alert-warning py-2 mb-0 small';
+            banner.innerHTML = `<i class="bi bi-exclamation-triangle-fill me-1 text-warning"></i> <b>Underpaid Transaction:</b> Customer owes an outstanding balance of <strong>₱${bal.toFixed(2)}</strong>. Status will remain <strong>Partially Paid</strong> upon approval.`;
+        } else if (bal < -0.001) {
+            let overpay = Math.abs(bal);
+            banner.className = 'alert alert-info py-2 mb-0 small';
+            banner.innerHTML = `<i class="bi bi-info-circle-fill me-1 text-info"></i> <b>Overpayment / Change Due:</b> Customer overpaid by <strong>₱${overpay.toFixed(2)}</strong>. Refund/change process will apply upon approval.`;
+        } else {
+            banner.className = 'alert alert-success py-2 mb-0 small';
+            banner.innerHTML = `<i class="bi bi-check-circle-fill me-1 text-success"></i> <b>Fully Paid:</b> Money received covers transaction total of ₱${targetTotal.toFixed(2)}. Net Payment Applied: ₱${targetTotal.toFixed(2)}. Eligible Exchange Credit: ₱${targetTotal.toFixed(2)}.`;
+        }
+    }
+
+    // 4. Update Financial Difference Summary Banner dynamically!
+    if (isPaymentCorrection) {
+        let diffBadge = document.getElementById('diffAmountBadge');
+        let diffText = document.getElementById('diffExplanationText');
+        if (diffBadge && diffText) {
+            if (Math.abs(cashDiscrepancy) > 0.001) {
+                if (cashDiscrepancy > 0) {
+                    diffBadge.className = 'fs-5 fw-bold text-success';
+                    diffBadge.innerText = '+₱' + cashDiscrepancy.toFixed(2);
+                    diffText.innerHTML = `<strong>Cash Tendered Discrepancy: +₱${cashDiscrepancy.toFixed(2)}</strong> (Recorded: ₱${origTendered.toFixed(2)} vs Actual: ₱${propTendered.toFixed(2)}). Correct change: ₱${propChange.toFixed(2)} (was ₱${origChange.toFixed(2)}). Exchange credit remains ₱${targetTotal.toFixed(2)}.`;
+                } else {
+                    diffBadge.className = 'fs-5 fw-bold text-danger';
+                    diffBadge.innerText = '-₱' + Math.abs(cashDiscrepancy).toFixed(2);
+                    diffText.innerHTML = `<strong>Cash Tendered Discrepancy: -₱${Math.abs(cashDiscrepancy).toFixed(2)}</strong> (Recorded: ₱${origTendered.toFixed(2)} vs Actual: ₱${propTendered.toFixed(2)}). Correct change: ₱${propChange.toFixed(2)} (was ₱${origChange.toFixed(2)}). Exchange credit remains ₱${targetTotal.toFixed(2)}.`;
+                }
+            } else {
+                diffBadge.className = 'fs-5 fw-bold text-secondary';
+                diffBadge.innerText = '₱0.00';
+                diffText.innerText = 'Payment Method / Reference Correction only. No cash discrepancy. Exchange credit remains ₱' + targetTotal.toFixed(2) + '.';
+            }
+        }
     }
 }
 
@@ -970,21 +1081,43 @@ function openCorrectionModal(txId, txDateStr, deadlineStr) {
     .then(res => res.json())
     .then(data => {
         let tx = data.transaction || {};
-        document.getElementById('corr_receipt_date').innerText = txDateStr || tx.transaction_date || 'N/A';
-        document.getElementById('corr_receipt_deadline').innerText = deadlineStr || 'N/A';
-        document.getElementById('corr_receipt_orig_total').innerText = '₱' + parseFloat(tx.total_amount || 0).toFixed(2);
-
-        // Populate Payment Correction Original Information
+        let origTotal = parseFloat(tx.total_amount || 0);
         let origPaid = parseFloat(tx.amount_paid || tx.total_amount || 0);
+        let origChange = parseFloat(tx.change_amount || (origPaid >= origTotal ? origPaid - origTotal : 0));
         let actualRec = parseFloat(tx.actual_amount_received || tx.amount_paid || tx.total_amount || 0);
         let origMethod = tx.payment_method || 'Cash';
         let origRef = tx.reference_number || 'N/A';
 
+        document.getElementById('corr_receipt_date').innerText = txDateStr || tx.transaction_date || 'N/A';
+        document.getElementById('corr_receipt_deadline').innerText = deadlineStr || 'N/A';
+        document.getElementById('corr_receipt_orig_total').innerText = '₱' + origTotal.toFixed(2);
+
+        // Store raw numeric values
+        let rawTenderedEl = document.getElementById('corr_orig_cash_tendered_raw');
+        let rawChangeEl = document.getElementById('corr_orig_change_raw');
+        if (rawTenderedEl) rawTenderedEl.value = origPaid;
+        if (rawChangeEl) rawChangeEl.value = origChange;
+
+        // Separate and display Payment values
+        let netAppliedEl = document.getElementById('corr_net_applied_display');
+        let exchCreditEl = document.getElementById('corr_exchange_credit_display');
+        if (netAppliedEl) netAppliedEl.innerText = '₱' + origTotal.toFixed(2);
+        if (exchCreditEl) exchCreditEl.innerText = '₱' + origTotal.toFixed(2);
+
         document.getElementById('corr_orig_paid_amount').value = '₱' + origPaid.toFixed(2);
+        let origChangeInput = document.getElementById('corr_orig_change_amount');
+        if (origChangeInput) origChangeInput.value = '₱' + origChange.toFixed(2);
         document.getElementById('corr_orig_payment_method').value = origMethod;
+        let origRefPrev = document.getElementById('corr_orig_ref_preview');
+        if (origRefPrev) origRefPrev.innerText = 'Ref: ' + origRef;
         document.getElementById('corr_orig_ref_number').value = origRef;
 
         document.getElementById('corr_prop_paid_amount').value = origPaid.toFixed(2);
+        let propChangeInput = document.getElementById('corr_prop_change_amount');
+        if (propChangeInput) propChangeInput.value = '₱' + origChange.toFixed(2);
+        let cashDiscEl = document.getElementById('corr_cash_discrepancy_display');
+        if (cashDiscEl) cashDiscEl.value = '₱0.00';
+
         document.getElementById('corr_actual_amount_received').value = actualRec.toFixed(2);
         document.getElementById('corr_prop_payment_method').value = (origMethod === 'GCash' || origMethod === 'Maya') ? origMethod : 'Cash';
         document.getElementById('corr_prop_reference_number').value = (tx.reference_number && tx.reference_number !== 'N/A') ? tx.reference_number : '';
@@ -1071,23 +1204,30 @@ function renderCorrectedItems() {
     tbody.innerHTML = html || '<tr><td colspan="5" class="text-center text-muted py-3">No items. Click "+ Add / Replace Product" to add.</td></tr>';
     document.getElementById('propTotalDisplay').innerText = '₱' + total.toFixed(2);
 
-    let origTotal = currentOriginalCart.reduce((acc, i) => acc + i.subtotal, 0);
-    let diff = total - origTotal;
-    let diffBadge = document.getElementById('diffAmountBadge');
-    let diffText = document.getElementById('diffExplanationText');
+    let typeSelect = document.getElementById('corr_type_select');
+    let isPaymentCorrection = typeSelect && typeSelect.value === 'Incorrect Payment Information';
 
-    if (diff > 0) {
-        diffBadge.className = 'fs-5 fw-bold text-success';
-        diffBadge.innerText = '+₱' + diff.toFixed(2);
-        diffText.innerText = 'Additional payment of ₱' + diff.toFixed(2) + ' must be collected from customer upon owner approval.';
-    } else if (diff < 0) {
-        diffBadge.className = 'fs-5 fw-bold text-danger';
-        diffBadge.innerText = '-₱' + Math.abs(diff).toFixed(2);
-        diffText.innerText = 'A refund of ₱' + Math.abs(diff).toFixed(2) + ' must be issued to customer upon owner approval.';
+    if (isPaymentCorrection) {
+        calculatePaymentCorrectionBalance();
     } else {
-        diffBadge.className = 'fs-5 fw-bold text-secondary';
-        diffBadge.innerText = '₱0.00';
-        diffText.innerText = 'Even exchange. No payment collection or refund required.';
+        let origTotal = currentOriginalCart.reduce((acc, i) => acc + i.subtotal, 0);
+        let diff = total - origTotal;
+        let diffBadge = document.getElementById('diffAmountBadge');
+        let diffText = document.getElementById('diffExplanationText');
+
+        if (diff > 0.001) {
+            diffBadge.className = 'fs-5 fw-bold text-success';
+            diffBadge.innerText = '+₱' + diff.toFixed(2);
+            diffText.innerText = 'Additional payment of ₱' + diff.toFixed(2) + ' must be collected from customer upon owner approval.';
+        } else if (diff < -0.001) {
+            diffBadge.className = 'fs-5 fw-bold text-danger';
+            diffBadge.innerText = '-₱' + Math.abs(diff).toFixed(2);
+            diffText.innerText = 'A refund of ₱' + Math.abs(diff).toFixed(2) + ' must be issued to customer upon owner approval.';
+        } else {
+            diffBadge.className = 'fs-5 fw-bold text-secondary';
+            diffBadge.innerText = '₱0.00';
+            diffText.innerText = 'Even exchange. No payment collection or refund required.';
+        }
     }
 }
 
@@ -1608,9 +1748,62 @@ function viewCorrectionDetails(reqId) {
         let corrRows = corrItems.map(i => `<tr><td>${i.product_name}</td><td>₱${parseFloat(i.price).toFixed(2)}</td><td>x${i.qty}</td><td class="text-end fw-bold">₱${parseFloat(i.subtotal).toFixed(2)}</td></tr>`).join('');
 
         let diffBadge = '';
-        if (diff > 0) diffBadge = `<span class="badge bg-success">+₱${diff.toFixed(2)} (Additional Payment)</span>`;
-        else if (diff < 0) diffBadge = `<span class="badge bg-danger">-₱${Math.abs(diff).toFixed(2)} (Refund Due)</span>`;
-        else diffBadge = `<span class="badge bg-secondary">₱0.00 (No Diff)</span>`;
+        if (r.correction_type === 'Incorrect Payment Information') {
+            let cashDisc = parseFloat(r.cash_discrepancy || r.payment_difference || 0);
+            if (cashDisc > 0) diffBadge = `<span class="badge bg-success">+₱${cashDisc.toFixed(2)} (Cash Tendered Discrepancy)</span>`;
+            else if (cashDisc < 0) diffBadge = `<span class="badge bg-danger">-₱${Math.abs(cashDisc).toFixed(2)} (Cash Tendered Discrepancy)</span>`;
+            else diffBadge = `<span class="badge bg-secondary">₱0.00 (Method/Ref Only)</span>`;
+        } else {
+            if (diff > 0) diffBadge = `<span class="badge bg-success">+₱${diff.toFixed(2)} (Additional Payment)</span>`;
+            else if (diff < 0) diffBadge = `<span class="badge bg-danger">-₱${Math.abs(diff).toFixed(2)} (Refund Due)</span>`;
+            else diffBadge = `<span class="badge bg-secondary">₱0.00 (Even Exchange)</span>`;
+        }
+
+        // Payment Info Card for Incorrect Payment Information
+        let paymentInfoHtml = '';
+        if (r.correction_type === 'Incorrect Payment Information') {
+            let origTendered = parseFloat(r.original_cash_tendered || r.original_amount_paid || 0);
+            let propTendered = parseFloat(r.proposed_cash_tendered || r.proposed_amount_paid || 0);
+            let origChange = parseFloat(r.original_change_amount || 0);
+            let propChange = parseFloat(r.proposed_change_amount || 0);
+            let itemTotal = parseFloat(r.proposed_total || r.original_total || 0);
+
+            paymentInfoHtml = `
+                <div class="card border-primary mb-3 bg-light">
+                    <div class="card-header bg-primary text-white py-2 fw-bold small">
+                        <i class="bi bi-credit-card-2-front me-1"></i> Payment Correction & Value Separation
+                    </div>
+                    <div class="card-body p-3">
+                        <div class="row g-2 mb-2">
+                            <div class="col-6">
+                                <small class="text-muted d-block">Transaction Total (Net Applied):</small>
+                                <span class="fw-bold">₱${itemTotal.toFixed(2)}</span>
+                            </div>
+                            <div class="col-6">
+                                <small class="text-success d-block fw-semibold">Eligible Exchange Credit:</small>
+                                <span class="fw-bold text-success">₱${itemTotal.toFixed(2)}</span>
+                            </div>
+                        </div>
+                        <div class="row g-2 border-top pt-2">
+                            <div class="col-6">
+                                <div class="bg-white p-2 rounded border">
+                                    <small class="text-muted d-block">Original Recorded Cash Tendered:</small>
+                                    <strong class="text-danger">₱${origTendered.toFixed(2)}</strong>
+                                    <small class="text-muted d-block mt-1">Recorded Change: ₱${origChange.toFixed(2)}</small>
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <div class="bg-white p-2 rounded border border-primary">
+                                    <small class="text-muted d-block">Proposed Correct Cash Tendered:</small>
+                                    <strong class="text-success">₱${propTendered.toFixed(2)}</strong>
+                                    <small class="text-muted d-block mt-1">Correct Change: ₱${propChange.toFixed(2)}</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
 
         let othersAlert = (r.correction_type === 'Others' && r.other_details) ? `
             <div class="alert alert-secondary mb-3">
@@ -1637,6 +1830,7 @@ function viewCorrectionDetails(reqId) {
                 <div class="col-sm-6"><strong>Financial Diff:</strong> ${diffBadge}</div>
             </div>
 
+            ${paymentInfoHtml}
             ${othersAlert}
 
             <div class="card bg-light border p-3 mb-3">

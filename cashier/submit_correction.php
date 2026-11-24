@@ -167,6 +167,7 @@ try {
         $q = (int)($item['qty'] ?? 1);
         $orig_total += ($p * $q);
     }
+    $orig_total = round($orig_total, 2);
 
     $prop_total = 0;
     foreach ($corr_items as $item) {
@@ -174,26 +175,38 @@ try {
         $q = (int)($item['qty'] ?? 1);
         $prop_total += ($p * $q);
     }
+    $prop_total = round($prop_total, 2);
 
-    $payment_diff = $prop_total - $orig_total;
-    $settlement_type = 'none';
-    if ($payment_diff > 0) {
-        $settlement_type = 'additional_payment';
-    } elseif ($payment_diff < 0) {
-        $settlement_type = 'refund';
-    }
-
-    // Payment fields preparation
+    // Payment fields and cash tendered separation
     $orig_amount_paid = (float)($transaction['amount_paid'] ?? $transaction['total_amount'] ?? 0);
     $orig_payment_method = $transaction['payment_method'] ?? 'Cash';
     $orig_reference_number = $transaction['reference_number'] ?? '';
+    $orig_change = isset($transaction['change_amount']) && $transaction['change_amount'] !== null
+        ? (float)$transaction['change_amount']
+        : max(0, round($orig_amount_paid - $orig_total, 2));
 
     if ($correction_type === 'Incorrect Payment Information') {
+        // Discrepancy calculations:
+        // Cash Tendered Difference = Correct Cash Tendered - Original Cash Tendered
+        $cash_discrepancy = round($proposed_amount_paid - $orig_amount_paid, 2);
+        $prop_change = max(0, round($proposed_amount_paid - $prop_total, 2));
+        $change_discrepancy = round($prop_change - $orig_change, 2);
+
+        // Financial difference for payment correction is the cash discrepancy
+        $payment_diff = $cash_discrepancy;
+
+        $settlement_type = 'none';
+        if ($payment_diff > 0) {
+            $settlement_type = 'payment_adjustment';
+        } elseif ($payment_diff < 0) {
+            $settlement_type = 'refund';
+        }
+
         $payment_correction_balance = 0;
         $payment_status = 'Fully Paid';
         if ($actual_amount_received !== null) {
             if ($actual_amount_received < $prop_total) {
-                $payment_correction_balance = $prop_total - $actual_amount_received;
+                $payment_correction_balance = round($prop_total - $actual_amount_received, 2);
                 $payment_status = 'Partially Paid';
             } elseif ($actual_amount_received > $prop_total) {
                 $payment_status = 'Overpaid';
@@ -201,13 +214,36 @@ try {
                 $payment_status = 'Fully Paid';
             }
         }
+
+        $orig_cash_tendered = $orig_amount_paid;
+        $prop_cash_tendered = $proposed_amount_paid;
+        $orig_change_amount = $orig_change;
+        $prop_change_amount = $prop_change;
+        $net_payment_applied = min($prop_total, $proposed_amount_paid);
+        $eligible_exchange_credit = $prop_total;
     } else {
+        $payment_diff = round($prop_total - $orig_total, 2);
+        $settlement_type = 'none';
+        if ($payment_diff > 0) {
+            $settlement_type = 'additional_payment';
+        } elseif ($payment_diff < 0) {
+            $settlement_type = 'refund';
+        }
+
         $proposed_amount_paid = $orig_amount_paid;
         $actual_amount_received = (float)($transaction['actual_amount_received'] ?? $orig_amount_paid);
         $proposed_payment_method = $orig_payment_method;
         $proposed_reference_number = $orig_reference_number;
         $payment_correction_balance = (float)($transaction['outstanding_balance'] ?? 0);
         $payment_status = $transaction['payment_status'] ?? 'Fully Paid';
+
+        $orig_cash_tendered = $orig_amount_paid;
+        $prop_cash_tendered = $orig_amount_paid;
+        $orig_change_amount = $orig_change;
+        $prop_change_amount = $orig_change;
+        $cash_discrepancy = 0;
+        $net_payment_applied = min($prop_total, $orig_amount_paid);
+        $eligible_exchange_credit = $prop_total;
     }
 
     $pdo->beginTransaction();
@@ -223,6 +259,9 @@ try {
             original_payment_method, proposed_payment_method,
             original_reference_number, proposed_reference_number,
             payment_correction_balance, payment_status,
+            original_cash_tendered, proposed_cash_tendered,
+            original_change_amount, proposed_change_amount,
+            cash_discrepancy, net_payment_applied, eligible_exchange_credit,
             created_at
         ) VALUES (
             ?, ?, ?, ?, ?,
@@ -233,6 +272,9 @@ try {
             ?, ?,
             ?, ?,
             ?, ?,
+            ?, ?,
+            ?, ?,
+            ?, ?, ?,
             CURRENT_TIMESTAMP
         )
     ");
@@ -259,7 +301,14 @@ try {
         $orig_reference_number,
         $proposed_reference_number,
         $payment_correction_balance,
-        $payment_status
+        $payment_status,
+        $orig_cash_tendered,
+        $prop_cash_tendered,
+        $orig_change_amount,
+        $prop_change_amount,
+        $cash_discrepancy,
+        $net_payment_applied,
+        $eligible_exchange_credit
     ]);
     $request_id = $pdo->lastInsertId();
 

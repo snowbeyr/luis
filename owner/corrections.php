@@ -420,12 +420,26 @@ body {
                                     <td>₱<?= number_format((float)$r['original_total'], 2); ?></td>
                                     <td class="fw-bold text-primary">₱<?= number_format((float)$r['proposed_total'], 2); ?></td>
                                     <td>
-                                        <?php if ($diff > 0): ?>
-                                            <span class="diff-pos">+₱<?= number_format($diff, 2); ?></span>
-                                        <?php elseif ($diff < 0): ?>
-                                            <span class="diff-neg">-₱<?= number_format(abs($diff), 2); ?></span>
+                                        <?php if ($r['correction_type'] === 'Incorrect Payment Information'): ?>
+                                            <?php $cash_diff = isset($r['cash_discrepancy']) && $r['cash_discrepancy'] !== null ? (float)$r['cash_discrepancy'] : $diff; ?>
+                                            <?php if ($cash_diff > 0): ?>
+                                                <span class="diff-pos">+₱<?= number_format($cash_diff, 2); ?></span>
+                                                <small class="d-block text-muted" style="font-size:0.7rem;">Cash Tendered</small>
+                                            <?php elseif ($cash_diff < 0): ?>
+                                                <span class="diff-neg">-₱<?= number_format(abs($cash_diff), 2); ?></span>
+                                                <small class="d-block text-muted" style="font-size:0.7rem;">Cash Tendered</small>
+                                            <?php else: ?>
+                                                <span class="diff-zero">₱0.00</span>
+                                                <small class="d-block text-muted" style="font-size:0.7rem;">Method/Ref</small>
+                                            <?php endif; ?>
                                         <?php else: ?>
-                                            <span class="diff-zero">₱0.00</span>
+                                            <?php if ($diff > 0): ?>
+                                                <span class="diff-pos">+₱<?= number_format($diff, 2); ?></span>
+                                            <?php elseif ($diff < 0): ?>
+                                                <span class="diff-neg">-₱<?= number_format(abs($diff), 2); ?></span>
+                                            <?php else: ?>
+                                                <span class="diff-zero">₱0.00</span>
+                                            <?php endif; ?>
                                         <?php endif; ?>
                                     </td>
                                     <td>
@@ -696,7 +710,46 @@ function openDetailsModal(reqId) {
 
         // Difference Badge
         let diffBanner = '';
-        if (diff > 0) {
+        if (r.correction_type === 'Incorrect Payment Information') {
+            let cashDisc = parseFloat(r.cash_discrepancy || r.payment_difference || 0);
+            let origTendered = parseFloat(r.original_cash_tendered || r.original_amount_paid || 0);
+            let propTendered = parseFloat(r.proposed_cash_tendered || r.proposed_amount_paid || 0);
+            let origChange = parseFloat(r.original_change_amount || 0);
+            let propChange = parseFloat(r.proposed_change_amount || 0);
+            let itemTotal = parseFloat(r.proposed_total || r.original_total || 0);
+
+            if (cashDisc > 0) {
+                diffBanner = `
+                    <div class="alert alert-warning mb-3 d-flex justify-content-between align-items-center">
+                        <div>
+                            <strong class="d-block text-dark"><i class="bi bi-cash-stack me-1"></i> Cash Tendered Discrepancy:</strong>
+                            <span class="small">Cashier under-recorded cash tendered by <strong>₱${cashDisc.toFixed(2)}</strong>. Recorded: ₱${origTendered.toFixed(2)} (Change: ₱${origChange.toFixed(2)}) vs Actual Tendered: ₱${propTendered.toFixed(2)} (Correct Change: ₱${propChange.toFixed(2)}). Selling price / Exchange credit remains ₱${itemTotal.toFixed(2)}.</span>
+                        </div>
+                        <div class="fs-4 fw-bold text-success">+₱${cashDisc.toFixed(2)}</div>
+                    </div>
+                `;
+            } else if (cashDisc < 0) {
+                diffBanner = `
+                    <div class="alert alert-info mb-3 d-flex justify-content-between align-items-center">
+                        <div>
+                            <strong class="d-block text-dark"><i class="bi bi-cash-stack me-1"></i> Cash Tendered Discrepancy:</strong>
+                            <span class="small">Cashier over-recorded cash tendered by <strong>₱${Math.abs(cashDisc).toFixed(2)}</strong>. Recorded: ₱${origTendered.toFixed(2)} vs Actual Tendered: ₱${propTendered.toFixed(2)}. Correct change: ₱${propChange.toFixed(2)}.</span>
+                        </div>
+                        <div class="fs-4 fw-bold text-danger">-₱${Math.abs(cashDisc).toFixed(2)}</div>
+                    </div>
+                `;
+            } else {
+                diffBanner = `
+                    <div class="alert alert-secondary mb-3 d-flex justify-content-between align-items-center">
+                        <div>
+                            <strong class="d-block text-dark"><i class="bi bi-credit-card me-1"></i> Payment Method / Reference Correction:</strong>
+                            <span class="small">Payment details corrected without cash discrepancy. Transaction amount remains unchanged.</span>
+                        </div>
+                        <div class="fs-4 fw-bold text-muted">₱0.00</div>
+                    </div>
+                `;
+            }
+        } else if (diff > 0) {
             diffBanner = `
                 <div class="alert alert-warning mb-3 d-flex justify-content-between align-items-center">
                     <div>
@@ -749,9 +802,13 @@ function openDetailsModal(reqId) {
         // Payment Information Comparison Card for Incorrect Payment Information
         let paymentInfoCard = '';
         if (r.correction_type === 'Incorrect Payment Information') {
-            let origPaid = parseFloat(r.original_amount_paid || r.original_total || 0).toFixed(2);
-            let propPaid = parseFloat(r.proposed_amount_paid || 0).toFixed(2);
+            let origPaid = parseFloat(r.original_cash_tendered || r.original_amount_paid || r.original_total || 0).toFixed(2);
+            let propPaid = parseFloat(r.proposed_cash_tendered || r.proposed_amount_paid || 0).toFixed(2);
+            let origChange = parseFloat(r.original_change_amount || 0).toFixed(2);
+            let propChange = parseFloat(r.proposed_change_amount || 0).toFixed(2);
+            let cashDisc = parseFloat(r.cash_discrepancy || r.payment_difference || 0).toFixed(2);
             let actualRec = parseFloat(r.actual_amount_received || 0).toFixed(2);
+            let itemTotal = parseFloat(r.proposed_total || r.original_total || 0).toFixed(2);
             let bal = parseFloat(r.payment_correction_balance || 0);
             let statusBadge = '';
             if (r.payment_status === 'Partially Paid') {
@@ -767,16 +824,35 @@ function openDetailsModal(reqId) {
                 <div class="card border-primary mb-3" style="background-color: #f8fbff;">
                     <div class="card-header bg-primary text-white py-2 d-flex justify-content-between align-items-center">
                         <h6 class="mb-0 fw-bold"><i class="bi bi-credit-card-2-front me-2"></i>Payment Information Correction Details</h6>
-                        <span class="badge bg-white text-primary fw-bold">Payment Correction</span>
+                        <span class="badge bg-white text-primary fw-bold">Cash Tendered & Payment Adjustment</span>
                     </div>
                     <div class="card-body">
+                        <!-- Value Separation Notice -->
+                        <div class="row g-2 mb-3">
+                            <div class="col-md-6">
+                                <div class="bg-white p-2 rounded border">
+                                    <small class="text-muted d-block fw-semibold">Transaction Total (Net Applied):</small>
+                                    <span class="fw-bold fs-6">₱${itemTotal}</span>
+                                    <small class="text-muted d-block" style="font-size: 0.72rem;">Actual selling price of items.</small>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="bg-white p-2 rounded border border-success-subtle" style="background-color: #f7fff9;">
+                                    <small class="text-success d-block fw-semibold"><i class="bi bi-arrow-repeat me-1"></i>Eligible Exchange Credit:</small>
+                                    <span class="fw-bold fs-6 text-success">₱${itemTotal}</span>
+                                    <small class="text-muted d-block" style="font-size: 0.72rem;">Based on item unit prices. Cash tendered is NOT used as credit.</small>
+                                </div>
+                            </div>
+                        </div>
+
                         <div class="row g-3">
                             <!-- Original Recorded Payment -->
                             <div class="col-md-6">
                                 <div class="bg-white p-3 rounded border h-100 shadow-sm">
                                     <h6 class="fw-bold text-secondary mb-2"><i class="bi bi-clock-history me-1"></i>ORIGINAL PAYMENT RECORD</h6>
                                     <table class="table table-sm table-borderless mb-0">
-                                        <tr><td class="text-muted" style="width: 150px;">Recorded Paid:</td><td class="fw-bold">₱${origPaid}</td></tr>
+                                        <tr><td class="text-muted" style="width: 160px;">Cash Tendered:</td><td class="fw-bold text-danger">₱${origPaid}</td></tr>
+                                        <tr><td class="text-muted">Recorded Change:</td><td class="fw-bold">₱${origChange}</td></tr>
                                         <tr><td class="text-muted">Payment Method:</td><td><span class="badge bg-secondary">${r.original_payment_method || 'Cash'}</span></td></tr>
                                         <tr><td class="text-muted">Sender / Ref:</td><td>${r.original_reference_number || 'N/A'}</td></tr>
                                     </table>
@@ -787,7 +863,9 @@ function openDetailsModal(reqId) {
                                 <div class="bg-white p-3 rounded border border-primary h-100 shadow-sm">
                                     <h6 class="fw-bold text-primary mb-2"><i class="bi bi-pencil-square me-1"></i>PROPOSED CORRECT PAYMENT</h6>
                                     <table class="table table-sm table-borderless mb-0">
-                                        <tr><td class="text-muted" style="width: 150px;">Proposed Paid:</td><td class="fw-bold text-primary">₱${propPaid}</td></tr>
+                                        <tr><td class="text-muted" style="width: 160px;">Cash Tendered:</td><td class="fw-bold text-success">₱${propPaid}</td></tr>
+                                        <tr><td class="text-muted">Correct Change:</td><td class="fw-bold text-success">₱${propChange}</td></tr>
+                                        <tr><td class="text-muted">Cash Discrepancy:</td><td class="fw-bold text-primary">${cashDisc >= 0 ? '+₱' + cashDisc : '-₱' + Math.abs(cashDisc)}</td></tr>
                                         <tr><td class="text-muted">Actual Received:</td><td class="fw-bold text-success">₱${actualRec}</td></tr>
                                         <tr><td class="text-muted">Payment Method:</td><td><span class="badge bg-primary">${r.proposed_payment_method || 'Cash'}</span></td></tr>
                                         <tr><td class="text-muted">Sender Mobile / Ref:</td><td class="fw-bold">${r.proposed_reference_number || 'N/A'}</td></tr>

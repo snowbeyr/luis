@@ -126,6 +126,32 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_items') {
         
         $order_data = $stmt->fetch();
 
+        // Fallback: If not in online orders, check pos_transaction for in-store purchases
+        if (!$order_data) {
+            $num_order_id = is_numeric($order_id) ? (int)$order_id : 0;
+            $stmt_pos = $pdo->prepare("SELECT * FROM pos_transaction WHERE (id = :num_id OR receipt_no = :str_id) LIMIT 1");
+            $stmt_pos->execute([':num_id' => $num_order_id, ':str_id' => $order_id]);
+            $pos_row = $stmt_pos->fetch();
+            if ($pos_row) {
+                $order_data = [
+                    'id' => $pos_row['id'],
+                    'fullname' => $pos_row['customer_name'] ?? 'Walk-in Customer',
+                    'surname' => '',
+                    'order_date' => $pos_row['created_at'],
+                    'status' => 'completed',
+                    'payment_method' => $pos_row['payment_method'] ?? 'Cash',
+                    'payment_scheme' => 'fullpayment',
+                    'total_amount' => $pos_row['total_amount'],
+                    'contact_number' => 'N/A',
+                    'full_address' => 'In-Store Purchase',
+                    'landmark' => '',
+                    'ref_no' => $pos_row['reference_number'] ?? '',
+                    'paid_amount' => $pos_row['amount_paid'] ?? $pos_row['total_amount'],
+                    'is_pos' => true
+                ];
+            }
+        }
+
         if ($order_data) {
             $cust_name = $order_data['fullname'] ?? ($order_data['customer_name'] ?? ($order_data['name'] ?? 'N/A'));
             $cust_surname = $order_data['surname'] ?? '';
@@ -162,62 +188,103 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_items') {
                 $pending_req_type = strtoupper($pending_row['request_type']);
             }
 
-            // Parse items: Check order_items first with variants join
-            $items = [];
-            $oi_stmt = $pdo->prepare("
-                SELECT oi.*, 
-                       p.product_name AS main_product_name,
-                       pv.variant_name AS pv_variant_name
-                FROM order_items oi
-                LEFT JOIN products p ON oi.product_id = p.id
-                LEFT JOIN product_variants pv ON oi.variant_id = pv.id
-                WHERE oi.order_id = :order_id
-                ORDER BY oi.id ASC
-            ");
-            $oi_stmt->execute([':order_id' => $order_data['id']]);
-            $db_order_items = $oi_stmt->fetchAll();
+            // CHECK FOR ACTIVE POS TRANSACTION CORRECTION REQUEST UNDER OWNER REVIEW
+            $has_pending_correction = false;
+            $pending_corr_details = null;
+            $check_num_id = is_numeric($order_id) ? (int)$order_id : 0;
+            try {
+                $stmt_corr = $pdo->prepare("
+                    SELECT id, status, correction_type, payment_difference, created_at 
+                    FROM pos_correction_requests 
+                    WHERE (transaction_id = :tx_id OR receipt_no = :rec_no)
+                      AND status IN ('Pending Review', 'Pending Additional Payment', 'Pending Refund')
+                    ORDER BY id DESC LIMIT 1
+                ");
+                $stmt_corr->execute([':tx_id' => $check_num_id, ':rec_no' => (string)$order_id]);
+                $corr_row = $stmt_corr->fetch(PDO::FETCH_ASSOC);
+                if ($corr_row) {
+                    $has_pending_correction = true;
+                    $pending_corr_details = [
+                        'id' => $corr_row['id'],
+                        'status' => $corr_row['status'],
+                        'correction_type' => $corr_row['correction_type'],
+                        'payment_difference' => (float)$corr_row['payment_difference']
+                    ];
+                }
+            } catch (Exception $e) {}
 
-            if (!empty($db_order_items)) {
-                foreach ($db_order_items as $oi) {
-                    $vId = !empty($oi['variant_id']) ? (int)$oi['variant_id'] : null;
-                    $rawVName = trim((string)($oi['variant_name'] ?? ($oi['pv_variant_name'] ?? '')));
-                    $cleanedName = resolveCleanItemName(
-                        $oi['product_name'] ?? '',
-                        $rawVName,
-                        $oi['main_product_name'] ?? '',
-                        $vId
-                    );
-                    $p_price = floatval($oi['price'] ?? 0);
-                    $p_qty = intval($oi['qty'] ?? 1);
+            // Parse items: Check pos_transaction_items or order_items
+            $items = [];
+            if (!empty($order_data['is_pos'])) {
+                $pos_items_stmt = $pdo->prepare("SELECT * FROM pos_transaction_items WHERE transaction_id = ?");
+                $pos_items_stmt->execute([$order_data['id']]);
+                $db_pos_items = $pos_items_stmt->fetchAll();
+                foreach ($db_pos_items as $pi) {
+                    $p_price = floatval($pi['price'] ?? 0);
+                    $p_qty = intval($pi['qty'] ?? 1);
                     $items[] = [
-                        'product_name' => $cleanedName,
+                        'product_name' => $pi['product_name'] ?? 'Item',
                         'price' => $p_price,
                         'qty' => $p_qty,
-                        'subtotal' => floatval($oi['subtotal'] ?? ($p_price * $p_qty))
+                        'subtotal' => floatval($pi['subtotal'] ?? ($p_price * $p_qty))
                     ];
                 }
             } else {
-                // Fallback to cart JSON
-                $cart_raw = $order_data['cart'] ?? '';
-                $cart_obj = is_string($cart_raw) ? json_decode($cart_raw, true) : $cart_raw;
-                if (is_array($cart_obj)) {
-                    foreach ($cart_obj as $cart_item) {
-                        $vId = !empty($cart_item['variant_id']) ? (int)$cart_item['variant_id'] : null;
-                        $rawVName = trim((string)($cart_item['variant_name'] ?? ''));
+                $oi_stmt = $pdo->prepare("
+                    SELECT oi.*, 
+                           p.product_name AS main_product_name,
+                           pv.variant_name AS pv_variant_name
+                    FROM order_items oi
+                    LEFT JOIN products p ON oi.product_id = p.id
+                    LEFT JOIN product_variants pv ON oi.variant_id = pv.id
+                    WHERE oi.order_id = :order_id
+                    ORDER BY oi.id ASC
+                ");
+                $oi_stmt->execute([':order_id' => $order_data['id']]);
+                $db_order_items = $oi_stmt->fetchAll();
+
+                if (!empty($db_order_items)) {
+                    foreach ($db_order_items as $oi) {
+                        $vId = !empty($oi['variant_id']) ? (int)$oi['variant_id'] : null;
+                        $rawVName = trim((string)($oi['variant_name'] ?? ($oi['pv_variant_name'] ?? '')));
                         $cleanedName = resolveCleanItemName(
-                            $cart_item['name'] ?? ($cart_item['product_name'] ?? 'Item'),
+                            $oi['product_name'] ?? '',
                             $rawVName,
-                            '',
+                            $oi['main_product_name'] ?? '',
                             $vId
                         );
-                        $p_price = floatval($cart_item['price'] ?? 0);
-                        $p_qty = intval($cart_item['qty'] ?? 1);
+                        $p_price = floatval($oi['price'] ?? 0);
+                        $p_qty = intval($oi['qty'] ?? 1);
                         $items[] = [
                             'product_name' => $cleanedName,
                             'price' => $p_price,
                             'qty' => $p_qty,
-                            'subtotal' => $p_price * $p_qty
+                            'subtotal' => floatval($oi['subtotal'] ?? ($p_price * $p_qty))
                         ];
+                    }
+                } else {
+                    // Fallback to cart JSON
+                    $cart_raw = $order_data['cart'] ?? '';
+                    $cart_obj = is_string($cart_raw) ? json_decode($cart_raw, true) : $cart_raw;
+                    if (is_array($cart_obj)) {
+                        foreach ($cart_obj as $cart_item) {
+                            $vId = !empty($cart_item['variant_id']) ? (int)$cart_item['variant_id'] : null;
+                            $rawVName = trim((string)($cart_item['variant_name'] ?? ''));
+                            $cleanedName = resolveCleanItemName(
+                                $cart_item['name'] ?? ($cart_item['product_name'] ?? 'Item'),
+                                $rawVName,
+                                '',
+                                $vId
+                            );
+                            $p_price = floatval($cart_item['price'] ?? 0);
+                            $p_qty = intval($cart_item['qty'] ?? 1);
+                            $items[] = [
+                                'product_name' => $cleanedName,
+                                'price' => $p_price,
+                                'qty' => $p_qty,
+                                'subtotal' => $p_price * $p_qty
+                            ];
+                        }
                     }
                 }
             }
@@ -240,7 +307,9 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_items') {
                     'paid_amount' => $paid_amount,
                     'is_cancel_completed' => $is_cancel_completed,
                     'has_pending_request' => $has_pending_request,
-                    'pending_req_type' => $pending_req_type
+                    'pending_req_type' => $pending_req_type,
+                    'has_pending_correction' => $has_pending_correction,
+                    'pending_correction' => $pending_corr_details
                 ],
                 'items' => $items
             ]);
@@ -282,134 +351,167 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
             $message = "❌ Submission Blocked: Order #" . htmlspecialchars($order_id) . " already has an active PENDING " . strtoupper($existing_pending['request_type']) . " request under review by the admin.";
             $message_type = "danger";
         } else {
-            // Backend 1-Day (24 Hours) Exchange Limit Validation
-            $order_timestamp = strtotime($v_ord_date_str);
-            $time_passed = time() - $order_timestamp;
-            $is_exceeded_1day = ($time_passed > 86400); // 86400 seconds = 24 hours
+            // Check if there is an active POS Transaction Correction Request under Owner review
+            $num_chk_id = is_numeric($order_id) ? (int)$order_id : 0;
+            $stmt_chk_corr = $pdo->prepare("
+                SELECT id, status, correction_type 
+                FROM pos_correction_requests 
+                WHERE (transaction_id = :tx_id OR receipt_no = :rec_no)
+                  AND status IN ('Pending Review', 'Pending Additional Payment', 'Pending Refund')
+                LIMIT 1
+            ");
+            $stmt_chk_corr->execute([':tx_id' => $num_chk_id, ':rec_no' => (string)$order_id]);
+            $active_corr = $stmt_chk_corr->fetch(PDO::FETCH_ASSOC);
 
-            if ($v_status === 'cancelled' || $v_status === 'declined') {
-                $message = "❌ Cannot submit request. This order has already been " . $v_status . ".";
-                $message_type = "danger";
-            }
-            elseif ($request_type === 'exchange' && $v_status !== 'completed') {
-                $message = "❌ Cannot request exchange. Item Exchange is only allowed for COMPLETED orders.";
-                $message_type = "danger";
-            }
-            elseif ($request_type === 'exchange' && $is_exceeded_1day) {
-                $message = "❌ Item Exchange requests are only allowed within 24 hours (1 day) after the order completion/date.";
-                $message_type = "danger";
-            }
-            elseif ($request_type === 'cancel' && in_array($v_status, ['out for delivery', 'out_for_delivery', 'completed', 'delivered'])) {
-                $message = "❌ Cannot request cancellation. Order status is " . strtoupper($v_data['status']) . ".";
-                $message_type = "danger";
-            }
-            elseif (in_array($v_status, ['out for delivery', 'out_for_delivery', 'delivered'])) {
-                $message = "❌ Cannot submit request. Submitting requests for this order status is locked.";
+            if ($active_corr) {
+                $message = "❌ Submission Blocked: Order #" . htmlspecialchars($order_id) . " currently has an active Transaction Correction Request (#" . $active_corr['id'] . " - " . htmlspecialchars($active_corr['correction_type']) . ") under Owner review. Exchange requests cannot be submitted until the correction is resolved.";
                 $message_type = "danger";
             } else {
-                $filename = null;
-                if (isset($_FILES['product_image']) && $_FILES['product_image']['error'] === UPLOAD_ERR_OK) {
-                    $file_tmp = $_FILES['product_image']['tmp_name'];
-                    $ext = strtolower(pathinfo($_FILES['product_image']['name'], PATHINFO_EXTENSION));
-                    $new_filename = "REQ_" . $order_id . "_" . time() . "_" . rand(1000, 9999) . "." . $ext;
+                // Backend 1-Day (24 Hours) Exchange Limit Validation
+                $order_timestamp = strtotime($v_ord_date_str);
+                $time_passed = time() - $order_timestamp;
+                $is_exceeded_1day = ($time_passed > 86400); // 86400 seconds = 24 hours
 
-                    // Dedicated Customer Service Google Drive Folder ID
-                    $CUSTOMER_SERVICE_FOLDER_ID = "1Gu8SOPjnIDEwoMhRFhZkxHqPsUL7MKNS";
+                if ($v_status === 'cancelled' || $v_status === 'declined') {
+                    $message = "❌ Cannot submit request. This order has already been " . $v_status . ".";
+                    $message_type = "danger";
+                }
+                elseif ($request_type === 'exchange' && $v_status !== 'completed') {
+                    $message = "❌ Cannot request exchange. Item Exchange is only allowed for COMPLETED orders.";
+                    $message_type = "danger";
+                }
+                elseif ($request_type === 'exchange' && $is_exceeded_1day) {
+                    $message = "❌ Item Exchange requests are only allowed within 24 hours (1 day) after the order completion/date.";
+                    $message_type = "danger";
+                }
+                elseif ($request_type === 'cancel' && in_array($v_status, ['out for delivery', 'out_for_delivery', 'completed', 'delivered'])) {
+                    $message = "❌ Cannot request cancellation. Order status is " . strtoupper($v_data['status']) . ".";
+                    $message_type = "danger";
+                }
+                elseif (in_array($v_status, ['out for delivery', 'out_for_delivery', 'delivered'])) {
+                    $message = "❌ Cannot submit request. Submitting requests for this order status is locked.";
+                    $message_type = "danger";
+                } else {
+                    $filename = null;
+                    if (isset($_FILES['product_image']) && $_FILES['product_image']['error'] === UPLOAD_ERR_OK) {
+                        $file_tmp = $_FILES['product_image']['tmp_name'];
+                        $ext = strtolower(pathinfo($_FILES['product_image']['name'], PATHINFO_EXTENSION));
+                        $new_filename = "REQ_" . $order_id . "_" . time() . "_" . rand(1000, 9999) . "." . $ext;
 
-                    // 1. Unang i-upload sa Google Drive mula sa temporary PHP file
-                    try {
-                        if (function_exists('uploadProductImageToDrive')) {
-                            $file_id = uploadProductImageToDrive($file_tmp, $new_filename, $CUSTOMER_SERVICE_FOLDER_ID);
-                            if (!empty($file_id)) {
-                                $filename = "https://drive.google.com/uc?export=view&id=" . $file_id;
+                        // Dedicated Customer Service Google Drive Folder ID
+                        $CUSTOMER_SERVICE_FOLDER_ID = "1Gu8SOPjnIDEwoMhRFhZkxHqPsUL7MKNS";
+
+                        // 1. Unang i-upload sa Google Drive mula sa temporary PHP file
+                        try {
+                            if (function_exists('uploadProductImageToDrive')) {
+                                $file_id = uploadProductImageToDrive($file_tmp, $new_filename, $CUSTOMER_SERVICE_FOLDER_ID);
+                                if (!empty($file_id)) {
+                                    $filename = "https://drive.google.com/uc?export=view&id=" . $file_id;
+                                }
+                            }
+                        } catch (Throwable $e) {
+                            error_log("CUSTOMER SERVICE GOOGLE DRIVE UPLOAD ERROR: " . $e->getMessage());
+                        }
+
+                        // 2. Fallback sa Local Uploads directory kung nag-fail o nag-timeout ang Drive upload
+                        if (empty($filename)) {
+                            $target_dir = "../uploads/";
+                            if (!is_dir($target_dir)) {
+                                mkdir($target_dir, 0777, true);
+                            }
+                            if (move_uploaded_file($file_tmp, $target_dir . $new_filename)) {
+                                $filename = $new_filename;
                             }
                         }
-                    } catch (Throwable $e) {
-                        error_log("CUSTOMER SERVICE GOOGLE DRIVE UPLOAD ERROR: " . $e->getMessage());
                     }
 
-                    // 2. Fallback sa Local Uploads directory kung nag-fail o nag-timeout ang Drive upload
-                    if (empty($filename)) {
-                        $target_dir = "../uploads/";
-                        if (!is_dir($target_dir)) {
-                            mkdir($target_dir, 0777, true);
+                    $total_ordered_qty_map = [];
+                    $total_ordered_price_map = [];
+                    try {
+                        // Check order_items first
+                        $oi_chk = $pdo->prepare("SELECT product_name, price, qty FROM order_items WHERE order_id = ?");
+                        $oi_chk->execute([$order_id]);
+                        $db_oi = $oi_chk->fetchAll(PDO::FETCH_ASSOC);
+                        if (!empty($db_oi)) {
+                            foreach ($db_oi as $it) {
+                                $p_name = $it['product_name'];
+                                $total_ordered_qty_map[$p_name] = (int)($it['qty'] ?? 1);
+                                $total_ordered_price_map[$p_name] = (float)($it['price'] ?? 0);
+                            }
+                        } else {
+                            $cart_raw = $v_data['cart'] ?? '';
+                            $cart_obj = is_string($cart_raw) ? json_decode($cart_raw, true) : $cart_raw;
+                            if (is_array($cart_obj)) {
+                                foreach ($cart_obj as $it) {
+                                    $p_name = $it['name'] ?? ($it['product_name'] ?? 'Item');
+                                    $p_qty = intval($it['qty'] ?? 1);
+                                    $total_ordered_qty_map[$p_name] = $p_qty;
+                                    $total_ordered_price_map[$p_name] = (float)($it['price'] ?? 0);
+                                }
+                            }
                         }
-                        if (move_uploaded_file($file_tmp, $target_dir . $new_filename)) {
-                            $filename = $new_filename;
-                        }
-                    }
-                }
+                    } catch (Exception $e) {}
 
-                $total_ordered_qty_map = [];
-                try {
-                    $cart_raw = $v_data['cart'] ?? '';
-                    $cart_obj = is_string($cart_raw) ? json_decode($cart_raw, true) : $cart_raw;
-                    if (is_array($cart_obj)) {
-                        foreach ($cart_obj as $it) {
-                            $p_name = $it['name'] ?? ($it['product_name'] ?? 'Item');
-                            $p_qty = intval($it['qty'] ?? 1);
-                            $total_ordered_qty_map[$p_name] = $p_qty;
-                        }
-                    }
-                } catch (Exception $e) {}
+                    if ($request_type === 'exchange') {
+                        $exchange_items = $_POST['exchange_items'] ?? [];
+                        $exchange_qtys = $_POST['exchange_qtys'] ?? [];
+                        $is_valid_qty = true;
+                        $submitted_counts = [];
 
-                if ($request_type === 'exchange') {
-                    $exchange_items = $_POST['exchange_items'] ?? [];
-                    $exchange_qtys = $_POST['exchange_qtys'] ?? [];
-                    $is_valid_qty = true;
-                    $submitted_counts = [];
-
-                    for ($i = 0; $i < count($exchange_items); $i++) {
-                        $item_name = $exchange_items[$i];
-                        $item_qty = intval($exchange_qtys[$i] ?? 1);
-                        
-                        if (!isset($total_ordered_qty_map[$item_name])) {
-                            $is_valid_qty = false;
-                            break;
-                        }
-                        
-                        $submitted_counts[$item_name] = ($submitted_counts[$item_name] ?? 0) + $item_qty;
-                        if ($submitted_counts[$item_name] > $total_ordered_qty_map[$item_name]) {
-                            $is_valid_qty = false;
-                            break;
-                        }
-                    }
-
-                    if (!$is_valid_qty) {
-                        $message = "❌ Security Error: The quantity of items requested for exchange exceeds your original order.";
-                        $message_type = "danger";
-                    } else {
-                        $readable_items_list = "";
                         for ($i = 0; $i < count($exchange_items); $i++) {
                             $item_name = $exchange_items[$i];
                             $item_qty = intval($exchange_qtys[$i] ?? 1);
-                            $readable_items_list .= "• {$item_name} (Qty: {$item_qty}x)\n";
+                            
+                            if (!isset($total_ordered_qty_map[$item_name])) {
+                                $is_valid_qty = false;
+                                break;
+                            }
+                            
+                            $submitted_counts[$item_name] = ($submitted_counts[$item_name] ?? 0) + $item_qty;
+                            if ($submitted_counts[$item_name] > $total_ordered_qty_map[$item_name]) {
+                                $is_valid_qty = false;
+                                break;
+                            }
                         }
-                        
-                        $stmt_ins = $pdo->prepare("INSERT INTO customer_requests 
-                        (order_number, account, request_type, reason, details, item_to_replace, product_image, status) 
-                        VALUES 
-                        (:order_id, :email, :request_type, :reason, :details, :item_to_replace, :product_image, 'Pending')");
-                        
-                        $ins = $stmt_ins->execute([
-                            ':order_id' => $order_id,
-                            ':email' => $email,
-                            ':request_type' => $request_type,
-                            ':reason' => $reason,
-                            ':details' => $user_comments,
-                            ':item_to_replace' => trim($readable_items_list),
-                            ':product_image' => $filename
-                        ]);
-                        
-                        if ($ins) {
-                            $message = "🎉 Your ticket request (" . strtoupper($request_type) . ") has been submitted successfully! Admin will review it.";
-                            $message_type = "success";
-                        } else {
-                            $message = "❌ Failed to submit request. Please try again.";
+
+                        if (!$is_valid_qty) {
+                            $message = "❌ Security Error: The quantity of items requested for exchange exceeds your original order.";
                             $message_type = "danger";
+                        } else {
+                            $readable_items_list = "";
+                            for ($i = 0; $i < count($exchange_items); $i++) {
+                                $item_name = $exchange_items[$i];
+                                $item_qty = intval($exchange_qtys[$i] ?? 1);
+                                $unit_price = (float)($total_ordered_price_map[$item_name] ?? 0);
+                                $credit = round($unit_price * $item_qty, 2);
+                                $credit_info = $unit_price > 0 ? " — Exchange Credit: ₱" . number_format($credit, 2) . " (₱" . number_format($unit_price, 2) . "/unit)" : "";
+                                $readable_items_list .= "• {$item_name} (Qty: {$item_qty}x){$credit_info}\n";
+                            }
+                            
+                            $stmt_ins = $pdo->prepare("INSERT INTO customer_requests 
+                            (order_number, account, request_type, reason, details, item_to_replace, product_image, status) 
+                            VALUES 
+                            (:order_id, :email, :request_type, :reason, :details, :item_to_replace, :product_image, 'Pending')");
+                            
+                            $ins = $stmt_ins->execute([
+                                ':order_id' => $order_id,
+                                ':email' => $email,
+                                ':request_type' => $request_type,
+                                ':reason' => $reason,
+                                ':details' => $user_comments,
+                                ':item_to_replace' => trim($readable_items_list),
+                                ':product_image' => $filename
+                            ]);
+                            
+                            if ($ins) {
+                                $message = "🎉 Your ticket request (" . strtoupper($request_type) . ") has been submitted successfully! Admin will review it.";
+                                $message_type = "success";
+                            } else {
+                                $message = "❌ Failed to submit request. Please try again.";
+                                $message_type = "danger";
+                            }
                         }
-                    }
-                } else {
+                    } else {
                     $stmt_ins = $pdo->prepare("INSERT INTO customer_requests
                     (order_number, account, request_type, reason, details, item_to_replace, product_image, status)
                     VALUES
@@ -434,7 +536,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
                 }
             }
         }
-    } else {
+    }
+} else {
         $message = "❌ Verification error. Order connection lost.";
         $message_type = "danger";
     }
@@ -841,6 +944,20 @@ function handleFormTypeSetup(status) {
     lblExchange.classList.remove('disabled', 'btn-outline-secondary');
     lblExchange.classList.add('btn-outline-primary');
 
+    // 0. STRICT PENDING CORRECTION LOCK: Check if there is an active POS correction request under Owner review
+    if (currentOrderInfo.has_pending_correction) {
+        reqCancel.disabled = true;
+        reqExchange.disabled = true;
+        btnSubmitForm.disabled = true;
+        requestActionsBox.classList.add('d-none');
+        formFieldsContainer.classList.add('d-none');
+
+        const corr = currentOrderInfo.pending_correction || {};
+        errorWrapper.classList.remove('d-none');
+        errorWrapper.innerHTML = `⚠️ <strong>Transaction Correction Under Review:</strong> Order / Transaction #${currentOrderInfo.id} has an active <strong>${corr.correction_type || 'Payment Correction'}</strong> request (#${corr.id} - Status: ${corr.status || 'Pending Review'}) currently being reviewed by the Owner. Item exchange submissions are locked until the Owner completes or resolves this correction.`;
+        return;
+    }
+
     // 1. STRICT ANTI-SPAM LOCK: Kapag may umiiral na PENDING request, I-HIDE ANG BUONG ACTION & FORM FIELDS
     if (currentOrderInfo.has_pending_request) {
         reqCancel.disabled = true;
@@ -1136,6 +1253,10 @@ function addExchangeItemRow(isFirstRow = false) {
             <select name="exchange_items[]" class="form-select exch-item-select">
                 <option value="" selected disabled hidden>Select Item</option>
             </select>
+            <div class="small text-primary mt-1 exch-credit-display d-none">
+                <i class="bi bi-tag-fill me-1"></i>Eligible Exchange Credit: <strong class="exch-credit-amt">₱0.00</strong>
+                <span class="text-muted" style="font-size:0.75rem;">(Based strictly on item selling price; cash tendered is not exchange credit)</span>
+            </div>
         </div>
         <div class="col-md-3">
             <label class="small fw-semibold text-dark">Quantity</label>
@@ -1148,6 +1269,23 @@ function addExchangeItemRow(isFirstRow = false) {
 
     const selectEl = rowDiv.querySelector('.exch-item-select');
     const qtyInput = rowDiv.querySelector('.exch-qty-input');
+    const creditBox = rowDiv.querySelector('.exch-credit-display');
+    const creditAmt = rowDiv.querySelector('.exch-credit-amt');
+
+    function updateRowCredit() {
+        if (!creditBox || !creditAmt) return;
+        const val = selectEl.value;
+        if (!val) {
+            creditBox.classList.add('d-none');
+            return;
+        }
+        const item = verifiedItemsData.find(i => i.product_name === val);
+        const price = item ? parseFloat(item.price || 0) : 0;
+        const qty = parseInt(qtyInput.value) || 1;
+        const totalCredit = price * qty;
+        creditAmt.textContent = `₱${totalCredit.toFixed(2)}`;
+        creditBox.classList.remove('d-none');
+    }
 
     verifiedItemsData.forEach(item => {
         const option = document.createElement('option');
@@ -1170,6 +1308,7 @@ function addExchangeItemRow(isFirstRow = false) {
             qtyInput.disabled = true;
             qtyInput.value = 1;
             qtyInput.removeAttribute('max');
+            updateRowCredit();
             updateExchangeItemControls();
             return;
         }
@@ -1183,6 +1322,7 @@ function addExchangeItemRow(isFirstRow = false) {
             qtyInput.disabled = true;
             qtyInput.value = 1;
             qtyInput.removeAttribute('max');
+            updateRowCredit();
             updateExchangeItemControls();
             return;
         }
@@ -1197,6 +1337,7 @@ function addExchangeItemRow(isFirstRow = false) {
         if (currentQty < 1) currentQty = 1;
 
         qtyInput.value = currentQty;
+        updateRowCredit();
         updateExchangeItemControls();
     });
 
@@ -1206,6 +1347,7 @@ function addExchangeItemRow(isFirstRow = false) {
         if (!selectedItem) {
             this.value = 1;
             this.disabled = true;
+            updateRowCredit();
             return;
         }
 
@@ -1216,6 +1358,7 @@ function addExchangeItemRow(isFirstRow = false) {
         if (value > remainingQty) value = remainingQty;
 
         this.value = value;
+        updateRowCredit();
         updateExchangeItemControls();
     });
 

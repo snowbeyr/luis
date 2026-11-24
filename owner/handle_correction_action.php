@@ -65,6 +65,69 @@ try {
             }
         }
 
+        // Special handling for Incorrect Payment Information
+        if ($req['correction_type'] === 'Incorrect Payment Information') {
+            $prop_method = $req['proposed_payment_method'] ?? 'Cash';
+            $prop_ref = $req['proposed_reference_number'] ?? '';
+            $bal = (float)($req['payment_correction_balance'] ?? 0);
+
+            // If customer has an outstanding balance (underpaid transaction), require additional payment
+            if ($bal > 0.001) {
+                $new_status = 'Pending Additional Payment';
+                $stmt_app = $pdo->prepare("
+                    UPDATE pos_correction_requests 
+                    SET status = ?, 
+                        owner_id = ?, 
+                        owner_name = ?, 
+                        reviewed_at = CURRENT_TIMESTAMP,
+                        owner_remarks = ?
+                    WHERE id = ?
+                ");
+                $stmt_app->execute([$new_status, $owner_id, $owner_name, $owner_remarks, $request_id]);
+
+                $action_log = "POS Payment Correction Approved (Underpaid)";
+                $details_log = "Owner $owner_name approved Payment Correction #$request_id for POS Receipt #{$req['transaction_id']}. Customer owes balance: ₱" . number_format($bal, 2) . ". Status set to: $new_status. Remarks: {$owner_remarks}";
+                $ip = $_SERVER['REMOTE_ADDR'] ?? 'N/A';
+                $stmt_audit = $pdo->prepare("INSERT INTO audit_log (user_id, username, role, action, details, ip_address) VALUES (?, ?, 'owner', ?, ?, ?)");
+                $stmt_audit->execute([$owner_id, $owner_name, $action_log, $details_log, $ip]);
+
+                echo json_encode([
+                    'status' => 'success',
+                    'message' => "Payment correction approved! Customer owes outstanding balance of ₱" . number_format($bal, 2) . ". Status updated to '$new_status'.",
+                    'next_status' => $new_status
+                ]);
+                exit();
+            }
+
+            // Otherwise, it is a cash tendered / change / payment method adjustment. Complete it directly!
+            list($exec_success, $exec_msg) = executeCorrectionSettlement($pdo, $request_id, $owner_name, $prop_method, $prop_ref, $diff);
+            if ($exec_success) {
+                $upd_rev = $pdo->prepare("
+                    UPDATE pos_correction_requests 
+                    SET owner_id = ?, 
+                        owner_name = ?, 
+                        reviewed_at = CURRENT_TIMESTAMP,
+                        owner_remarks = ?
+                    WHERE id = ?
+                ");
+                $upd_rev->execute([$owner_id, $owner_name, $owner_remarks, $request_id]);
+
+                $orig_tend = number_format((float)($req['original_cash_tendered'] ?? $req['original_amount_paid'] ?? 0), 2);
+                $prop_tend = number_format((float)($req['proposed_cash_tendered'] ?? $req['proposed_amount_paid'] ?? 0), 2);
+                $disc_str = ($diff > 0 ? "+₱" : "-₱") . number_format(abs($diff), 2);
+
+                echo json_encode([
+                    'status' => 'success',
+                    'message' => "Payment correction approved and completed! Recorded cash tendered adjusted from ₱$orig_tend to ₱$prop_tend (Discrepancy: $disc_str). Correct change and transaction balances synchronized.",
+                    'next_status' => 'Completed'
+                ]);
+                exit();
+            } else {
+                echo json_encode(['status' => 'error', 'message' => 'Approval settlement failed: ' . $exec_msg]);
+                exit();
+            }
+        }
+
         // If no financial difference (diff == 0), automatically synchronize inventory & complete!
         if (abs($diff) < 0.001) {
             list($exec_success, $exec_msg) = executeCorrectionSettlement($pdo, $request_id, $owner_name, 'None (Even Exchange)', 'N/A', 0);

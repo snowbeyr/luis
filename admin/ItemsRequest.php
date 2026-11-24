@@ -160,6 +160,26 @@ if (isset($_POST['update_status'])) {
             $pay_method_check = strtoupper(trim($ticket_data['payment_method'] ?? ''));
             $is_ewallet = ($pay_method_check === 'GCASH' || $pay_method_check === 'MAYA');
 
+            // Server-side guard: Cannot approve if there is an active POS correction request under Owner review
+            if ($status === 'Approved') {
+                $chk_corr = $pdo->prepare("
+                    SELECT id, status, correction_type 
+                    FROM pos_correction_requests 
+                    WHERE (transaction_id = ? OR receipt_no = ?)
+                      AND status IN ('Pending Review', 'Pending Additional Payment', 'Pending Refund')
+                    LIMIT 1
+                ");
+                $chk_corr->execute([is_numeric($order_number) ? (int)$order_number : 0, (string)$order_number]);
+                $pending_corr = $chk_corr->fetch(PDO::FETCH_ASSOC);
+
+                if ($pending_corr) {
+                    $_SESSION['err'] = "Action Blocked: Order #$order_number has an active Transaction Correction Request (#" . $pending_corr['id'] . " - " . $pending_corr['correction_type'] . ") under Owner review. You cannot approve this request until the Owner resolves the correction.";
+                    $pane_target = ($request_type == 'cancel') ? '#cancel-pane' : '#exchange-pane';
+                    header("Location: ItemsRequest.php" . $pane_target);
+                    exit();
+                }
+            }
+
             try {
                 $pdo->beginTransaction();
 
@@ -260,6 +280,26 @@ if (isset($_GET['id']) && isset($_GET['status'])) {
             $cart_array = json_decode($ticket_data['cart'], true);
             $pay_method_check = strtoupper(trim($ticket_data['payment_method'] ?? ''));
             $is_ewallet = ($pay_method_check === 'GCASH' || $pay_method_check === 'MAYA');
+
+            // Server-side guard: Cannot approve if there is an active POS correction request under Owner review
+            if ($status === 'Approved') {
+                $chk_corr = $pdo->prepare("
+                    SELECT id, status, correction_type 
+                    FROM pos_correction_requests 
+                    WHERE (transaction_id = ? OR receipt_no = ?)
+                      AND status IN ('Pending Review', 'Pending Additional Payment', 'Pending Refund')
+                    LIMIT 1
+                ");
+                $chk_corr->execute([is_numeric($order_number) ? (int)$order_number : 0, (string)$order_number]);
+                $pending_corr = $chk_corr->fetch(PDO::FETCH_ASSOC);
+
+                if ($pending_corr) {
+                    $_SESSION['err'] = "Action Blocked: Order #$order_number has an active Transaction Correction Request (#" . $pending_corr['id'] . " - " . $pending_corr['correction_type'] . ") under Owner review. You cannot approve this request until the Owner resolves the correction.";
+                    $pane_target = ($request_type == 'cancel') ? '#cancel-pane' : '#exchange-pane';
+                    header("Location: ItemsRequest.php" . $pane_target);
+                    exit();
+                }
+            }
 
             try {
                 $pdo->beginTransaction();
@@ -693,6 +733,13 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
             </div>
         <?php endif; ?>
 
+        <?php if(isset($_SESSION['err'])): ?>
+            <div class="alert alert-danger alert-dismissible fade show card-custom mb-4">
+                <i class="bi bi-exclamation-triangle-fill me-2"></i><?php echo $_SESSION['err']; unset($_SESSION['err']); ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+        <?php endif; ?>
+
         <ul class="nav nav-pills mb-4 bg-light p-2 rounded-3 flex-column flex-sm-row" id="requestCenterTabs" role="tablist">
             <li class="nav-item mb-2 mb-sm-0"><button class="nav-link active w-100 text-center text-sm-start" id="cancel-tab" data-bs-toggle="pill" data-bs-target="#cancel-pane" type="button" role="tab"><i class="bi bi-x-circle"></i> Cancellations</button></li>
             <li class="nav-item"><button class="nav-link w-100 text-center text-sm-start" id="exchange-tab" data-bs-toggle="pill" data-bs-target="#exchange-pane" type="button" role="tab"><i class="bi bi-arrow-left-right"></i> Exchanges & Inquiries</button></li>
@@ -718,6 +765,13 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
                         </thead>
                         <tbody>
                             <?php 
+                            $stmt_check_corr = $pdo->prepare("
+                                SELECT id, status, correction_type 
+                                FROM pos_correction_requests 
+                                WHERE (transaction_id = ? OR receipt_no = ?) 
+                                  AND status IN ('Pending Review', 'Pending Additional Payment', 'Pending Refund') 
+                                LIMIT 1
+                            ");
                             $cancel_rows = $cancel_result->fetchAll(PDO::FETCH_ASSOC);
                             if(count($cancel_rows) == 0): 
                             ?>
@@ -725,9 +779,19 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
                             <?php endif; ?>
                             <?php foreach($cancel_rows as $row): 
                                 $pay_method = strtoupper(trim($row['payment_method'] ?? ''));
+                                $o_num = $row['order_number'];
+                                $stmt_check_corr->execute([is_numeric($o_num) ? (int)$o_num : 0, (string)$o_num]);
+                                $active_corr = $stmt_check_corr->fetch(PDO::FETCH_ASSOC);
                             ?>
                                 <tr>
-                                    <td class="fw-bold text-primary">#<?php echo htmlspecialchars($row['order_number']); ?></td>
+                                    <td class="fw-bold text-primary">
+                                        #<?php echo htmlspecialchars($row['order_number']); ?>
+                                        <?php if ($active_corr): ?>
+                                            <span class="badge bg-warning text-dark d-block mt-1 text-wrap" style="font-size:0.65rem;" title="Order has an active correction request under Owner review">
+                                                <i class="bi bi-clock-history me-1"></i>Corr #<?= $active_corr['id']; ?> Pending
+                                            </span>
+                                        <?php endif; ?>
+                                    </td>
                                     <td><?php echo htmlspecialchars($row['account']); ?></td>
                                     <td>
                                         <span class="badge bg-dark"><?php echo $pay_method; ?></span>
@@ -799,7 +863,13 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
                                             <span class="text-muted small"><i class="bi bi-check-circle"></i> Handled</span>
                                         <?php elseif($req_status == 'Pending'): ?>
                                             <div class="d-flex flex-column gap-1">
-                                                <a href="ItemsRequest.php?id=<?php echo $row['id']; ?>&status=Approved" class="btn btn-sm btn-success px-2 py-1" onclick="return confirm('Approve this cancellation request?')">Approve</a>
+                                                <?php if ($active_corr): ?>
+                                                    <button type="button" class="btn btn-sm btn-secondary px-2 py-1 disabled" title="Cannot approve: Order has active Correction #<?= $active_corr['id']; ?> (<?= htmlspecialchars($active_corr['correction_type']); ?>) under Owner review.">
+                                                        <i class="bi bi-lock-fill me-1"></i>Approve (Locked)
+                                                    </button>
+                                                <?php else: ?>
+                                                    <a href="ItemsRequest.php?id=<?php echo $row['id']; ?>&status=Approved" class="btn btn-sm btn-success px-2 py-1" onclick="return confirm('Approve this cancellation request?')">Approve</a>
+                                                <?php endif; ?>
                                                 <button type="button" class="btn btn-sm btn-danger px-2 py-1" data-bs-toggle="modal" data-bs-target="#declineModal<?php echo $row['id']; ?>">Decline</button>
                                             </div>
                                         <?php elseif($req_status == 'Approved'): ?>
@@ -931,9 +1001,20 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
                             ?>
                                 <tr><td colspan="9" class="text-center text-muted py-3">No ticket requests found.</td></tr>
                             <?php endif; ?>
-                            <?php foreach($exchange_rows as $row): ?>
+                            <?php foreach($exchange_rows as $row): 
+                                $o_num = $row['order_number'];
+                                $stmt_check_corr->execute([is_numeric($o_num) ? (int)$o_num : 0, (string)$o_num]);
+                                $active_corr = $stmt_check_corr->fetch(PDO::FETCH_ASSOC);
+                            ?>
                                 <tr>
-                                    <td class="fw-bold text-primary">#<?php echo htmlspecialchars($row['order_number']); ?></td>
+                                    <td class="fw-bold text-primary">
+                                        #<?php echo htmlspecialchars($row['order_number']); ?>
+                                        <?php if ($active_corr): ?>
+                                            <span class="badge bg-warning text-dark d-block mt-1 text-wrap" style="font-size:0.65rem;" title="Order has an active correction request under Owner review">
+                                                <i class="bi bi-clock-history me-1"></i>Corr #<?= $active_corr['id']; ?> Pending
+                                            </span>
+                                        <?php endif; ?>
+                                    </td>
                                     <td><?php echo htmlspecialchars($row['account']); ?></td>
                                     <td>
                                         <div class="d-flex flex-column gap-1 align-items-start">
@@ -1020,7 +1101,13 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
                                         if ($req_status === 'Pending'): 
                                         ?>
                                             <div class="d-flex flex-column gap-1">
-                                                <a href="ItemsRequest.php?id=<?php echo $row['id']; ?>&status=Approved" class="btn btn-sm btn-success px-2 py-1" onclick="return confirm('Approve this request?')">Approve</a>
+                                                <?php if ($active_corr): ?>
+                                                    <button type="button" class="btn btn-sm btn-secondary px-2 py-1 disabled" title="Cannot approve: Order has active Correction #<?= $active_corr['id']; ?> (<?= htmlspecialchars($active_corr['correction_type']); ?>) under Owner review.">
+                                                        <i class="bi bi-lock-fill me-1"></i>Approve (Locked)
+                                                    </button>
+                                                <?php else: ?>
+                                                    <a href="ItemsRequest.php?id=<?php echo $row['id']; ?>&status=Approved" class="btn btn-sm btn-success px-2 py-1" onclick="return confirm('Approve this request?')">Approve</a>
+                                                <?php endif; ?>
                                                 <button type="button" class="btn btn-sm btn-danger px-2 py-1" data-bs-toggle="modal" data-bs-target="#declineModalEx<?php echo $row['id']; ?>">Decline</button>
                                             </div>
                                         <?php elseif ($req_status === 'Approved'): ?>

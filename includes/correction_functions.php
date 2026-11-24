@@ -20,7 +20,14 @@ if (!function_exists('ensureCorrectionPaymentColumns')) {
                 ADD COLUMN IF NOT EXISTS original_reference_number VARCHAR(100) DEFAULT NULL,
                 ADD COLUMN IF NOT EXISTS proposed_reference_number VARCHAR(100) DEFAULT NULL,
                 ADD COLUMN IF NOT EXISTS payment_correction_balance NUMERIC(12,2) DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS payment_status VARCHAR(50) DEFAULT NULL;
+                ADD COLUMN IF NOT EXISTS payment_status VARCHAR(50) DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS original_cash_tendered NUMERIC(12,2) DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS proposed_cash_tendered NUMERIC(12,2) DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS original_change_amount NUMERIC(12,2) DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS proposed_change_amount NUMERIC(12,2) DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS cash_discrepancy NUMERIC(12,2) DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS net_payment_applied NUMERIC(12,2) DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS eligible_exchange_credit NUMERIC(12,2) DEFAULT NULL;
 
                 ALTER TABLE pos_transaction 
                 ADD COLUMN IF NOT EXISTS payment_method VARCHAR(50) DEFAULT 'Cash',
@@ -250,6 +257,12 @@ if (!function_exists('executeCorrectionSettlement')) {
                 $prop_ref = null;
             }
 
+            // Recalculate change given based on correct cash tendered and transaction total
+            $new_change = null;
+            if ($prop_paid !== null && $prop_paid >= $prop_total) {
+                $new_change = round($prop_paid - $prop_total, 2);
+            }
+
             $balance = isset($req['payment_correction_balance']) ? (float)$req['payment_correction_balance'] : 0;
             $status_val = !empty($req['payment_status']) ? $req['payment_status'] : 'Fully Paid';
 
@@ -257,6 +270,7 @@ if (!function_exists('executeCorrectionSettlement')) {
                 UPDATE pos_transaction 
                 SET total_amount = ?, 
                     amount_paid = COALESCE(?, amount_paid),
+                    change_amount = COALESCE(?, change_amount),
                     actual_amount_received = COALESCE(?, actual_amount_received, amount_paid),
                     payment_method = COALESCE(?, payment_method, 'Cash'),
                     reference_number = ?,
@@ -269,6 +283,7 @@ if (!function_exists('executeCorrectionSettlement')) {
             $upd_trans->execute([
                 $prop_total,
                 $prop_paid,
+                $new_change,
                 $actual_rec,
                 $prop_method,
                 $prop_ref,
