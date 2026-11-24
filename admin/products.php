@@ -744,18 +744,6 @@ if ($current_view === 'shared_stock') {
         ];
     }
 
-    // Recent movements
-    $movements_stmt = $pdo->query("
-        SELECT m.*, sis.source_name, sis.base_unit, p.product_name, pv.variant_name
-        FROM shared_inventory_movements m
-        JOIN shared_inventory_sources sis ON m.source_id = sis.id
-        LEFT JOIN products p ON m.product_id = p.id
-        LEFT JOIN product_variants pv ON m.variant_id = pv.id
-        ORDER BY m.id DESC
-        LIMIT 100
-    ");
-    $recent_movements = $movements_stmt->fetchAll(PDO::FETCH_ASSOC);
-
 } else {
     // --- LOAD PRODUCTS & VARIANTS DATA ---
     $search = trim($_GET['search'] ?? '');
@@ -1345,9 +1333,6 @@ if (!function_exists('getQueryUrl')) {
                             <i class="bi bi-plus-lg"></i> Add Product
                         </a>
                     <?php else: ?>
-                        <button type="button" class="btn btn-outline-secondary rounded-pill px-3 py-2 fw-semibold btn-sm d-inline-flex align-items-center gap-2" data-bs-toggle="modal" data-bs-target="#movementsAuditModal">
-                            <i class="bi bi-clock-history"></i> Movement Audit Trail
-                        </button>
                         <button type="button" class="btn btn-primary rounded-pill px-3 py-2 fw-semibold btn-sm d-inline-flex align-items-center gap-2 shadow-sm" data-bs-toggle="modal" data-bs-target="#createSourceModal">
                             <i class="bi bi-plus-circle"></i> Create Shared Source
                         </button>
@@ -1379,7 +1364,7 @@ if (!function_exists('getQueryUrl')) {
 
                 <!-- Metric Cards -->
                 <div class="row g-3 mb-4">
-                    <div class="col-12 col-sm-6 col-xl-3">
+                    <div class="col-12 col-md-4">
                         <div class="stat-card">
                             <div class="d-flex justify-content-between align-items-center">
                                 <div>
@@ -1394,7 +1379,7 @@ if (!function_exists('getQueryUrl')) {
                         </div>
                     </div>
 
-                    <div class="col-12 col-sm-6 col-xl-3">
+                    <div class="col-12 col-md-4">
                         <div class="stat-card">
                             <div class="d-flex justify-content-between align-items-center">
                                 <div>
@@ -1409,7 +1394,7 @@ if (!function_exists('getQueryUrl')) {
                         </div>
                     </div>
 
-                    <div class="col-12 col-sm-6 col-xl-3">
+                    <div class="col-12 col-md-4">
                         <div class="stat-card">
                             <div class="d-flex justify-content-between align-items-center">
                                 <div>
@@ -1419,21 +1404,6 @@ if (!function_exists('getQueryUrl')) {
                                 </div>
                                 <div class="p-3 bg-warning-subtle text-warning rounded-circle">
                                     <i class="bi bi-exclamation-triangle fs-4"></i>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="col-12 col-sm-6 col-xl-3">
-                        <div class="stat-card">
-                            <div class="d-flex justify-content-between align-items-center">
-                                <div>
-                                    <small class="text-muted text-uppercase fw-semibold" style="font-size: 0.78rem;">Movement Trail</small>
-                                    <h3 class="fw-bold mb-0 text-dark"><?= count($recent_movements); ?></h3>
-                                    <small class="text-muted">Audit log entries</small>
-                                </div>
-                                <div class="p-3 bg-secondary-subtle text-secondary rounded-circle">
-                                    <i class="bi bi-clock-history fs-4"></i>
                                 </div>
                             </div>
                         </div>
@@ -1727,7 +1697,7 @@ if (!function_exists('getQueryUrl')) {
                                     <tr class="main-row" id="product-row-<?= $p_id; ?>">
                                         <td class="text-center">
                                             <div class="d-flex align-items-center justify-content-center gap-1">
-                                                <span class="fw-bold text-dark"><?= $display_num; ?></span>
+                                                <span class="fw-bold text-dark"><?= $p_id; ?></span>
                                                 <?php if ($has_variants): ?>
                                                     <button type="button" class="accordion-chevron-btn" 
                                                         onclick="toggleVariants(<?= $p_id; ?>)" 
@@ -1845,7 +1815,7 @@ if (!function_exists('getQueryUrl')) {
                                         ?>
                                             <tr class="variant-row variant-row-<?= $p_id; ?> <?= $auto_expand ? '' : 'd-none'; ?>" id="variant-row-<?= $v_id; ?>">
                                                 <td class="text-center">
-                                                    <span class="text-muted fw-semibold" style="font-size: 0.85rem;"><?= $sub_num; ?></span>
+                                                    <span class="text-muted fw-semibold" style="font-size: 0.85rem;"><?= $v_id; ?></span>
                                                 </td>
 
                                                 <td>
@@ -2168,74 +2138,6 @@ if (!function_exists('getQueryUrl')) {
                             </button>
                         </div>
                     </form>
-                </div>
-            </div>
-        </div>
-
-        <!-- MOVEMENT AUDIT TRAIL MODAL -->
-        <div class="modal fade" id="movementsAuditModal" tabindex="-1">
-            <div class="modal-dialog modal-dialog-centered modal-xl">
-                <div class="modal-content border-0 shadow">
-                    <div class="modal-header bg-dark text-white">
-                        <h5 class="modal-title fw-bold"><i class="bi bi-clock-history me-1"></i> Shared Stock Movement Audit Trail</h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-                    </div>
-                    <div class="modal-body p-4">
-                        <div class="table-responsive">
-                            <table class="table table-sm table-hover align-middle border mb-0" style="font-size: 0.85rem;">
-                                <thead class="table-light">
-                                    <tr>
-                                        <th>Date & Time</th>
-                                        <th>Shared Source</th>
-                                        <th>Movement Type</th>
-                                        <th>Affected Item</th>
-                                        <th>Selling Qty</th>
-                                        <th>Qty (Base Unit)</th>
-                                        <th>Physical Stock Change</th>
-                                        <th>User Responsible</th>
-                                        <th>Remarks</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php if (empty($recent_movements)): ?>
-                                        <tr><td colspan="9" class="text-center py-4 text-muted">No movement records recorded yet.</td></tr>
-                                    <?php else: ?>
-                                        <?php foreach ($recent_movements as $m): 
-                                            $item_disp = '-';
-                                            if (!empty($m['variant_name'])) {
-                                                $item_disp = $m['variant_name'] . " (" . $m['product_name'] . ")";
-                                            } elseif (!empty($m['product_name'])) {
-                                                $item_disp = $m['product_name'];
-                                            }
-                                        ?>
-                                            <tr>
-                                                <td><?= date('M d, Y h:i A', strtotime($m['created_at'])); ?></td>
-                                                <td class="fw-bold"><?= htmlspecialchars($m['source_name']); ?></td>
-                                                <td>
-                                                    <span class="badge bg-secondary-subtle text-secondary border">
-                                                        <?= htmlspecialchars($m['movement_type']); ?>
-                                                    </span>
-                                                </td>
-                                                <td><?= htmlspecialchars($item_disp); ?></td>
-                                                <td><?= $m['selling_unit_qty'] ? number_format($m['selling_unit_qty'], 2) : '-'; ?></td>
-                                                <td class="fw-bold text-dark"><?= number_format($m['qty_in_base_unit'], 2); ?> <?= htmlspecialchars($m['base_unit']); ?></td>
-                                                <td>
-                                                    <span class="text-muted"><?= number_format($m['previous_physical_stock'], 2); ?></span>
-                                                    &rarr;
-                                                    <span class="fw-bold text-primary"><?= number_format($m['new_physical_stock'], 2); ?></span>
-                                                </td>
-                                                <td><i class="bi bi-person me-1"></i><?= htmlspecialchars($m['user_responsible'] ?: 'System'); ?></td>
-                                                <td class="text-muted small"><?= htmlspecialchars($m['remarks'] ?: '-'); ?></td>
-                                            </tr>
-                                        <?php endforeach; ?>
-                                    <?php endif; ?>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                    <div class="modal-footer bg-light">
-                        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
-                    </div>
                 </div>
             </div>
         </div>
