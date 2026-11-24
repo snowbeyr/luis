@@ -9,6 +9,35 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'cashier') {
 
 $cashier_name = $_SESSION['username'] ?? 'Cashier';
 $cashier_id = (int)($_SESSION['user_id'] ?? $_SESSION['id'] ?? 0);
+$cashier_display_name = (string)($_SESSION['fullname'] ?? $_SESSION['full_name'] ?? $_SESSION['username'] ?? 'Cashier');
+$cashier_avatar = '';
+
+if ($cashier_id > 0) {
+    try {
+        $u_stmt = $pdo->prepare("SELECT fullname, username, profile_image FROM users WHERE id = ? LIMIT 1");
+        $u_stmt->execute([$cashier_id]);
+        $u_row = $u_stmt->fetch(PDO::FETCH_ASSOC);
+        if ($u_row) {
+            if (!empty($u_row['fullname'])) {
+                $cashier_display_name = $u_row['fullname'];
+            } elseif (!empty($u_row['username'])) {
+                $cashier_display_name = $u_row['username'];
+            }
+            if (!empty($u_row['profile_image'])) {
+                if (stripos($u_row['profile_image'], 'data:image/') === 0) {
+                    $cashier_avatar = $u_row['profile_image'];
+                } else {
+                    $photo_path = __DIR__ . '/../' . $u_row['profile_image'];
+                    if (file_exists($photo_path)) {
+                        $cashier_avatar = '../' . htmlspecialchars($u_row['profile_image']);
+                    }
+                }
+            }
+        }
+    } catch (PDOException $e) {
+        // fallback
+    }
+}
 $filter_date = $_GET['filter_date'] ?? '';
 $search_query = trim($_GET['search'] ?? '');
 $req_category_filter = $_GET['req_category'] ?? 'all';
@@ -91,6 +120,8 @@ $order_count = $notif_data['total'] ?? 0;
 <style>
 body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
 .navbar-custom { background: #051c3c !important; min-height: 72px; padding: 10px 20px; }
+.user-dropdown-btn { transition: background .2s ease; cursor: pointer; }
+.user-dropdown-btn:hover { background: rgba(255, 255, 255, 0.12) !important; }
 .badge-status { font-size: 0.82rem; padding: 6px 10px; font-weight: 600; border-radius: 6px; }
 .card-metric { border-radius: 12px; border: none; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
 .receipt-paper {
@@ -135,15 +166,47 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
             <span class="badge bg-danger position-absolute top-0 start-100 translate-middle"><?= $order_count; ?></span>
             <?php endif; ?>
         </a>
-        <a href="profile.php" class="btn btn-outline-light btn-sm">
-            <i class="bi bi-person-badge me-1"></i> Profile
-        </a>
-        <span class="text-white small ms-2">
-            Cashier: <b><?= htmlspecialchars($cashier_name); ?></b>
-        </span>
-        <a href="../logout.php" class="btn btn-link text-danger text-decoration-none p-1" onclick="return confirm('Log out?')">
-            <i class="bi bi-box-arrow-right"></i>
-        </a>
+        <div class="dropdown">
+            <a href="#" class="d-flex align-items-center text-white text-decoration-none dropdown-toggle gap-2 px-2 py-1 rounded user-dropdown-btn" id="userMenuDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                <?php if (!empty($cashier_avatar)): ?>
+                    <img src="<?= htmlspecialchars($cashier_avatar, ENT_QUOTES, 'UTF-8'); ?>" alt="Profile" class="rounded-circle border border-light" style="width: 32px; height: 32px; object-fit: cover;">
+                <?php else: ?>
+                    <div class="rounded-circle bg-white text-dark d-flex align-items-center justify-content-center" style="width: 32px; height: 32px; font-size: 0.95rem;">
+                        <i class="bi bi-person-fill text-secondary"></i>
+                    </div>
+                <?php endif; ?>
+                <span class="small fw-semibold text-white">
+                    <?= htmlspecialchars($cashier_display_name, ENT_QUOTES, 'UTF-8'); ?>
+                </span>
+            </a>
+            <ul class="dropdown-menu dropdown-menu-end shadow border-0 mt-2" aria-labelledby="userMenuDropdown" style="border-radius: 12px; min-width: 185px;">
+                <li class="px-3 py-2 border-bottom">
+                    <span class="d-block small text-muted" style="font-size: 0.75rem;">Signed in as</span>
+                    <strong class="small text-dark text-truncate d-block" style="max-width: 180px;">
+                        <?= htmlspecialchars((string) ($_SESSION['username'] ?? 'Cashier'), ENT_QUOTES, 'UTF-8'); ?>
+                    </strong>
+                </li>
+                <li>
+                    <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="profile.php">
+                        <i class="bi bi-person text-secondary fs-6"></i>
+                        <span>My Account</span>
+                    </a>
+                </li>
+                <li>
+                    <a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="profile.php?tab=password">
+                        <i class="bi bi-shield-lock text-secondary fs-6"></i>
+                        <span>Change Password</span>
+                    </a>
+                </li>
+                <li><hr class="dropdown-divider my-1"></li>
+                <li>
+                    <a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="../logout.php" onclick="return confirm('Are you sure you want to log out?');">
+                        <i class="bi bi-box-arrow-right"></i>
+                        <span>Logout</span>
+                    </a>
+                </li>
+            </ul>
+        </div>
     </div>
 </div>
 </nav>

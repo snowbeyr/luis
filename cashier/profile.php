@@ -11,6 +11,12 @@ $user_id = $_SESSION['user_id'];
 $message = "";
 $msg_type = "";
 
+// Active Tab ('profile' or 'password')
+$currentTab = isset($_GET['tab']) ? strtolower(trim($_GET['tab'])) : 'profile';
+if (!in_array($currentTab, ['profile', 'password'], true)) {
+    $currentTab = 'profile';
+}
+
 // Kunin ang detalye ng user mula sa database
 try {
     $stmt = $pdo->prepare("SELECT * FROM users WHERE id = :id");
@@ -83,6 +89,62 @@ if (isset($_POST['update_profile'])) {
         $message = "Error updating profile: " . $e->getMessage();
         $msg_type = "danger";
     }
+    $currentTab = 'profile';
+}
+
+// CHANGE PASSWORD LOGIC (Identical validation to Customer profile)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['change_password'])) {
+    $current_password = (string) ($_POST['current_password'] ?? '');
+    $new_password     = (string) ($_POST['new_password'] ?? '');
+    $confirm_password = (string) ($_POST['confirm_password'] ?? '');
+
+    $hasExistingPassword = !empty($user['password']);
+
+    if ($hasExistingPassword && empty($current_password)) {
+        $message = "Please enter your current password.";
+        $msg_type = "danger";
+    } elseif ($hasExistingPassword && !password_verify($current_password, $user['password'])) {
+        $message = "Current password is incorrect.";
+        $msg_type = "danger";
+    } elseif (strlen($new_password) < 8) {
+        $message = "Password must be at least 8 characters long.";
+        $msg_type = "danger";
+    } elseif (!preg_match('/[A-Z]/', $new_password)) {
+        $message = "Password must contain at least 1 uppercase letter (A–Z).";
+        $msg_type = "danger";
+    } elseif (!preg_match('/[a-z]/', $new_password)) {
+        $message = "Password must contain at least 1 lowercase letter (a–z).";
+        $msg_type = "danger";
+    } elseif (!preg_match('/[0-9]/', $new_password)) {
+        $message = "Password must contain at least 1 number (0–9).";
+        $msg_type = "danger";
+    } elseif (!preg_match('/[\W_]/', $new_password)) {
+        $message = "Password must contain at least 1 special character (!@#$%^&*).";
+        $msg_type = "danger";
+    } elseif (preg_match('/\s/', $new_password)) {
+        $message = "Password cannot contain spaces.";
+        $msg_type = "danger";
+    } elseif ($new_password !== $confirm_password) {
+        $message = "Passwords do not match.";
+        $msg_type = "danger";
+    } elseif ($hasExistingPassword && password_verify($new_password, $user['password'])) {
+        $message = "New password must not match the current password.";
+        $msg_type = "danger";
+    } else {
+        try {
+            $hashedPassword = password_hash($new_password, PASSWORD_DEFAULT);
+            $upd = $pdo->prepare("UPDATE users SET password = :password WHERE id = :id");
+            $upd->execute([':password' => $hashedPassword, ':id' => $user_id]);
+            $user['password'] = $hashedPassword;
+            $message = "Your password has been changed successfully!";
+            $msg_type = "success";
+        } catch (PDOException $e) {
+            error_log("Password update error: " . $e->getMessage());
+            $message = "Failed to update password. Please try again.";
+            $msg_type = "danger";
+        }
+    }
+    $currentTab = 'password';
 }
 
 // Built-in Default Avatar (SVG Data URI - Hindi na kailangan ng physical file)
@@ -193,6 +255,71 @@ $display_name = !empty($user['fullname']) ? $user['fullname'] : $user['username'
             color: #fff;
         }
 
+        /* Password Checklist Styles for Dark Container */
+        .password-checklist {
+            list-style: none;
+            padding-left: 0;
+            margin-bottom: 0;
+            font-size: 0.8rem;
+            color: rgba(255, 255, 255, 0.6);
+        }
+
+        .password-checklist li {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 4px;
+            transition: color 0.2s ease;
+        }
+
+        .password-checklist li::before {
+            content: "•";
+            font-size: 1.1rem;
+            line-height: 1;
+        }
+
+        .password-checklist li.valid {
+            color: #20c997;
+            font-weight: 500;
+        }
+
+        .password-checklist li.valid::before {
+            content: "✓";
+        }
+
+        .password-checklist li.invalid {
+            color: #ff6b6b;
+        }
+
+        .password-checklist li.invalid::before {
+            content: "✕";
+        }
+
+        .profile-container .form-control {
+            background-color: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #fff;
+            border-radius: 8px;
+        }
+
+        .profile-container .form-control:focus {
+            background-color: rgba(255, 255, 255, 0.12);
+            color: #fff;
+            border-color: #0d6efd;
+            box-shadow: none;
+        }
+
+        .profile-container .input-group .btn-outline-secondary {
+            border-color: rgba(255, 255, 255, 0.2);
+            color: #fff;
+            background-color: rgba(255, 255, 255, 0.08);
+        }
+
+        .profile-container .input-group .btn-outline-secondary:hover {
+            background-color: rgba(255, 255, 255, 0.2);
+            color: #fff;
+        }
+
         @media (max-width: 991.98px) {
             .main-content {
                 padding: 15px;
@@ -245,84 +372,160 @@ $display_name = !empty($user['fullname']) ? $user['fullname'] : $user['username'
                     </div>
                 </div>
 
-                <form action="" method="POST" enctype="multipart/form-data">
-                    <h5 class="fw-bold mb-3 fs-6 text-uppercase text-white-50">Personal Information</h5>
+                <!-- Navigation Tabs -->
+                <ul class="nav nav-pills mb-4 gap-2">
+                    <li class="nav-item">
+                        <a class="nav-link <?= $currentTab === 'profile' ? 'active bg-primary text-white' : 'text-white-50 border border-secondary'; ?> fw-semibold px-4" href="profile.php?tab=profile">
+                            <i class="bi bi-person me-1"></i> Personal Information
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link <?= $currentTab === 'password' ? 'active bg-primary text-white' : 'text-white-50 border border-secondary'; ?> fw-semibold px-4" href="profile.php?tab=password">
+                            <i class="bi bi-shield-lock me-1"></i> Change Password
+                        </a>
+                    </li>
+                </ul>
 
-                    <div class="row">
-                        <!-- Username -->
-                        <div class="col-md-6 mb-3">
-                            <label class="form-label small text-white-50">Username</label>
-                            <div class="input-group-custom">
-                                <input type="text" name="username" id="inputUsername" class="form-control" value="<?= htmlspecialchars($user['username']); ?>" readonly required>
-                                <button type="button" class="edit-icon-btn" onclick="enableField('inputUsername')">
-                                    [edit]
-                                </button>
-                            </div>
-                        </div>
-
-                        <!-- Full Name -->
-                        <div class="col-md-6 mb-3">
-                            <label class="form-label small text-white-50">Full Name</label>
-                            <div class="input-group-custom">
-                                <input type="text" name="fullname" id="inputFullname" class="form-control" value="<?= htmlspecialchars($user['fullname'] ?? ''); ?>" placeholder="Enter your full name" readonly>
-                                <button type="button" class="edit-icon-btn" onclick="enableField('inputFullname')">
-                                    [edit]
-                                </button>
-                            </div>
-                        </div>
-
-                        <!-- Email Address -->
-                        <div class="col-md-6 mb-3">
-                            <label class="form-label small text-white-50">Email Address</label>
-                            <div class="input-group-custom">
-                                <input type="email" name="email" id="inputEmail" class="form-control" value="<?= htmlspecialchars($user['email'] ?? ''); ?>" placeholder="Enter your email address" readonly>
-                                <button type="button" class="edit-icon-btn" onclick="enableField('inputEmail')">
-                                    [edit]
-                                </button>
-                            </div>
-                        </div>
-
-                        <!-- Contact Number -->
-                        <div class="col-md-6 mb-3">
-                            <label class="form-label small text-white-50">Contact Number</label>
-                            <div class="input-group-custom">
-                                <input type="text" name="phone_number" id="inputPhone" class="form-control" value="<?= htmlspecialchars($user['phone_number'] ?? ''); ?>" placeholder="09XXXXXXXXX" readonly>
-                                <button type="button" class="edit-icon-btn" onclick="enableField('inputPhone')">
-                                    [edit]
-                                </button>
-                            </div>
-                        </div>
+                <?php if ($currentTab === 'password'): ?>
+                    <!-- ================= TAB: CHANGE PASSWORD ================= -->
+                    <div class="mb-4 pb-3 border-bottom border-light border-opacity-25">
+                        <h5 class="fw-bold mb-1 text-white"><i class="bi bi-shield-lock me-2 text-primary"></i>Change Password</h5>
+                        <p class="text-white-50 small mb-0">For your security, please follow our password complexity rules.</p>
                     </div>
 
-                    <!-- Change Profile Picture and Remove Option -->
-                    <div class="mb-4">
-                        <label class="form-label small text-white-50">Change Profile Picture</label>
-                        <input type="file" name="profile_image" class="form-control text-white border-light border-opacity-25 mb-2" accept=".jpg, .jpeg, .png, .webp" style="height: auto; padding: 10px; background-color: rgba(255,255,255,0.08);">
-                        
-                        <!-- Checkbox para sa pag-remove ng profile picture papuntang default photo -->
-                        <?php if (!empty($user['profile_image'])): ?>
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" name="remove_profile_image" value="1" id="removePhotoCheck">
-                                <label class="form-check-label small text-danger fw-bold" for="removePhotoCheck">
-                                    Remove profile picture (revert to default)
-                                </label>
+                    <form action="" method="POST" autocomplete="off" style="max-width: 540px;">
+                        <?php if (!empty($user['password'])): ?>
+                            <div class="mb-3">
+                                <label for="current_password" class="form-label small text-white-50 fw-semibold">Current Password <span class="text-danger">*</span></label>
+                                <div class="input-group">
+                                    <input type="password" name="current_password" id="current_password" class="form-control" placeholder="Enter your current password" required>
+                                    <button class="btn btn-outline-secondary" type="button" onclick="togglePassVisibility('current_password', this)">
+                                        <i class="bi bi-eye"></i>
+                                    </button>
+                                </div>
                             </div>
                         <?php endif; ?>
-                    </div>
 
-                    <!-- Account Role & Status Info (Read-only) -->
-                    <div class="row g-2 mb-4 p-3 rounded border border-light border-opacity-25 text-white-50 small" style="background-color: rgba(0,0,0,0.2);">
-                        <div class="col-6">
-                            <strong>Account Role:</strong> <span class="text-info text-uppercase"><?= htmlspecialchars($user['role'] ?? 'Cashier'); ?></span>
+                        <div class="mb-3">
+                            <label for="new_password" class="form-label small text-white-50 fw-semibold">New Password <span class="text-danger">*</span></label>
+                            <div class="input-group">
+                                <input type="password" name="new_password" id="new_password" class="form-control" placeholder="At least 8 characters" minlength="8" required>
+                                <button class="btn btn-outline-secondary" type="button" onclick="togglePassVisibility('new_password', this)">
+                                    <i class="bi bi-eye"></i>
+                                </button>
+                            </div>
+                            
+                            <!-- Real-time Checklist Validation (identical to customer profile) -->
+                            <ul class="password-checklist mt-2" id="newPasswordChecklist">
+                                <li id="pwLenReq">At least 8 characters</li>
+                                <li id="pwUpperReq">At least 1 uppercase letter (A–Z)</li>
+                                <li id="pwLowerReq">At least 1 lowercase letter (a–z)</li>
+                                <li id="pwNumReq">At least 1 number (0–9)</li>
+                                <li id="pwSpecReq">At least 1 special character (!@#$%^&*)</li>
+                                <li id="pwSpaceReq">No spaces allowed</li>
+                            </ul>
                         </div>
-                        <div class="col-6">
-                            <strong>Account ID:</strong> <span class="text-light">#<?= $user['id']; ?></span>
-                        </div>
-                    </div>
 
-                    <!-- Save Changes Button -->
-                    <button type="submit" name="update_profile" class="btn btn-light w-100 fw-bold py-2 shadow-sm">Save Changes</button>
-                </form>
+                        <div class="mb-4">
+                            <label for="confirm_password" class="form-label small text-white-50 fw-semibold">Confirm New Password <span class="text-danger">*</span></label>
+                            <div class="input-group">
+                                <input type="password" name="confirm_password" id="confirm_password" class="form-control" placeholder="Re-enter your new password" minlength="8" required>
+                                <button class="btn btn-outline-secondary" type="button" onclick="togglePassVisibility('confirm_password', this)">
+                                    <i class="bi bi-eye"></i>
+                                </button>
+                            </div>
+                            <div id="pwMatchFeedback" class="small mt-1 text-white-50"></div>
+                        </div>
+
+                        <div class="d-flex justify-content-start gap-2 pt-2">
+                            <a href="profile.php?tab=profile" class="btn btn-outline-light px-4">Cancel</a>
+                            <button type="submit" name="change_password" value="1" class="btn btn-primary px-4 fw-semibold">
+                                <i class="bi bi-check2-circle me-1"></i> Update Password
+                            </button>
+                        </div>
+                    </form>
+
+                <?php else: ?>
+                    <!-- ================= TAB: PERSONAL INFORMATION ================= -->
+                    <form action="" method="POST" enctype="multipart/form-data">
+                        <h5 class="fw-bold mb-3 fs-6 text-uppercase text-white-50">Personal Information</h5>
+
+                        <div class="row">
+                            <!-- Username -->
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label small text-white-50">Username</label>
+                                <div class="input-group-custom">
+                                    <input type="text" name="username" id="inputUsername" class="form-control" value="<?= htmlspecialchars($user['username']); ?>" readonly required>
+                                    <button type="button" class="edit-icon-btn" onclick="enableField('inputUsername')">
+                                        [edit]
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Full Name -->
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label small text-white-50">Full Name</label>
+                                <div class="input-group-custom">
+                                    <input type="text" name="fullname" id="inputFullname" class="form-control" value="<?= htmlspecialchars($user['fullname'] ?? ''); ?>" placeholder="Enter your full name" readonly>
+                                    <button type="button" class="edit-icon-btn" onclick="enableField('inputFullname')">
+                                        [edit]
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Email Address -->
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label small text-white-50">Email Address</label>
+                                <div class="input-group-custom">
+                                    <input type="email" name="email" id="inputEmail" class="form-control" value="<?= htmlspecialchars($user['email'] ?? ''); ?>" placeholder="Enter your email address" readonly>
+                                    <button type="button" class="edit-icon-btn" onclick="enableField('inputEmail')">
+                                        [edit]
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Contact Number -->
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label small text-white-50">Contact Number</label>
+                                <div class="input-group-custom">
+                                    <input type="text" name="phone_number" id="inputPhone" class="form-control" value="<?= htmlspecialchars($user['phone_number'] ?? ''); ?>" placeholder="09XXXXXXXXX" readonly>
+                                    <button type="button" class="edit-icon-btn" onclick="enableField('inputPhone')">
+                                        [edit]
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Change Profile Picture and Remove Option -->
+                        <div class="mb-4">
+                            <label class="form-label small text-white-50">Change Profile Picture</label>
+                            <input type="file" name="profile_image" class="form-control text-white border-light border-opacity-25 mb-2" accept=".jpg, .jpeg, .png, .webp" style="height: auto; padding: 10px; background-color: rgba(255,255,255,0.08);">
+                            
+                            <!-- Checkbox para sa pag-remove ng profile picture papuntang default photo -->
+                            <?php if (!empty($user['profile_image'])): ?>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="remove_profile_image" value="1" id="removePhotoCheck">
+                                    <label class="form-check-label small text-danger fw-bold" for="removePhotoCheck">
+                                        Remove profile picture (revert to default)
+                                    </label>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+
+                        <!-- Account Role & Status Info (Read-only) -->
+                        <div class="row g-2 mb-4 p-3 rounded border border-light border-opacity-25 text-white-50 small" style="background-color: rgba(0,0,0,0.2);">
+                            <div class="col-6">
+                                <strong>Account Role:</strong> <span class="text-info text-uppercase"><?= htmlspecialchars($user['role'] ?? 'Cashier'); ?></span>
+                            </div>
+                            <div class="col-6">
+                                <strong>Account ID:</strong> <span class="text-light">#<?= $user['id']; ?></span>
+                            </div>
+                        </div>
+
+                        <!-- Save Changes Button -->
+                        <button type="submit" name="update_profile" class="btn btn-light w-100 fw-bold py-2 shadow-sm">Save Changes</button>
+                    </form>
+                <?php endif; ?>
 
             </div>
         </div>
@@ -335,7 +538,67 @@ $display_name = !empty($user['fullname']) ? $user['fullname'] : $user['username'
             field.focus();
         }
 
+        function togglePassVisibility(inputId, btn) {
+            const input = document.getElementById(inputId);
+            const icon = btn ? btn.querySelector('i') : null;
+            if (!input) return;
+            if (input.type === 'password') {
+                input.type = 'text';
+                if (icon) {
+                    icon.classList.remove('bi-eye');
+                    icon.classList.add('bi-eye-slash');
+                }
+            } else {
+                input.type = 'password';
+                if (icon) {
+                    icon.classList.remove('bi-eye-slash');
+                    icon.classList.add('bi-eye');
+                }
+            }
+        }
 
+        // Real-time password validation logic (identical to customer profile)
+        const newPwInput = document.getElementById('new_password');
+        const confirmPwInput = document.getElementById('confirm_password');
+        if (newPwInput) {
+            newPwInput.addEventListener('input', function() {
+                const val = this.value;
+                const setReq = (id, valid) => {
+                    const el = document.getElementById(id);
+                    if (!el) return;
+                    el.className = valid ? 'valid' : 'invalid';
+                };
+
+                setReq('pwLenReq', val.length >= 8);
+                setReq('pwUpperReq', /[A-Z]/.test(val));
+                setReq('pwLowerReq', /[a-z]/.test(val));
+                setReq('pwNumReq', /[0-9]/.test(val));
+                setReq('pwSpecReq', /[\W_]/.test(val));
+                setReq('pwSpaceReq', val.length > 0 && !/\s/.test(val));
+
+                checkMatch();
+            });
+        }
+
+        function checkMatch() {
+            if (!confirmPwInput || !newPwInput) return;
+            const matchEl = document.getElementById('pwMatchFeedback');
+            if (!matchEl) return;
+            if (confirmPwInput.value === '') {
+                matchEl.textContent = '';
+                matchEl.className = 'small mt-1 text-white-50';
+            } else if (confirmPwInput.value === newPwInput.value) {
+                matchEl.textContent = '✓ Passwords match';
+                matchEl.className = 'small mt-1 text-success fw-semibold';
+            } else {
+                matchEl.textContent = '✕ Passwords do not match';
+                matchEl.className = 'small mt-1 text-danger fw-semibold';
+            }
+        }
+
+        if (confirmPwInput) {
+            confirmPwInput.addEventListener('input', checkMatch);
+        }
     </script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
