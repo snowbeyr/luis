@@ -245,17 +245,11 @@ if (!function_exists('executeCorrectionSettlement')) {
             $actual_rec = (isset($req['actual_amount_received']) && $req['actual_amount_received'] !== null) 
                 ? (float)$req['actual_amount_received'] 
                 : null;
+            // POS / Walk-in transactions strictly settle in Cash
             $prop_method = (!empty($payment_method) && $payment_method !== 'None (Even Exchange)' && $payment_method !== 'N/A')
-                ? $payment_method
-                : (!empty($req['proposed_payment_method']) ? $req['proposed_payment_method'] : null);
-            $prop_ref = (!empty($payment_reference) && $payment_reference !== 'N/A')
-                ? $payment_reference 
-                : (!empty($req['proposed_reference_number']) ? $req['proposed_reference_number'] : null);
-            
-            // If payment method is Cash, clear reference / sender number
-            if ($prop_method === 'Cash') {
-                $prop_ref = null;
-            }
+                ? 'Cash'
+                : ((isset($req['payment_difference']) && abs((float)$req['payment_difference']) > 0.001) ? 'Cash' : 'None (Even Exchange)');
+            $prop_ref = null;
 
             // Recalculate change given based on correct cash tendered and transaction total
             $new_change = null;

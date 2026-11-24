@@ -649,25 +649,14 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
                                         <small class="text-muted">Real physical cash received into drawer.</small>
                                     </div>
 
-                                    <!-- Proposed Payment Method -->
+                                    <!-- Proposed Payment Method (Cash Only for POS) -->
                                     <div class="col-md-4">
                                         <label class="form-label small fw-bold text-dark">
-                                            Payment Method <span class="text-danger">*</span>
+                                            Payment Method
                                         </label>
-                                        <select name="proposed_payment_method" id="corr_prop_payment_method" class="form-select" onchange="handlePropPaymentMethodChange()">
-                                            <option value="Cash" selected>Cash</option>
-                                            <option value="GCash">GCash</option>
-                                            <option value="Maya">Maya</option>
-                                        </select>
-                                    </div>
-
-                                    <!-- Proposed Sender Number (Only visible for GCash / Maya) -->
-                                    <div class="col-md-4" id="corr_sender_num_group" style="display: none;">
-                                        <label class="form-label small fw-bold text-dark">
-                                            Sender Mobile Number (GCash / Maya) <span class="text-danger">*</span>
-                                        </label>
-                                        <input type="text" name="proposed_reference_number" id="corr_prop_reference_number" class="form-control" placeholder="09xxxxxxxxx" maxlength="11" oninput="this.value = this.value.replace(/[^0-9]/g, '').slice(0, 11)">
-                                        <small class="text-muted">Must be 11 digits starting with 09.</small>
+                                        <input type="text" name="proposed_payment_method" id="corr_prop_payment_method" class="form-control bg-light fw-bold text-success" value="Cash" readonly>
+                                        <small class="text-success"><i class="bi bi-shield-check me-1"></i>POS / Walk-in is strictly Cash-only</small>
+                                        <input type="hidden" name="proposed_reference_number" id="corr_prop_reference_number" value="">
                                     </div>
 
                                     <!-- Live Balance / Payment Status Feedback Banner -->
@@ -833,17 +822,10 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
 
                     <div class="mb-3">
                         <label class="form-label fw-bold">Payment / Payout Method</label>
-                        <select name="payment_method" id="settle_payment_method" class="form-select" onchange="handleSettleMethodChange()" required>
-                            <option value="Cash" selected>Cash</option>
-                            <option value="GCash">GCash</option>
-                            <option value="Maya">Maya</option>
-                        </select>
-                    </div>
-
-                    <div class="mb-3" id="settle_sender_num_group" style="display: none;">
-                        <label class="form-label fw-bold">Sender Mobile Number (GCash / Maya) <span class="text-danger" id="settle_sender_req_star" style="display:none;">*</span></label>
-                        <input type="text" name="payment_reference" id="settle_payment_reference" class="form-control" placeholder="09xxxxxxxxx" maxlength="11" oninput="this.value = this.value.replace(/[^0-9]/g, '').slice(0, 11)">
-                        <small class="text-muted">Must be 11 digits starting with 09 (e.g. 09171234567).</small>
+                        <input type="text" class="form-control bg-light fw-bold text-success" value="Cash (POS Only)" readonly>
+                        <input type="hidden" name="payment_method" id="settle_payment_method" value="Cash">
+                        <small class="text-success"><i class="bi bi-shield-check me-1"></i>All POS / walk-in collections and refunds must be settled in physical cash.</small>
+                        <input type="hidden" name="payment_reference" id="settle_payment_reference" value="">
                     </div>
 
                     <div class="text-end mt-4">
@@ -968,19 +950,7 @@ function handleCorrectionTypeChange() {
 function handlePropPaymentMethodChange() {
     let methodEl = document.getElementById('corr_prop_payment_method');
     if (!methodEl) return;
-    let method = methodEl.value;
-    let group = document.getElementById('corr_sender_num_group');
-    let input = document.getElementById('corr_prop_reference_number');
-    if (!group || !input) return;
-
-    if (method === 'GCash' || method === 'Maya') {
-        group.style.display = 'block';
-        input.required = true;
-    } else {
-        group.style.display = 'none';
-        input.required = false;
-        input.value = '';
-    }
+    methodEl.value = 'Cash';
 }
 
 function calculatePaymentCorrectionBalance() {
@@ -1119,9 +1089,8 @@ function openCorrectionModal(txId, txDateStr, deadlineStr) {
         if (cashDiscEl) cashDiscEl.value = '₱0.00';
 
         document.getElementById('corr_actual_amount_received').value = actualRec.toFixed(2);
-        document.getElementById('corr_prop_payment_method').value = (origMethod === 'GCash' || origMethod === 'Maya') ? origMethod : 'Cash';
-        document.getElementById('corr_prop_reference_number').value = (tx.reference_number && tx.reference_number !== 'N/A') ? tx.reference_number : '';
-        handlePropPaymentMethodChange();
+        document.getElementById('corr_prop_payment_method').value = 'Cash';
+        document.getElementById('corr_prop_reference_number').value = '';
         calculatePaymentCorrectionBalance();
 
         let items = [];
@@ -1314,19 +1283,12 @@ document.getElementById('correctionForm').addEventListener('submit', function(e)
 
     let type = document.getElementById('corr_type_select').value;
     if (type === 'Incorrect Payment Information') {
-        let propMethod = document.getElementById('corr_prop_payment_method').value;
-        if (propMethod === 'GCash' || propMethod === 'Maya') {
-            let senderNum = document.getElementById('corr_prop_reference_number').value.trim();
-            if (!senderNum) {
-                alert("Please provide the Sender Mobile Number for " + propMethod + ".");
-                document.getElementById('corr_prop_reference_number').focus();
-                return;
-            }
-            if (!/^09\d{9}$/.test(senderNum)) {
-                alert("Invalid Sender Mobile Number. It must be exactly 11 digits and start with '09' (e.g. 09171234567). Letters and other characters are not allowed.");
-                document.getElementById('corr_prop_reference_number').focus();
-                return;
-            }
+        let propPaid = parseFloat(document.getElementById('corr_prop_paid_amount').value) || 0;
+        let actualRec = parseFloat(document.getElementById('corr_actual_amount_received').value) || 0;
+        if (propPaid <= 0 && actualRec <= 0) {
+            alert("Please provide the correct proposed cash tendered and actual amount received.");
+            document.getElementById('corr_prop_paid_amount').focus();
+            return;
         }
     } else if (type === 'Others') {
         let otherDetails = document.getElementById('corr_other_details').value.trim();
@@ -1369,26 +1331,10 @@ document.getElementById('correctionForm').addEventListener('submit', function(e)
     });
 });
 
-// 4. SETTLE MODAL (COLLECT PAYMENT OR ISSUE REFUND)
+// 4. SETTLE MODAL (COLLECT CASH PAYMENT OR ISSUE CASH REFUND)
 function handleSettleMethodChange() {
     let methodEl = document.getElementById('settle_payment_method');
-    if (!methodEl) return;
-    let method = methodEl.value;
-    let group = document.getElementById('settle_sender_num_group');
-    let input = document.getElementById('settle_payment_reference');
-    let star = document.getElementById('settle_sender_req_star');
-    if (!group || !input) return;
-
-    if (method === 'GCash' || method === 'Maya') {
-        group.style.display = 'block';
-        input.required = true;
-        if (star) star.style.display = 'inline';
-    } else {
-        group.style.display = 'none';
-        input.required = false;
-        input.value = '';
-        if (star) star.style.display = 'none';
-    }
+    if (methodEl) methodEl.value = 'Cash';
 }
 
 function openSettleModal(reqId, type, amount) {
@@ -1397,22 +1343,22 @@ function openSettleModal(reqId, type, amount) {
     document.getElementById('settle_amount_input').value = amount.toFixed(2);
     document.getElementById('settle_amount_display').value = '₱' + amount.toFixed(2);
     document.getElementById('settle_payment_method').value = 'Cash';
-    handleSettleMethodChange();
+    document.getElementById('settle_payment_reference').value = '';
 
     let title = document.getElementById('settleModalTitle');
     let banner = document.getElementById('settleBanner');
     let submitBtn = document.getElementById('settleSubmitBtn');
 
     if (type === 'payment') {
-        title.innerHTML = '<i class="bi bi-cash-coin me-2"></i>Record Additional Payment';
-        banner.innerHTML = `<strong>Collection Required:</strong> The customer owes an additional <strong>₱${amount.toFixed(2)}</strong>. Please collect and record the payment details below to complete this transaction correction.`;
+        title.innerHTML = '<i class="bi bi-cash-stack me-2"></i>Record Additional Cash Payment';
+        banner.innerHTML = `<strong>Cash Collection Required:</strong> The customer owes an additional <strong>₱${amount.toFixed(2)}</strong>. Please collect and record the cash payment received below to complete this transaction correction.`;
         submitBtn.className = 'btn btn-success fw-bold px-4';
-        submitBtn.innerHTML = '<i class="bi bi-check-circle me-1"></i> Confirm Payment & Synchronize Inventory';
+        submitBtn.innerHTML = '<i class="bi bi-cash me-1"></i> Confirm Cash Payment & Complete Correction';
     } else {
-        title.innerHTML = '<i class="bi bi-arrow-return-left me-2"></i>Record Refund Payout';
-        banner.innerHTML = `<strong>Refund Due:</strong> The customer is owed a refund of <strong>₱${amount.toFixed(2)}</strong>. Please record the payout details below to complete this transaction correction.`;
+        title.innerHTML = '<i class="bi bi-arrow-return-left me-2"></i>Record Cash Refund Payout';
+        banner.innerHTML = `<strong>Cash Refund Due:</strong> The customer is owed a refund of <strong>₱${amount.toFixed(2)}</strong>. Please record the cash refund given to the customer to complete this transaction correction.`;
         submitBtn.className = 'btn btn-danger fw-bold px-4';
-        submitBtn.innerHTML = '<i class="bi bi-arrow-return-left me-1"></i> Confirm Refund & Synchronize Inventory';
+        submitBtn.innerHTML = '<i class="bi bi-arrow-return-left me-1"></i> Confirm Cash Refund & Synchronize Inventory';
     }
 
     settleModal.show();
@@ -1420,21 +1366,6 @@ function openSettleModal(reqId, type, amount) {
 
 document.getElementById('settleForm').addEventListener('submit', function(e) {
     e.preventDefault();
-    let settleMethod = document.getElementById('settle_payment_method').value;
-    if (settleMethod === 'GCash' || settleMethod === 'Maya') {
-        let settleRef = document.getElementById('settle_payment_reference').value.trim();
-        if (!settleRef) {
-            alert("Please provide the Sender Mobile Number for " + settleMethod + ".");
-            document.getElementById('settle_payment_reference').focus();
-            return;
-        }
-        if (!/^09\d{9}$/.test(settleRef)) {
-            alert("Invalid Sender Mobile Number. It must be exactly 11 digits and start with '09' (e.g. 09171234567). Letters and other characters are not allowed.");
-            document.getElementById('settle_payment_reference').focus();
-            return;
-        }
-    }
-
     let btn = document.getElementById('settleSubmitBtn');
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Processing Settlement...';

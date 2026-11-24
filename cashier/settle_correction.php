@@ -36,17 +36,17 @@ if (!in_array($req['status'], $allowed_statuses)) {
     exit();
 }
 
-// Validate sender mobile number for GCash / Maya
-if ($payment_method === 'GCash' || $payment_method === 'Maya') {
-    if (empty($payment_reference)) {
-        echo json_encode(['status' => 'error', 'message' => 'Sender mobile number is mandatory when selecting ' . $payment_method . '.']);
-        exit();
-    }
-    if (!preg_match('/^09\d{9}$/', $payment_reference)) {
-        echo json_encode(['status' => 'error', 'message' => 'Invalid Sender Mobile Number. It must be exactly 11 digits and start with "09" (e.g. 09171234567). Letters are not allowed.']);
-        exit();
-    }
+// Backend Enforcement: POS / Walk-in settlements and refunds strictly accept CASH ONLY
+if (strcasecmp($payment_method, 'Cash') !== 0 && $payment_method !== 'None (Even Exchange)' && $payment_method !== 'N/A') {
+    echo json_encode([
+        'status' => 'error', 
+        'message' => 'POS / Walk-in settlements and refunds strictly accept CASH ONLY. GCash, Maya, and other online payment methods are not supported.'
+    ]);
+    exit();
 }
+
+$payment_method = ($payment_method === 'None (Even Exchange)' || $payment_method === 'N/A') ? $payment_method : 'Cash';
+$payment_reference = null;
 
 // Execute settlement
 list($success, $message) = executeCorrectionSettlement($pdo, $request_id, $user_name, $payment_method, $payment_reference, $amount);

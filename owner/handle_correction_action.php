@@ -245,16 +245,14 @@ try {
         $payment_reference = trim($_POST['payment_reference'] ?? '');
         $amount = isset($_POST['amount']) ? (float)$_POST['amount'] : null;
 
-        if (in_array(strtolower($payment_method), ['gcash', 'maya'])) {
-            if (empty($payment_reference)) {
-                echo json_encode(['status' => 'error', 'message' => "Sender mobile number is required for {$payment_method} settlement."]);
-                exit();
-            }
-            if (!preg_match('/^09\d{9}$/', $payment_reference)) {
-                echo json_encode(['status' => 'error', 'message' => "Invalid sender mobile number for {$payment_method}. It must be strictly 11 digits and start with '09' (e.g. 09171234567)."]);
-                exit();
-            }
+        // Backend Enforcement: POS / Walk-in transaction settlement strictly accepts CASH ONLY
+        if (strcasecmp($payment_method, 'Cash') !== 0 && $payment_method !== 'None (Even Exchange)' && $payment_method !== 'N/A') {
+            echo json_encode(['status' => 'error', 'message' => 'POS / Walk-in transaction settlement strictly accepts CASH ONLY. Electronic and online payment methods are not supported.']);
+            exit();
         }
+
+        $payment_method = ($payment_method === 'None (Even Exchange)' || $payment_method === 'N/A') ? $payment_method : 'Cash';
+        $payment_reference = null;
 
         list($exec_success, $exec_msg) = executeCorrectionSettlement($pdo, $request_id, $owner_name, $payment_method, $payment_reference, $amount);
         if ($exec_success) {

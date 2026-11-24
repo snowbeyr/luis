@@ -18,6 +18,17 @@ $cart = $data['cart'];
 $total = (float)$data['total'];
 $paid = (float)$data['paid'];
 $change = (float)$data['change'];
+$payment_method = trim($data['payment_method'] ?? 'Cash');
+
+// Backend Enforcement: POS / Walk-in transactions strictly accept CASH ONLY
+if (strcasecmp($payment_method, 'Cash') !== 0) {
+    echo json_encode([
+        "status" => "error", 
+        "message" => "POS / Walk-in transactions strictly accept CASH ONLY. Electronic and online payment methods (such as GCash or Maya) are not supported."
+    ]);
+    exit();
+}
+
 $cashier = $_SESSION['username'] ?? 'Cashier';
 $user_id = (int)($_SESSION['user_id'] ?? $_SESSION['id'] ?? 0);
 $role = $_SESSION['role'];
@@ -27,9 +38,12 @@ try {
     // Simulan ang Database Transaction para ligtas ang inventory at sales records
     $pdo->beginTransaction();
 
-    // 1. I-save ang transaction sa pos_transaction table gamit ang PDO prepared statement
-    $stmt = $pdo->prepare("INSERT INTO pos_transaction (cashier_name, total_amount, amount_paid, change_amount) VALUES (?, ?, ?, ?)");
-    $stmt->execute([$cashier, $total, $paid, $change]);
+    // 1. I-save ang transaction sa pos_transaction table gamit ang PDO prepared statement (Strictly Cash)
+    $stmt = $pdo->prepare("
+        INSERT INTO pos_transaction (cashier_name, total_amount, amount_paid, change_amount, payment_method, actual_amount_received, payment_status) 
+        VALUES (?, ?, ?, ?, 'Cash', ?, 'Fully Paid')
+    ");
+    $stmt->execute([$cashier, $total, $paid, $change, $total]);
     $transaction_id = $pdo->lastInsertId();
 
     // 2. I-loop ang cart para sa bawas stock at pag-save ng items

@@ -1088,27 +1088,20 @@ document.getElementById('rejectForm').addEventListener('submit', function(e) {
     });
 });
 
-// 4. OWNER SETTLE ACTION
+// 4. OWNER SETTLE ACTION (CASH ONLY)
 function ownerSettle(reqId, status, amount) {
-    let method = prompt("Enter payment method for settlement (Cash / GCash / Maya):", "Cash");
-    if (!method) return;
-    method = method.trim();
+    const isRefund = (status === 'Pending Refund');
+    const actionLabel = isRefund ? 'Cash Refund' : 'Cash Collection';
+    const numAmt = parseFloat(amount || 0).toFixed(2);
 
-    let ref = "";
-    if (method.toLowerCase() !== "cash") {
-        ref = prompt("Enter 11-digit sender mobile number starting with 09 for " + method + ":", "");
-        if (ref === null) return;
-        ref = ref.trim();
-        if (!/^09\d{9}$/.test(ref)) {
-            alert("Invalid Sender Mobile Number. It must be strictly 11 digits and start with '09' (e.g. 09171234567).");
-            return;
-        }
+    if (!confirm(`Confirm ${actionLabel} of ₱${numAmt} for Correction Request #${reqId}? This will record the actual cash payout/collection and complete the correction.`)) {
+        return;
     }
 
     fetch('handle_correction_action.php', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: `action=settle&request_id=${reqId}&payment_method=${encodeURIComponent(method)}&payment_reference=${encodeURIComponent(ref)}&amount=${amount}`
+        body: `action=settle&request_id=${reqId}&payment_method=Cash&payment_reference=&amount=${amount}`
     })
     .then(res => res.json())
     .then(data => {

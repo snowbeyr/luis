@@ -44,6 +44,17 @@ $actual_amount_received = isset($_POST['actual_amount_received']) && $_POST['act
 $proposed_payment_method = trim($_POST['proposed_payment_method'] ?? 'Cash');
 $proposed_reference_number = trim($_POST['proposed_reference_number'] ?? '');
 
+// Backend Enforcement: POS / Walk-in transactions strictly accept CASH ONLY
+if ($proposed_payment_method !== '' && strcasecmp($proposed_payment_method, 'Cash') !== 0) {
+    echo json_encode([
+        'status' => 'error', 
+        'message' => 'POS / Walk-in transactions strictly accept CASH ONLY. Electronic and online payment methods (such as GCash or Maya) are not allowed.'
+    ]);
+    exit();
+}
+$proposed_payment_method = 'Cash';
+$proposed_reference_number = null;
+
 if ($correction_type === 'Incorrect Payment Information') {
     if ($proposed_amount_paid === null || $proposed_amount_paid < 0) {
         echo json_encode(['status' => 'error', 'message' => 'Please provide a valid proposed paid amount.']);
@@ -52,16 +63,6 @@ if ($correction_type === 'Incorrect Payment Information') {
     if ($actual_amount_received === null || $actual_amount_received < 0) {
         echo json_encode(['status' => 'error', 'message' => 'Please provide the actual amount received from the customer.']);
         exit();
-    }
-    if ($proposed_payment_method === 'GCash' || $proposed_payment_method === 'Maya') {
-        if (empty($proposed_reference_number)) {
-            echo json_encode(['status' => 'error', 'message' => 'Sender mobile number is mandatory when selecting ' . $proposed_payment_method . '.']);
-            exit();
-        }
-        if (!preg_match('/^09\d{9}$/', $proposed_reference_number)) {
-            echo json_encode(['status' => 'error', 'message' => 'Invalid Sender Mobile Number. It must be exactly 11 digits and start with "09" (e.g. 09171234567). Letters are not allowed.']);
-            exit();
-        }
     }
 }
 
