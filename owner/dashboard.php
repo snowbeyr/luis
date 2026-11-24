@@ -178,10 +178,6 @@ body{
         <i class="bi bi-box-seam"></i> Inventory
     </a>
 
-    <a href="shared_inventory.php" class="sidebar-link">
-        <i class="bi bi-diagram-3"></i> Shared Stock
-    </a>
-
     <a href="orders.php" class="sidebar-link">
         <i class="bi bi-clipboard-check"></i> Order Mgt. Monitoring
     </a>

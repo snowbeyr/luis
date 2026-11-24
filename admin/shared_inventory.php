@@ -1,16 +1,16 @@
 <?php
-// owner/shared_inventory.php
+// admin/shared_inventory.php
 session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/shared_inventory_functions.php';
 
-// Auth check
-if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'owner') {
+// Auth check - Admin only
+if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
     header("Location: ../login.php");
     exit();
 }
 
-$owner_name = $_SESSION['username'] ?? "Owner";
+$admin_name = $_SESSION['username'] ?? "Admin";
 ensureSharedInventorySchema($pdo);
 
 // Handle POST actions
@@ -33,7 +33,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     INSERT INTO shared_inventory_sources (source_name, base_unit, physical_stock, low_stock_threshold, is_active, created_by, created_at, updated_at)
                     VALUES (?, ?, ?, ?, 1, ?, NOW(), NOW()) RETURNING id
                 ");
-                $stmt->execute([$source_name, $base_unit, $physical_stock, $low_stock_threshold, $owner_name]);
+                $stmt->execute([$source_name, $base_unit, $physical_stock, $low_stock_threshold, $admin_name]);
                 $new_id = $stmt->fetchColumn();
 
                 if ($physical_stock > 0 && $new_id) {
@@ -45,7 +45,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             reference_id, user_responsible, remarks
                         ) VALUES (?, NULL, NULL, 'Initial Stock', ?, NULL, NULL, 0, ?, NULL, ?, 'Initial inventory source creation')
                     ");
-                    $stmt_mov->execute([$new_id, $physical_stock, $physical_stock, $owner_name]);
+                    $stmt_mov->execute([$new_id, $physical_stock, $physical_stock, $admin_name]);
                 }
 
                 $_SESSION['success_msg'] = "Shared inventory source '{$source_name}' created successfully!";
@@ -92,7 +92,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($source_id <= 0 || $reason === '') {
             $_SESSION['error_msg'] = "Adjustment reason is mandatory.";
         } else {
-            list($success, $msg, $stock) = adjustSharedStock($pdo, $source_id, $new_stock, $owner_name, $reason);
+            list($success, $msg, $stock) = adjustSharedStock($pdo, $source_id, $new_stock, $admin_name, $reason);
             if ($success) {
                 $_SESSION['success_msg'] = $msg;
             } else {
@@ -120,7 +120,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if ($is_var) {
                 $var_id = $item_id;
-                // find product_id
                 $stmt_p = $pdo->prepare("SELECT product_id FROM product_variants WHERE id = ?");
                 $stmt_p->execute([$var_id]);
                 $prod_id = $stmt_p->fetchColumn();
@@ -133,7 +132,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['error_msg'] = "Selected product could not be found.";
             } else {
                 try {
-                    // Check if already linked elsewhere
                     $stmt_chk = $pdo->prepare("
                         SELECT siv.id, sis.source_name 
                         FROM shared_inventory_variants siv
@@ -191,7 +189,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Fetch all sources with their connected variants
+// Fetch sources
 $sources_stmt = $pdo->query("
     SELECT sis.*,
            COUNT(siv.id) AS connected_variants_count
@@ -245,7 +243,6 @@ $stmt_unlinked_prod = $pdo->query("
 ");
 $unlinked_prods = $stmt_unlinked_prod->fetchAll(PDO::FETCH_ASSOC);
 foreach ($unlinked_prods as $p) {
-    // Check if product has variants; if it has variants, we typically link the variants, but allow linking parent if desired
     $stmt_has_var = $pdo->prepare("SELECT COUNT(*) FROM product_variants WHERE product_id = ?");
     $stmt_has_var->execute([$p['id']]);
     $var_count = (int)$stmt_has_var->fetchColumn();
@@ -292,59 +289,106 @@ $recent_movements = $movements_stmt->fetchAll(PDO::FETCH_ASSOC);
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Shared Stock Management - Owner Panel</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <title>Shared Stock Management - Admin Dashboard</title>
+
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+
     <style>
         body {
-            background-color: #f4f6f9;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f4f6f9;
             margin: 0;
-            padding: 0;
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
+            overflow-x: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
-        .wrapper {
-            display: flex;
-            flex: 1;
-            height: calc(100vh - 56px);
-            overflow: hidden;
-        }
+
+        /* SIDEBAR */
         .sidebar {
-            width: 250px;
-            background-color: #0d2238;
-            color: #fff;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 260px;
+            height: 100vh;
+            background: #001f4d;
+            padding: 20px;
+            overflow-y: auto;
+            z-index: 1040;
             display: flex;
             flex-direction: column;
-            flex-shrink: 0;
+            transition: transform 0.3s ease;
         }
-        .sidebar-link {
-            padding: 12px 20px;
-            color: #b0c4de;
+
+        .sidebar h2 {
+            color: white;
+            text-align: center;
+            font-weight: bold;
+            margin-bottom: 30px;
+            line-height: 1.3;
+            font-size: 1.5rem;
+        }
+
+        .sidebar a {
+            color: white;
             text-decoration: none;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            transition: all 0.2s;
-            font-size: 0.95rem;
+            padding: 12px 14px;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            transition: 0.3s;
+            font-size: 15px;
+            display: block;
+            font-weight: 500;
         }
-        .sidebar-link:hover, .sidebar-link.active {
-            color: #fff;
-            background-color: #1a3a5c;
-            border-left: 4px solid #00c0ef;
+
+        .sidebar a i {
+            margin-right: 8px;
         }
+
+        .sidebar a:hover {
+            background: #0d6efd;
+            padding-left: 20px;
+        }
+
+        .sidebar .active {
+            background: #0d6efd;
+        }
+
+        /* LOGOUT */
         .logout-section {
             margin-top: auto;
-            border-top: 1px solid rgba(255,255,255,0.1);
+            padding-top: 15px;
+            border-top: 1px solid rgba(255, 255, 255, 0.2);
         }
-        .main-content {
-            flex-grow: 1;
-            padding: 24px;
-            overflow-y: auto;
-            background-color: #f8fafc;
+
+        /* MAIN CONTENT */
+        .main {
+            margin-left: 260px;
+            padding: 25px;
+            min-height: 100vh;
         }
+
+        /* SCROLLBAR */
+        .sidebar::-webkit-scrollbar {
+            width: 5px;
+        }
+        .sidebar::-webkit-scrollbar-thumb {
+            background: #0d6efd;
+            border-radius: 10px;
+        }
+
+        /* RESPONSIVE */
+        @media (max-width: 991px) {
+            .sidebar {
+                transform: translateX(-100%);
+            }
+            .sidebar.show {
+                transform: translateX(0);
+            }
+            .main {
+                margin-left: 0;
+                padding: 15px;
+            }
+        }
+
         .stat-card {
             border-radius: 12px;
             border: 1px solid #e2e8f0;
@@ -384,50 +428,59 @@ $recent_movements = $movements_stmt->fetchAll(PDO::FETCH_ASSOC);
             color: #991b1b;
             font-weight: 600;
         }
-        .badge-soft-info {
-            background-color: #e0f2fe;
-            color: #075985;
-            font-weight: 600;
-        }
     </style>
 </head>
 <body>
 
-<nav class="navbar navbar-dark px-3" style="background-color:#051c3c;">
-    <div class="d-flex align-items-center w-100 justify-content-between">
-        <div class="d-flex align-items-center gap-2">
-            <span class="navbar-brand fw-bold mb-0">Owner Panel</span>
-        </div>
-        <div class="d-flex align-items-center text-white gap-3">
-            <span>Welcome, <strong><?= htmlspecialchars($owner_name); ?></strong></span>
-            <button class="btn btn-outline-light btn-sm d-lg-none" type="button" id="sidebarToggle" aria-label="Toggle sidebar">
-                <i class="bi bi-list fs-5"></i>
-            </button>
-        </div>
-    </div>
-</nav>
+    <!-- Mobile Header Toggle Bar -->
+    <nav class="navbar navbar-dark bg-dark d-lg-none px-3">
+        <span class="navbar-brand fw-bold fs-6"><i class="bi bi-diagram-3"></i> Shared Stock</span>
+        <button class="btn btn-outline-light btn-sm" type="button" id="sidebarToggle">
+            <i class="bi bi-list fs-4"></i>
+        </button>
+    </nav>
 
-<div class="wrapper">
-    <!-- Sidebar -->
+    <!-- SIDEBAR -->
     <div class="sidebar" id="appSidebar">
-        <a href="dashboard.php" class="sidebar-link"><i class="bi bi-graph-up-arrow"></i> Dashboard</a>
-        <a href="sales.php" class="sidebar-link"><i class="bi bi-cash-stack"></i> Sales</a>
-        <a href="inventory.php" class="sidebar-link"><i class="bi bi-box-seam"></i> Inventory Report</a>
-        <a href="shared_inventory.php" class="sidebar-link active"><i class="bi bi-diagram-3"></i> Shared Stock</a>
-        <a href="orders.php" class="sidebar-link"><i class="bi bi-clipboard-check"></i> Order Mgt. Monitoring</a>
-        <a href="corrections.php" class="sidebar-link"><i class="bi bi-arrow-repeat"></i> Corrections</a>
-        <a href="history.php" class="sidebar-link"><i class="bi bi-clock-history"></i> History</a>
-        <a href="auditTrail.php" class="sidebar-link"><i class="bi bi-shield-lock"></i> Audit Trail</a>
-        <a href="accountManagement.php" class="sidebar-link"><i class="bi bi-person-gear"></i> Account Management</a>
+        <h2>Admin<br> Dashboard</h2>
+
+        <a href="dashboard.php">
+            <i class="bi bi-grid"></i> Dashboard
+        </a>
+
+        <a href="products.php">
+            <i class="bi bi-box-seam"></i> Inventory
+        </a>
+
+        <a href="shared_inventory.php" class="active">
+            <i class="bi bi-diagram-3"></i> Shared Stock
+        </a>
+
+        <a href="orders.php">
+            <i class="bi bi-receipt"></i> Orders
+        </a>
+
+        <a href="ItemsRequest.php">
+            <i class="bi bi-arrow-return-left"></i> Customer Service request
+        </a>
+
+        <a href="damageItems.php">
+            <i class="bi bi-exclamation-triangle"></i> Damaged Items
+        </a>
+
+        <a href="profile.php" class="sidebar-link">
+            <i class="bi bi-person-badge"></i> My Profile
+        </a>
+
         <div class="logout-section">
-            <a href="../logout.php" class="sidebar-link text-danger" onclick="return confirm('Are you sure you want to log out?')">
+            <a href="../logout.php" class="text-danger" onclick="return confirm('Are you sure you want to logout?')">
                 <i class="bi bi-box-arrow-right"></i> Logout
             </a>
         </div>
     </div>
 
-    <!-- Main Content -->
-    <div class="main-content">
+    <!-- MAIN CONTENT -->
+    <div class="main">
         <div class="container-fluid p-0">
 
             <!-- Flash alerts -->
@@ -452,12 +505,12 @@ $recent_movements = $movements_stmt->fetchAll(PDO::FETCH_ASSOC);
             <!-- Header -->
             <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
                 <div>
-                    <h2 class="fw-bold text-dark m-0"><i class="bi bi-diagram-3 text-primary"></i> Linked Inventory / Shared Stock</h2>
-                    <small class="text-muted">Manage products & variants sharing a physical raw inventory source (e.g., Gravel, Sand, Steel).</small>
+                    <h3 class="fw-bold text-dark m-0"><i class="bi bi-diagram-3 text-primary"></i> Linked Inventory / Shared Stock</h3>
+                    <small class="text-muted">Manage products & variants sharing a single physical inventory source (e.g. Gravel, White Sand, Bistay).</small>
                 </div>
                 <div class="d-flex gap-2">
                     <button class="btn btn-outline-secondary btn-sm fw-bold" data-bs-toggle="modal" data-bs-target="#movementsAuditModal">
-                        <i class="bi bi-clock-history"></i> Global Movement Audit
+                        <i class="bi bi-clock-history"></i> Movement Audit Trail
                     </button>
                     <button class="btn btn-primary btn-sm fw-bold shadow-sm" data-bs-toggle="modal" data-bs-target="#createSourceModal">
                         <i class="bi bi-plus-circle"></i> Create Shared Source
@@ -829,126 +882,130 @@ $recent_movements = $movements_stmt->fetchAll(PDO::FETCH_ASSOC);
 
         </div>
     </div>
-</div>
 
-<!-- Modal: Create Source -->
-<div class="modal fade" id="createSourceModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <form method="POST" action="shared_inventory.php">
-                <input type="hidden" name="action" value="create_source">
-                <div class="modal-header bg-primary text-white">
-                    <h5 class="modal-title fw-bold"><i class="bi bi-plus-circle"></i> Create Shared Inventory Source</h5>
+    <!-- Modal: Create Source -->
+    <div class="modal fade" id="createSourceModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <form method="POST" action="shared_inventory.php">
+                    <input type="hidden" name="action" value="create_source">
+                    <div class="modal-header bg-primary text-white">
+                        <h5 class="modal-title fw-bold"><i class="bi bi-plus-circle"></i> Create Shared Inventory Source</h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label class="form-label fw-bold small">Source Name <span class="text-danger">*</span></label>
+                            <input type="text" name="source_name" class="form-control form-control-sm" placeholder="e.g. Gravel, White Sand, Bistay, Steel Bar" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold small">Base Unit of Measurement <span class="text-danger">*</span></label>
+                            <input type="text" name="base_unit" class="form-control form-control-sm" placeholder="e.g. kg, meters, liters, pcs" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold small">Initial Physical Stock Count</label>
+                            <input type="number" step="0.01" min="0" name="physical_stock" class="form-control form-control-sm" value="0.00" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold small">Low Stock Alert Threshold</label>
+                            <input type="number" step="0.01" min="0" name="low_stock_threshold" class="form-control form-control-sm" value="100.00" required>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary btn-sm fw-bold">Create Source</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Movements Audit Trail -->
+    <div class="modal fade" id="movementsAuditModal" tabindex="-1">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header bg-dark text-white">
+                    <h5 class="modal-title fw-bold"><i class="bi bi-clock-history"></i> Shared Stock Movement History (Audit Trail)</h5>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
-                <div class="modal-body">
-                    <div class="mb-3">
-                        <label class="form-label fw-bold small">Source Name <span class="text-danger">*</span></label>
-                        <input type="text" name="source_name" class="form-control form-control-sm" placeholder="e.g. Gravel, White Sand, Bistay, Steel Bar" required>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label fw-bold small">Base Unit of Measurement <span class="text-danger">*</span></label>
-                        <input type="text" name="base_unit" class="form-control form-control-sm" placeholder="e.g. kg, meters, liters, pcs" required>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label fw-bold small">Initial Physical Stock Count</label>
-                        <input type="number" step="0.01" min="0" name="physical_stock" class="form-control form-control-sm" value="0.00" required>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label fw-bold small">Low Stock Alert Threshold</label>
-                        <input type="number" step="0.01" min="0" name="low_stock_threshold" class="form-control form-control-sm" value="100.00" required>
+                <div class="modal-body p-0">
+                    <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
+                        <table class="table table-hover table-striped align-middle mb-0 small">
+                            <thead class="table-light sticky-top">
+                                <tr>
+                                    <th>Timestamp</th>
+                                    <th>Source</th>
+                                    <th>Movement Type</th>
+                                    <th>Affected Item</th>
+                                    <th>Qty Changed</th>
+                                    <th>Physical Balance</th>
+                                    <th>User</th>
+                                    <th>Reference</th>
+                                    <th>Remarks</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php if (empty($recent_movements)): ?>
+                                    <tr>
+                                        <td colspan="9" class="text-center text-muted py-4">No inventory movements recorded yet.</td>
+                                    </tr>
+                                <?php else: ?>
+                                    <?php foreach ($recent_movements as $m): 
+                                        $qty_chg = floatval($m['qty_in_base_unit']);
+                                        $item_name = !empty($m['variant_name']) 
+                                            ? htmlspecialchars($m['product_name']) . " (" . htmlspecialchars($m['variant_name']) . ")" 
+                                            : (!empty($m['product_name']) ? htmlspecialchars($m['product_name']) : '-');
+                                    ?>
+                                    <tr>
+                                        <td class="text-muted"><?= date('M d, Y h:i A', strtotime($m['created_at'])); ?></td>
+                                        <td class="fw-bold"><?= htmlspecialchars($m['source_name']); ?></td>
+                                        <td>
+                                            <span class="badge bg-secondary"><?= htmlspecialchars($m['movement_type']); ?></span>
+                                        </td>
+                                        <td><?= $item_name; ?></td>
+                                        <td class="fw-bold <?= $qty_chg < 0 ? 'text-danger' : 'text-success'; ?>">
+                                            <?= $qty_chg > 0 ? '+' : ''; ?><?= number_format($qty_chg, 2); ?> <?= htmlspecialchars($m['base_unit']); ?>
+                                            <?php if (!empty($m['selling_unit_qty'])): ?>
+                                                <div class="text-muted fw-normal" style="font-size: 0.75rem;">
+                                                    (<?= floatval($m['selling_unit_qty']); ?> selling units)
+                                                </div>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <small class="text-muted"><?= number_format(floatval($m['previous_physical_stock']), 2); ?></small>
+                                            &rarr; <strong><?= number_format(floatval($m['new_physical_stock']), 2); ?></strong>
+                                        </td>
+                                        <td><?= htmlspecialchars($m['user_responsible'] ?: 'System'); ?></td>
+                                        <td><?= htmlspecialchars($m['reference_id'] ?: '-'); ?></td>
+                                        <td class="text-muted"><?= htmlspecialchars($m['remarks'] ?: '-'); ?></td>
+                                    </tr>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
-                    <button type="submit" class="btn btn-primary btn-sm fw-bold">Create Source</button>
+                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
                 </div>
-            </form>
-        </div>
-    </div>
-</div>
-
-<!-- Modal: Movements Audit Trail -->
-<div class="modal fade" id="movementsAuditModal" tabindex="-1">
-    <div class="modal-dialog modal-xl">
-        <div class="modal-content">
-            <div class="modal-header bg-dark text-white">
-                <h5 class="modal-title fw-bold"><i class="bi bi-clock-history"></i> Shared Stock Movement History (Audit Trail)</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body p-0">
-                <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
-                    <table class="table table-hover table-striped align-middle mb-0 small">
-                        <thead class="table-light sticky-top">
-                            <tr>
-                                <th>Timestamp</th>
-                                <th>Source</th>
-                                <th>Movement Type</th>
-                                <th>Affected Item</th>
-                                <th>Qty Changed</th>
-                                <th>Physical Balance</th>
-                                <th>User</th>
-                                <th>Reference</th>
-                                <th>Remarks</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php if (empty($recent_movements)): ?>
-                                <tr>
-                                    <td colspan="9" class="text-center text-muted py-4">No inventory movements recorded yet.</td>
-                                </tr>
-                            <?php else: ?>
-                                <?php foreach ($recent_movements as $m): 
-                                    $qty_chg = floatval($m['qty_in_base_unit']);
-                                    $item_name = !empty($m['variant_name']) 
-                                        ? htmlspecialchars($m['product_name']) . " (" . htmlspecialchars($m['variant_name']) . ")" 
-                                        : (!empty($m['product_name']) ? htmlspecialchars($m['product_name']) : '-');
-                                ?>
-                                <tr>
-                                    <td class="text-muted"><?= date('M d, Y h:i A', strtotime($m['created_at'])); ?></td>
-                                    <td class="fw-bold"><?= htmlspecialchars($m['source_name']); ?></td>
-                                    <td>
-                                        <span class="badge bg-secondary"><?= htmlspecialchars($m['movement_type']); ?></span>
-                                    </td>
-                                    <td><?= $item_name; ?></td>
-                                    <td class="fw-bold <?= $qty_chg < 0 ? 'text-danger' : 'text-success'; ?>">
-                                        <?= $qty_chg > 0 ? '+' : ''; ?><?= number_format($qty_chg, 2); ?> <?= htmlspecialchars($m['base_unit']); ?>
-                                        <?php if (!empty($m['selling_unit_qty'])): ?>
-                                            <div class="text-muted fw-normal" style="font-size: 0.75rem;">
-                                                (<?= floatval($m['selling_unit_qty']); ?> selling units)
-                                            </div>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td>
-                                        <small class="text-muted"><?= number_format(floatval($m['previous_physical_stock']), 2); ?></small>
-                                        &rarr; <strong><?= number_format(floatval($m['new_physical_stock']), 2); ?></strong>
-                                    </td>
-                                    <td><?= htmlspecialchars($m['user_responsible'] ?: 'System'); ?></td>
-                                    <td><?= htmlspecialchars($m['reference_id'] ?: '-'); ?></td>
-                                    <td class="text-muted"><?= htmlspecialchars($m['remarks'] ?: '-'); ?></td>
-                                </tr>
-                                <?php endforeach; ?>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
             </div>
         </div>
     </div>
-</div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-<script>
-    const sidebarToggle = document.getElementById('sidebarToggle');
-    const appSidebar = document.getElementById('appSidebar');
-    if (sidebarToggle && appSidebar) {
-        sidebarToggle.addEventListener('click', () => {
-            appSidebar.classList.toggle('d-none');
-        });
-    }
-</script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const sidebarToggle = document.getElementById('sidebarToggle');
+        const appSidebar = document.getElementById('appSidebar');
+        if (sidebarToggle && appSidebar) {
+            sidebarToggle.addEventListener('click', function() {
+                appSidebar.classList.toggle('show');
+            });
+            document.addEventListener('click', function(event) {
+                if (!appSidebar.contains(event.target) && !sidebarToggle.contains(event.target)) {
+                    appSidebar.classList.remove('show');
+                }
+            });
+        }
+    </script>
 </body>
 </html>

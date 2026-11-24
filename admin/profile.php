@@ -403,6 +403,7 @@ $display_name = !empty($user['fullname']) ? $user['fullname'] : $user['username'
         <h2>Admin<br>Dashboard</h2>
         <a href="dashboard.php"><i class="bi bi-grid"></i> Dashboard</a>
         <a href="products.php"><i class="bi bi-box-seam"></i> Inventory</a>
+        <a href="shared_inventory.php"><i class="bi bi-diagram-3"></i> Shared Stock</a>
         <a href="orders.php"><i class="bi bi-receipt"></i> Orders</a>
         <a href="ItemsRequest.php"><i class="bi bi-arrow-return-left"></i> Customer Service request</a>
         <a href="damageItems.php"><i class="bi bi-exclamation-triangle"></i> Damaged Items</a>

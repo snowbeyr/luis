@@ -215,7 +215,6 @@ body{
     <a href="dashboard.php" class="sidebar-link"><i class="bi bi-graph-up-arrow"></i> Dashboard</a>
     <a href="sales.php" class="sidebar-link active"><i class="bi bi-cash-stack"></i> Sales</a>
     <a href="inventory.php" class="sidebar-link"><i class="bi bi-box-seam"></i> Inventory</a>
-    <a href="shared_inventory.php" class="sidebar-link"><i class="bi bi-diagram-3"></i> Shared Stock</a>
     <a href="orders.php" class="sidebar-link"><i class="bi bi-clipboard-check"></i> Order Mgt. Monitoring</a>
     <a href="corrections.php" class="sidebar-link"><i class="bi bi-arrow-repeat"></i> Corrections</a>
     <a href="history.php" class="sidebar-link"><i class="bi bi-clock-history"></i> History</a>
