@@ -57,7 +57,7 @@ try {
         FROM product_variants v
         JOIN products p ON v.product_id = p.id
         WHERE $where_var
-        ORDER BY p.product_name ASC, v.variant_name ASC
+        ORDER BY v.variant_name ASC
         LIMIT 50
     ");
     $stmt_var->execute($params_var);
@@ -83,7 +83,7 @@ try {
             'item_key' => 'v_' . $v['id'],
             'product_id' => (int)$v['parent_id'],
             'variant_id' => (int)$v['id'],
-            'display_name' => $v['product_name'] . ' (' . $v['variant_name'] . ')',
+            'display_name' => $v['variant_name'],
             'price' => (float)$v['price'],
             'cost_price' => (float)($v['cost_price'] ?? 0),
             'stock' => (int)$v['stock'],
