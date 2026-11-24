@@ -113,11 +113,6 @@ $current_page = basename($_SERVER['PHP_SELF']);
             </a>
         </li>
         <li>
-            <a href="shared_inventory.php" class="<?php echo ($current_page == 'shared_inventory.php') ? 'active' : ''; ?>">
-                <i class="bi bi-diagram-3"></i> Shared Stock
-            </a>
-        </li>
-        <li>
             <a href="orders.php" class="<?php echo ($current_page == 'orders.php') ? 'active' : ''; ?>">
                 <i class="bi bi-cart-check"></i> Online Orders
             </a>

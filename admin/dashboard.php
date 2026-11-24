@@ -204,10 +204,6 @@ if (!empty($user['profile_image'])) {
             <i class="bi bi-box-seam"></i> Inventory
         </a>
 
-        <a href="shared_inventory.php">
-            <i class="bi bi-diagram-3"></i> Shared Stock
-        </a>
-
         <a href="orders.php">
             <i class="bi bi-receipt"></i> Orders
         </a>
