@@ -129,8 +129,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_items') {
         // Fallback: If not in online orders, check pos_transaction for in-store purchases
         if (!$order_data) {
             $num_order_id = is_numeric($order_id) ? (int)$order_id : 0;
-            $stmt_pos = $pdo->prepare("SELECT * FROM pos_transaction WHERE (id = :num_id OR receipt_no = :str_id) LIMIT 1");
-            $stmt_pos->execute([':num_id' => $num_order_id, ':str_id' => $order_id]);
+            $stmt_pos = $pdo->prepare("SELECT * FROM pos_transaction WHERE id = :num_id LIMIT 1");
+            $stmt_pos->execute([':num_id' => $num_order_id]);
             $pos_row = $stmt_pos->fetch();
             if ($pos_row) {
                 $order_data = [
@@ -196,11 +196,11 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_items') {
                 $stmt_corr = $pdo->prepare("
                     SELECT id, status, correction_type, payment_difference, created_at 
                     FROM pos_correction_requests 
-                    WHERE (transaction_id = :tx_id OR receipt_no = :rec_no)
+                    WHERE transaction_id = :tx_id
                       AND status IN ('Pending Review', 'Pending Additional Payment', 'Pending Refund')
                     ORDER BY id DESC LIMIT 1
                 ");
-                $stmt_corr->execute([':tx_id' => $check_num_id, ':rec_no' => (string)$order_id]);
+                $stmt_corr->execute([':tx_id' => $check_num_id]);
                 $corr_row = $stmt_corr->fetch(PDO::FETCH_ASSOC);
                 if ($corr_row) {
                     $has_pending_correction = true;
@@ -356,11 +356,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
             $stmt_chk_corr = $pdo->prepare("
                 SELECT id, status, correction_type 
                 FROM pos_correction_requests 
-                WHERE (transaction_id = :tx_id OR receipt_no = :rec_no)
+                WHERE transaction_id = :tx_id
                   AND status IN ('Pending Review', 'Pending Additional Payment', 'Pending Refund')
                 LIMIT 1
             ");
-            $stmt_chk_corr->execute([':tx_id' => $num_chk_id, ':rec_no' => (string)$order_id]);
+            $stmt_chk_corr->execute([':tx_id' => $num_chk_id]);
             $active_corr = $stmt_chk_corr->fetch(PDO::FETCH_ASSOC);
 
             if ($active_corr) {

@@ -166,11 +166,11 @@ if (isset($_POST['update_status'])) {
                 $chk_corr = $pdo->prepare("
                     SELECT id, status, correction_type 
                     FROM pos_correction_requests 
-                    WHERE (transaction_id = ? OR receipt_no = ?)
+                    WHERE transaction_id = ?
                       AND status IN ('Pending Review', 'Pending Additional Payment', 'Pending Refund')
                     LIMIT 1
                 ");
-                $chk_corr->execute([is_numeric($order_number) ? (int)$order_number : 0, (string)$order_number]);
+                $chk_corr->execute([is_numeric($order_number) ? (int)$order_number : 0]);
                 $pending_corr = $chk_corr->fetch(PDO::FETCH_ASSOC);
 
                 if ($pending_corr) {
@@ -304,11 +304,11 @@ if (isset($_GET['id']) && isset($_GET['status'])) {
                 $chk_corr = $pdo->prepare("
                     SELECT id, status, correction_type 
                     FROM pos_correction_requests 
-                    WHERE (transaction_id = ? OR receipt_no = ?)
+                    WHERE transaction_id = ?
                       AND status IN ('Pending Review', 'Pending Additional Payment', 'Pending Refund')
                     LIMIT 1
                 ");
-                $chk_corr->execute([is_numeric($order_number) ? (int)$order_number : 0, (string)$order_number]);
+                $chk_corr->execute([is_numeric($order_number) ? (int)$order_number : 0]);
                 $pending_corr = $chk_corr->fetch(PDO::FETCH_ASSOC);
 
                 if ($pending_corr) {
@@ -803,7 +803,7 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
                             $stmt_check_corr = $pdo->prepare("
                                 SELECT id, status, correction_type 
                                 FROM pos_correction_requests 
-                                WHERE (transaction_id = ? OR receipt_no = ?) 
+                                WHERE transaction_id = ? 
                                   AND status IN ('Pending Review', 'Pending Additional Payment', 'Pending Refund') 
                                 LIMIT 1
                             ");
@@ -815,7 +815,7 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
                             <?php foreach($cancel_rows as $row): 
                                 $pay_method = strtoupper(trim($row['payment_method'] ?? ''));
                                 $o_num = $row['order_number'];
-                                $stmt_check_corr->execute([is_numeric($o_num) ? (int)$o_num : 0, (string)$o_num]);
+                                $stmt_check_corr->execute([is_numeric($o_num) ? (int)$o_num : 0]);
                                 $active_corr = $stmt_check_corr->fetch(PDO::FETCH_ASSOC);
                             ?>
                                 <tr>
@@ -1038,7 +1038,7 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
                             <?php endif; ?>
                             <?php foreach($exchange_rows as $row): 
                                 $o_num = $row['order_number'];
-                                $stmt_check_corr->execute([is_numeric($o_num) ? (int)$o_num : 0, (string)$o_num]);
+                                $stmt_check_corr->execute([is_numeric($o_num) ? (int)$o_num : 0]);
                                 $active_corr = $stmt_check_corr->fetch(PDO::FETCH_ASSOC);
                             ?>
                                 <tr>
