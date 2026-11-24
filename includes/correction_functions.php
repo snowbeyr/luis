@@ -1,6 +1,7 @@
 <?php
 // Centralized functions for Transaction Correction Management
 // R. Taipan Hardware POS & Inventory Management System
+require_once __DIR__ . '/shared_inventory_functions.php';
 
 if (!function_exists('ensureCorrectionPaymentColumns')) {
     /**
@@ -57,6 +58,14 @@ if (!function_exists('validateCorrectionStock')) {
      * @return array [bool $is_valid, string $error_message, array $details]
      */
     function validateCorrectionStock($pdo, $request_id) {
+        // If this is an incorrect payment correction, items are not affected
+        $stmt_type = $pdo->prepare("SELECT correction_type FROM pos_correction_requests WHERE id = ?");
+        $stmt_type->execute([$request_id]);
+        $c_type = $stmt_type->fetchColumn();
+        if ($c_type === 'incorrect_payment') {
+            return [true, "Payment-only correction does not affect inventory.", []];
+        }
+
         // 1. Fetch original items
         $stmt_orig = $pdo->prepare("SELECT * FROM pos_correction_items WHERE request_id = ? AND item_type = 'original'");
         $stmt_orig->execute([$request_id]);
@@ -174,67 +183,112 @@ if (!function_exists('executeCorrectionSettlement')) {
                 $pdo->beginTransaction();
             }
 
-            // 2. Fetch original items and restore stock
-            $stmt_orig = $pdo->prepare("SELECT * FROM pos_correction_items WHERE request_id = ? AND item_type = 'original'");
-            $stmt_orig->execute([$request_id]);
-            $orig_items = $stmt_orig->fetchAll(PDO::FETCH_ASSOC);
+            // 2. Fetch original items and restore stock (only if not payment-only correction)
+            if ($req['correction_type'] !== 'incorrect_payment') {
+                $stmt_orig = $pdo->prepare("SELECT * FROM pos_correction_items WHERE request_id = ? AND item_type = 'original'");
+                $stmt_orig->execute([$request_id]);
+                $orig_items = $stmt_orig->fetchAll(PDO::FETCH_ASSOC);
 
-            foreach ($orig_items as $item) {
-                $qty = (int)$item['qty'];
-                if (!empty($item['variant_id'])) {
-                    $upd = $pdo->prepare("UPDATE product_variants SET stock = stock + ? WHERE id = ?");
-                    $upd->execute([$qty, $item['variant_id']]);
-                } elseif (!empty($item['product_id'])) {
-                    $upd = $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?");
-                    $upd->execute([$qty, $item['product_id']]);
-                }
-            }
+                foreach ($orig_items as $item) {
+                    $qty = (int)$item['qty'];
+                    $prod_id = !empty($item['product_id']) ? (int)$item['product_id'] : null;
+                    $var_id = !empty($item['variant_id']) ? (int)$item['variant_id'] : null;
 
-            // 3. Fetch corrected items and deduct stock
-            $stmt_corr = $pdo->prepare("SELECT * FROM pos_correction_items WHERE request_id = ? AND item_type = 'corrected'");
-            $stmt_corr->execute([$request_id]);
-            $corr_items = $stmt_corr->fetchAll(PDO::FETCH_ASSOC);
-
-            foreach ($corr_items as $item) {
-                $qty = (int)$item['qty'];
-                if (!empty($item['variant_id'])) {
-                    $upd = $pdo->prepare("UPDATE product_variants SET stock = stock - ? WHERE id = ?");
-                    $upd->execute([$qty, $item['variant_id']]);
-                } elseif (!empty($item['product_id'])) {
-                    $upd = $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?");
-                    $upd->execute([$qty, $item['product_id']]);
-                }
-            }
-
-            // 4. Update pos_transaction_items to reflect the corrected items
-            $del_items = $pdo->prepare("DELETE FROM pos_transaction_items WHERE transaction_id = ?");
-            $del_items->execute([$trans_id]);
-
-            $ins_item = $pdo->prepare("
-                INSERT INTO pos_transaction_items (transaction_id, product_id, variant_id, product_name, price, qty, subtotal)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ");
-
-            foreach ($corr_items as $c) {
-                $prod_id = !empty($c['product_id']) ? (int)$c['product_id'] : null;
-                $var_id = !empty($c['variant_id']) ? (int)$c['variant_id'] : null;
-
-                if ($var_id && !$prod_id) {
-                    $stmt_find_p = $pdo->prepare("SELECT product_id FROM product_variants WHERE id = ?");
-                    $stmt_find_p->execute([$var_id]);
-                    $found_p = $stmt_find_p->fetchColumn();
-                    if ($found_p) $prod_id = (int)$found_p;
+                    $linked = getLinkedSourceInfo($pdo, $prod_id, $var_id);
+                    if ($linked) {
+                        $idemp = "corr_settle_restore_{$request_id}_{$prod_id}_" . ($var_id ?: '0');
+                        restoreSharedStock(
+                            $pdo,
+                            $linked['source_id'],
+                            $prod_id,
+                            $var_id,
+                            $qty,
+                            'Transaction Correction',
+                            $trans_id,
+                            $settled_by,
+                            "Restoring original items from correction request #$request_id",
+                            $idemp
+                        );
+                    } else {
+                        if (!empty($var_id)) {
+                            $upd = $pdo->prepare("UPDATE product_variants SET stock = stock + ? WHERE id = ?");
+                            $upd->execute([$qty, $var_id]);
+                        } elseif (!empty($prod_id)) {
+                            $upd = $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?");
+                            $upd->execute([$qty, $prod_id]);
+                        }
+                    }
                 }
 
-                $ins_item->execute([
-                    $trans_id,
-                    $prod_id,
-                    $var_id,
-                    $c['product_name'],
-                    $c['price'],
-                    $c['qty'],
-                    $c['subtotal']
-                ]);
+                // 3. Fetch corrected items and deduct stock
+                $stmt_corr = $pdo->prepare("SELECT * FROM pos_correction_items WHERE request_id = ? AND item_type = 'corrected'");
+                $stmt_corr->execute([$request_id]);
+                $corr_items = $stmt_corr->fetchAll(PDO::FETCH_ASSOC);
+
+                foreach ($corr_items as $item) {
+                    $qty = (int)$item['qty'];
+                    $prod_id = !empty($item['product_id']) ? (int)$item['product_id'] : null;
+                    $var_id = !empty($item['variant_id']) ? (int)$item['variant_id'] : null;
+
+                    $linked = getLinkedSourceInfo($pdo, $prod_id, $var_id);
+                    if ($linked) {
+                        $idemp = "corr_settle_deduct_{$request_id}_{$prod_id}_" . ($var_id ?: '0');
+                        list($ded_ok, $ded_msg, $stk) = deductSharedStock(
+                            $pdo,
+                            $linked['source_id'],
+                            $prod_id,
+                            $var_id,
+                            $qty,
+                            'Transaction Correction',
+                            $trans_id,
+                            $settled_by,
+                            "Deducting replacement items from correction request #$request_id",
+                            $idemp
+                        );
+                        if (!$ded_ok) {
+                            throw new Exception($ded_msg);
+                        }
+                    } else {
+                        if (!empty($var_id)) {
+                            $upd = $pdo->prepare("UPDATE product_variants SET stock = stock - ? WHERE id = ?");
+                            $upd->execute([$qty, $var_id]);
+                        } elseif (!empty($prod_id)) {
+                            $upd = $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?");
+                            $upd->execute([$qty, $prod_id]);
+                        }
+                    }
+                }
+
+                // 4. Update pos_transaction_items to reflect the corrected items
+                $del_items = $pdo->prepare("DELETE FROM pos_transaction_items WHERE transaction_id = ?");
+                $del_items->execute([$trans_id]);
+
+                $ins_item = $pdo->prepare("
+                    INSERT INTO pos_transaction_items (transaction_id, product_id, variant_id, product_name, price, qty, subtotal)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ");
+
+                foreach ($corr_items as $c) {
+                    $prod_id = !empty($c['product_id']) ? (int)$c['product_id'] : null;
+                    $var_id = !empty($c['variant_id']) ? (int)$c['variant_id'] : null;
+
+                    if ($var_id && !$prod_id) {
+                        $stmt_find_p = $pdo->prepare("SELECT product_id FROM product_variants WHERE id = ?");
+                        $stmt_find_p->execute([$var_id]);
+                        $found_p = $stmt_find_p->fetchColumn();
+                        if ($found_p) $prod_id = (int)$found_p;
+                    }
+
+                    $ins_item->execute([
+                        $trans_id,
+                        $prod_id,
+                        $var_id,
+                        $c['product_name'],
+                        $c['price'],
+                        $c['qty'],
+                        $c['subtotal']
+                    ]);
+                }
             }
 
             // 5. Update pos_transaction total_amount, payment details, and correction flags

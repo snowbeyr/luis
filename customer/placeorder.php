@@ -3,6 +3,7 @@ session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../config/google_drive.php';
 require_once __DIR__ . '/../config/image.php';
+require_once __DIR__ . '/../includes/shared_inventory_functions.php';
 
 // Helper function para sa Checkout Item Image resolution
 function getCheckoutItemImageSrc($image_value) {
@@ -227,12 +228,32 @@ if (isset($_POST['place_order'])) {
                 ':subtotal' => $subtotal
             ]);
 
-            if ($v_id !== null) {
-                $stock_stmt = $pdo->prepare("UPDATE product_variants SET stock = GREATEST(stock - :qty, 0) WHERE id = :v_id");
-                $stock_stmt->execute([':qty' => $qty, ':v_id' => $v_id]);
+            $linked_source = getLinkedSourceInfo($pdo, $product_id, $v_id);
+            if ($linked_source) {
+                $idemp = "online_order_{$order_id}_" . ($v_id ? "v_{$v_id}" : "p_{$product_id}");
+                list($ded_ok, $ded_msg, $new_stk) = deductSharedStock(
+                    $pdo,
+                    $linked_source['source_id'],
+                    $product_id,
+                    $v_id,
+                    $qty,
+                    'Online Order Deduction',
+                    $order_id,
+                    $email ?: 'Customer Online',
+                    "Online Order #$order_id for {$linked_source['source_name']}",
+                    $idemp
+                );
+                if (!$ded_ok) {
+                    throw new Exception($ded_msg);
+                }
             } else {
-                $stock_stmt = $pdo->prepare("UPDATE products SET stock = GREATEST(stock - :qty, 0) WHERE id = :product_id");
-                $stock_stmt->execute([':qty' => $qty, ':product_id' => $product_id]);
+                if ($v_id !== null) {
+                    $stock_stmt = $pdo->prepare("UPDATE product_variants SET stock = GREATEST(stock - :qty, 0) WHERE id = :v_id");
+                    $stock_stmt->execute([':qty' => $qty, ':v_id' => $v_id]);
+                } else {
+                    $stock_stmt = $pdo->prepare("UPDATE products SET stock = GREATEST(stock - :qty, 0) WHERE id = :product_id");
+                    $stock_stmt->execute([':qty' => $qty, ':product_id' => $product_id]);
+                }
             }
         }
 

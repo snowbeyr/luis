@@ -230,6 +230,9 @@ body {
     <a href="inventory.php" class="sidebar-link">
         <div class="sidebar-link-content"><i class="bi bi-box-seam"></i> Inventory</div>
     </a>
+    <a href="shared_inventory.php" class="sidebar-link">
+        <div class="sidebar-link-content"><i class="bi bi-diagram-3"></i> Shared Stock</div>
+    </a>
     <a href="orders.php" class="sidebar-link">
         <div class="sidebar-link-content"><i class="bi bi-clipboard-check"></i> Order Mgt. Monitoring</div>
     </a>

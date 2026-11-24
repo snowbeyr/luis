@@ -76,11 +76,26 @@ while($oq = $out_query->fetch(PDO::FETCH_ASSOC)) { $out_of_stock_count += $oq['t
 // 2. MAIN PRODUCTS & VARIANTS QUERY WITH FILTERS & SORTS
 // ==========================================
 $base_sql = "
-    SELECT id, product_name, price, stock, image, is_archived, 'Main Product' AS item_type FROM products
+    SELECT 
+        p.id, p.product_name, p.price, p.stock, p.image, p.is_archived, 'Main Product' AS item_type,
+        NULL::integer AS variant_id, p.id AS product_id,
+        sis.id AS shared_source_id, sis.source_name AS shared_source_name, sis.base_unit AS shared_base_unit,
+        sis.physical_stock AS shared_physical_stock, siv.conversion_qty AS shared_conversion_qty,
+        siv.selling_unit_label AS shared_unit_label
+    FROM products p
+    LEFT JOIN shared_inventory_variants siv ON p.id = siv.product_id AND (siv.variant_id IS NULL OR siv.variant_id = 0)
+    LEFT JOIN shared_inventory_sources sis ON siv.source_id = sis.id AND sis.is_active = 1
     UNION ALL
-    SELECT v.id, v.variant_name AS product_name, v.price, v.stock, COALESCE(NULLIF(v.variant_image, ''), p.image) AS image, p.is_archived, 'Variant Item' AS item_type 
+    SELECT 
+        v.id, v.variant_name AS product_name, v.price, v.stock, COALESCE(NULLIF(v.variant_image, ''), p.image) AS image, p.is_archived, 'Variant Item' AS item_type,
+        v.id AS variant_id, p.id AS product_id,
+        sis.id AS shared_source_id, sis.source_name AS shared_source_name, sis.base_unit AS shared_base_unit,
+        sis.physical_stock AS shared_physical_stock, siv.conversion_qty AS shared_conversion_qty,
+        siv.selling_unit_label AS shared_unit_label
     FROM product_variants v
     JOIN products p ON v.product_id = p.id
+    LEFT JOIN shared_inventory_variants siv ON v.id = siv.variant_id
+    LEFT JOIN shared_inventory_sources sis ON siv.source_id = sis.id AND sis.is_active = 1
 ";
 
 // Pagbuo ng WHERE conditions batay sa napiling filter
@@ -97,6 +112,8 @@ if ($filter_mode === 'main_items') {
     $where_clauses[] = "stock <= $low_stock_threshold AND stock > 0";
 } elseif ($filter_mode === 'out_of_stocks') {
     $where_clauses[] = "stock = 0";
+} elseif ($filter_mode === 'shared_stock') {
+    $where_clauses[] = "shared_source_id IS NOT NULL";
 }
 
 $final_query_sql = "SELECT * FROM ($base_sql) AS inventory_combined";
@@ -293,6 +310,7 @@ $inventory_query = $pdo->query($final_query_sql);
         <a href="dashboard.php" class="sidebar-link"><i class="bi bi-graph-up-arrow"></i> Dashboard</a>
         <a href="sales.php" class="sidebar-link"><i class="bi bi-cash-stack"></i> Sales</a>
         <a href="inventory.php" class="sidebar-link active"><i class="bi bi-box-seam"></i> Inventory Report</a>
+        <a href="shared_inventory.php" class="sidebar-link"><i class="bi bi-diagram-3"></i> Shared Stock</a>
         <a href="orders.php" class="sidebar-link"><i class="bi bi-clipboard-check"></i> Order Mgt. Monitoring</a>
         <a href="corrections.php" class="sidebar-link"><i class="bi bi-arrow-repeat"></i> Corrections</a>
         <a href="history.php" class="sidebar-link"><i class="bi bi-clock-history"></i> History</a>
@@ -367,6 +385,7 @@ $inventory_query = $pdo->query($final_query_sql);
                             <option value="archive_items" <?php echo ($filter_mode === 'archive_items') ? 'selected' : ''; ?>>Only Archive Items</option>
                             <option value="low_stocks" <?php echo ($filter_mode === 'low_stocks') ? 'selected' : ''; ?>>Only Low Stocks</option>
                             <option value="out_of_stocks" <?php echo ($filter_mode === 'out_of_stocks') ? 'selected' : ''; ?>>Only Out of Stocks</option>
+                            <option value="shared_stock" <?php echo ($filter_mode === 'shared_stock') ? 'selected' : ''; ?>>🔗 Only Linked / Shared Stock</option>
                         </select>
                     </div>
                     <div class="col-12 col-md-2">
@@ -426,10 +445,28 @@ $inventory_query = $pdo->query($final_query_sql);
                                                  onclick="openProductImageZoom(this.src)" 
                                                  title="Click to zoom image">
                                         </td>
-                                        <td class="fw-bold text-dark"><?php echo htmlspecialchars($row['product_name']); ?></td>
+                                        <td>
+                                            <div class="fw-bold text-dark"><?php echo htmlspecialchars($row['product_name']); ?></div>
+                                            <?php if (!empty($row['shared_source_id'])): ?>
+                                                <div class="mt-1">
+                                                    <span class="badge bg-info-subtle text-info border border-info px-2 py-0" style="font-size: 0.75rem;">
+                                                        <i class="bi bi-link-45deg"></i> Shared: <?= htmlspecialchars($row['shared_source_name']); ?>
+                                                    </span>
+                                                    <small class="text-muted d-block" style="font-size: 0.72rem;">
+                                                        Req: <?= floatval($row['shared_conversion_qty']); ?> <?= htmlspecialchars($row['shared_base_unit']); ?>/<?= htmlspecialchars($row['shared_unit_label'] ?: 'unit'); ?> 
+                                                        (Physical: <strong><?= number_format(floatval($row['shared_physical_stock']), 2); ?> <?= htmlspecialchars($row['shared_base_unit']); ?></strong>)
+                                                    </small>
+                                                </div>
+                                            <?php endif; ?>
+                                        </td>
                                         <td><?php echo $type_badge; ?></td>
                                         <td class="fw-semibold" data-raw-price="<?php echo $row['price']; ?>">₱<?php echo number_format($row['price'], 2); ?></td>
-                                        <td class="fw-bold"><?php echo $row['stock']; ?></td>
+                                        <td class="fw-bold">
+                                            <?php echo $row['stock']; ?>
+                                            <?php if (!empty($row['shared_source_id'])): ?>
+                                                <small class="text-muted fw-normal" style="font-size: 0.75rem;"><?= htmlspecialchars($row['shared_unit_label'] ?: 'units'); ?></small>
+                                            <?php endif; ?>
+                                        </td>
                                         <td class="text-center"><?php echo $stock_status_badge; ?></td>
                                         <td class="pe-4 text-center"><?php echo $item_status_badge; ?></td>
                                     </tr>

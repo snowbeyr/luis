@@ -4,6 +4,7 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../config/google_drive.php';
 require_once __DIR__ . '/../config/image.php';
 require_once __DIR__ . '/../config/email.php';
+require_once __DIR__ . '/../includes/shared_inventory_functions.php';
 
 if (!isset($_SESSION['role']) || $_SESSION['role'] !== "admin") {
     header("Location: ../login.php");
@@ -206,15 +207,32 @@ if (isset($_POST['update_status'])) {
                     if (is_array($cart_array)) {
                         foreach ($cart_array as $item) {
                             $qty = (int)$item['qty'];
-                            $product_id = $item['id'];
+                            $product_id = (int)$item['id'];
                             $variant_id = !empty($item['variant_id']) ? (int)$item['variant_id'] : null;
 
-                            if ($variant_id) {
-                                $up_var = $pdo->prepare("UPDATE product_variants SET stock = stock + ? WHERE id = ?");
-                                $up_var->execute([$qty, $variant_id]);
+                            $linked_source = getLinkedSourceInfo($pdo, $product_id, $variant_id);
+                            if ($linked_source) {
+                                $idemp = "cancel_approval_{$req_id}_{$product_id}_" . ($variant_id ?: '0');
+                                restoreSharedStock(
+                                    $pdo,
+                                    $linked_source['source_id'],
+                                    $product_id,
+                                    $variant_id,
+                                    $qty,
+                                    'Cancellation Restoration',
+                                    $order_number,
+                                    $admin_name ?? 'Admin',
+                                    "Approved cancellation request #$req_id for order #$order_number",
+                                    $idemp
+                                );
                             } else {
-                                $up_prod = $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?");
-                                $up_prod->execute([$qty, $product_id]);
+                                if ($variant_id) {
+                                    $up_var = $pdo->prepare("UPDATE product_variants SET stock = stock + ? WHERE id = ?");
+                                    $up_var->execute([$qty, $variant_id]);
+                                } else {
+                                    $up_prod = $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?");
+                                    $up_prod->execute([$qty, $product_id]);
+                                }
                             }
                         }
                     }
@@ -311,15 +329,32 @@ if (isset($_GET['id']) && isset($_GET['status'])) {
                     if (is_array($cart_array)) {
                         foreach ($cart_array as $item) {
                             $qty = (int)$item['qty'];
-                            $product_id = $item['id'];
+                            $product_id = (int)$item['id'];
                             $variant_id = !empty($item['variant_id']) ? (int)$item['variant_id'] : null;
 
-                            if ($variant_id) {
-                                $up_var = $pdo->prepare("UPDATE product_variants SET stock = stock + ? WHERE id = ?");
-                                $up_var->execute([$qty, $variant_id]);
+                            $linked_source = getLinkedSourceInfo($pdo, $product_id, $variant_id);
+                            if ($linked_source) {
+                                $idemp = "cancel_approval_{$req_id}_{$product_id}_" . ($variant_id ?: '0');
+                                restoreSharedStock(
+                                    $pdo,
+                                    $linked_source['source_id'],
+                                    $product_id,
+                                    $variant_id,
+                                    $qty,
+                                    'Cancellation Restoration',
+                                    $order_number,
+                                    $admin_name ?? 'Admin',
+                                    "Approved cancellation request #$req_id for order #$order_number",
+                                    $idemp
+                                );
                             } else {
-                                $up_prod = $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?");
-                                $up_prod->execute([$qty, $product_id]);
+                                if ($variant_id) {
+                                    $up_var = $pdo->prepare("UPDATE product_variants SET stock = stock + ? WHERE id = ?");
+                                    $up_var->execute([$qty, $variant_id]);
+                                } else {
+                                    $up_prod = $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?");
+                                    $up_prod->execute([$qty, $product_id]);
+                                }
                             }
                         }
                     }

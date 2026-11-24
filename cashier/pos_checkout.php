@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once __DIR__ . '/../config/db.php';
+require_once __DIR__ . '/../includes/shared_inventory_functions.php';
 header("Content-Type: application/json");
 
 if (!isset($_SESSION['role']) || $_SESSION['role'] != "cashier") {
@@ -57,17 +58,64 @@ try {
         $name = $item['name'];
 
         if ($type == 'v_') {
-            // Bawas stock sa product_variants
-            $updateStock = $pdo->prepare("UPDATE product_variants SET stock = stock - ? WHERE id = ?");
-            $updateStock->execute([$qty, $id]);
+            $var_id = $id;
+            $stmt_p = $pdo->prepare("SELECT product_id FROM product_variants WHERE id = ?");
+            $stmt_p->execute([$var_id]);
+            $prod_id = $stmt_p->fetchColumn() ?: null;
+
+            // Check if linked to shared inventory source
+            $linked_source = getLinkedSourceInfo($pdo, $prod_id, $var_id);
+            if ($linked_source) {
+                $idemp = "pos_sale_{$transaction_id}_v_{$var_id}";
+                list($ded_ok, $ded_msg, $new_stk) = deductSharedStock(
+                    $pdo,
+                    $linked_source['source_id'],
+                    $prod_id,
+                    $var_id,
+                    $qty,
+                    'POS Deduction',
+                    $transaction_id,
+                    $cashier,
+                    "POS Sale #$transaction_id for {$linked_source['source_name']}",
+                    $idemp
+                );
+                if (!$ded_ok) {
+                    throw new Exception($ded_msg);
+                }
+            } else {
+                // Standalone variant
+                $updateStock = $pdo->prepare("UPDATE product_variants SET stock = stock - ? WHERE id = ?");
+                $updateStock->execute([$qty, $id]);
+            }
 
             // Insert POS transaction items para sa variant
-            $insertItem = $pdo->prepare("INSERT INTO pos_transaction_items (transaction_id, variant_id, product_name, price, qty, subtotal) VALUES (?, ?, ?, ?, ?, ?)");
-            $insertItem->execute([$transaction_id, $id, $name, $price, $qty, $subtotal]);
+            $insertItem = $pdo->prepare("INSERT INTO pos_transaction_items (transaction_id, variant_id, product_id, product_name, price, qty, subtotal) VALUES (?, ?, ?, ?, ?, ?, ?)");
+            $insertItem->execute([$transaction_id, $id, $prod_id, $name, $price, $qty, $subtotal]);
         } else {
-            // Bawas stock sa main products
-            $updateStock = $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?");
-            $updateStock->execute([$qty, $id]);
+            $prod_id = $id;
+            $linked_source = getLinkedSourceInfo($pdo, $prod_id, null);
+            if ($linked_source) {
+                $idemp = "pos_sale_{$transaction_id}_p_{$prod_id}";
+                list($ded_ok, $ded_msg, $new_stk) = deductSharedStock(
+                    $pdo,
+                    $linked_source['source_id'],
+                    $prod_id,
+                    null,
+                    $qty,
+                    'POS Deduction',
+                    $transaction_id,
+                    $cashier,
+                    "POS Sale #$transaction_id for {$linked_source['source_name']}",
+                    $idemp
+                );
+                if (!$ded_ok) {
+                    throw new Exception($ded_msg);
+                }
+            } else {
+                // Standalone product
+                $updateStock = $pdo->prepare("UPDATE products SET stock = stock - ? WHERE id = ?");
+                $updateStock->execute([$qty, $id]);
+            }
 
             // Insert POS transaction items para sa main product
             $insertItem = $pdo->prepare("INSERT INTO pos_transaction_items (transaction_id, product_id, product_name, price, qty, subtotal) VALUES (?, ?, ?, ?, ?, ?)");

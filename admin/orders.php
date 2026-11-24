@@ -4,6 +4,7 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../config/google_drive.php';
 require_once __DIR__ . '/../config/image.php';
 require_once __DIR__ . '/../config/email.php';
+require_once __DIR__ . '/../includes/shared_inventory_functions.php';
 
 if (!isset($_SESSION['role']) || $_SESSION['role'] != "admin") {
     header("Location: ../login.php");
@@ -460,15 +461,32 @@ if (isset($_POST['update_status'])) {
         if (!empty($cart_items)) {
             foreach ($cart_items as $item) {
                 $qty = (int)$item['qty'];
-                $product_id = $item['id'];
-                $variant_id = !empty($item['variant_id']) ? $item['variant_id'] : null;
+                $product_id = (int)$item['id'];
+                $variant_id = !empty($item['variant_id']) ? (int)$item['variant_id'] : null;
 
-                if (!empty($variant_id)) {
-                    $stmtStock = $pdo->prepare("UPDATE product_variants SET stock = stock + ? WHERE id = ?");
-                    $stmtStock->execute([$qty, $variant_id]);
+                $linked_source = getLinkedSourceInfo($pdo, $product_id, $variant_id);
+                if ($linked_source) {
+                    $idemp = "order_status_cancel_{$order_id}_{$product_id}_" . ($variant_id ?: '0');
+                    restoreSharedStock(
+                        $pdo,
+                        $linked_source['source_id'],
+                        $product_id,
+                        $variant_id,
+                        $qty,
+                        'Cancellation Restoration',
+                        $order_id,
+                        $admin_name ?? 'Admin',
+                        "Status changed to {$new_status} for order #$order_id",
+                        $idemp
+                    );
                 } else {
-                    $stmtStock = $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?");
-                    $stmtStock->execute([$qty, $product_id]);
+                    if (!empty($variant_id)) {
+                        $stmtStock = $pdo->prepare("UPDATE product_variants SET stock = stock + ? WHERE id = ?");
+                        $stmtStock->execute([$qty, $variant_id]);
+                    } else {
+                        $stmtStock = $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?");
+                        $stmtStock->execute([$qty, $product_id]);
+                    }
                 }
             }
         }
