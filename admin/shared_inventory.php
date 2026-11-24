@@ -249,8 +249,11 @@ foreach ($unlinked_prods as $p) {
 
     $unlinked_items[] = [
         'val' => 'p_' . $p['id'],
-        'label' => '[Product] ' . $p['product_name'] . ($var_count > 0 ? " (Base Product)" : " (Standalone)") . " - ₱" . number_format($p['price'], 2) . " (Stock: {$p['stock']})",
-        'name' => $p['product_name']
+        'type' => 'Product',
+        'name' => $p['product_name'],
+        'price' => (float)$p['price'],
+        'stock' => (int)$p['stock'],
+        'label' => '[Product] ' . $p['product_name'] . ($var_count > 0 ? " (Base Product)" : " (Standalone)") . " - ₱" . number_format($p['price'], 2) . " (Stock: {$p['stock']})"
     ];
 }
 
@@ -261,14 +264,18 @@ $stmt_unlinked_var = $pdo->query("
     WHERE pv.id NOT IN (
         SELECT variant_id FROM shared_inventory_variants WHERE variant_id IS NOT NULL AND variant_id > 0
     ) AND p.is_archived = 0
-    ORDER BY p.product_name ASC, pv.variant_name ASC
+    ORDER BY pv.variant_name ASC
 ");
 $unlinked_vars = $stmt_unlinked_var->fetchAll(PDO::FETCH_ASSOC);
 foreach ($unlinked_vars as $v) {
+    $clean_var_name = trim($v['variant_name']);
     $unlinked_items[] = [
         'val' => 'v_' . $v['id'],
-        'label' => '[Variant] ' . $v['product_name'] . ' (' . $v['variant_name'] . ') - ₱' . number_format($v['price'], 2) . " (Stock: {$v['stock']})",
-        'name' => $v['product_name'] . ' - ' . $v['variant_name']
+        'type' => 'Variant',
+        'name' => $clean_var_name,
+        'price' => (float)$v['price'],
+        'stock' => (int)$v['stock'],
+        'label' => '[Variant] ' . $clean_var_name . " - ₱" . number_format($v['price'], 2) . " (Stock: {$v['stock']})"
     ];
 }
 
@@ -688,7 +695,7 @@ $recent_movements = $movements_stmt->fetchAll(PDO::FETCH_ASSOC);
                                         <?php foreach ($variants as $v): 
                                             $is_variant_row = !empty($v['variant_id']);
                                             $item_title = $is_variant_row 
-                                                ? htmlspecialchars($v['product_name']) . " (" . htmlspecialchars($v['variant_name']) . ")" 
+                                                ? htmlspecialchars($v['variant_name']) 
                                                 : htmlspecialchars($v['product_name']);
                                             $item_price = $is_variant_row ? $v['var_price'] : $v['prod_price'];
                                             $current_sellable = calculateSellableUnits($cur_stock, $v['conversion_qty']);
@@ -760,13 +767,61 @@ $recent_movements = $movements_stmt->fetchAll(PDO::FETCH_ASSOC);
                                     </div>
 
                                     <div class="mb-3">
-                                        <label class="form-label fw-bold small">Select Product / Variant</label>
-                                        <select name="target_item" class="form-select form-select-sm" required>
-                                            <option value="">-- Choose Item --</option>
-                                            <?php foreach ($unlinked_items as $item): ?>
-                                                <option value="<?= $item['val']; ?>"><?= htmlspecialchars($item['label']); ?></option>
-                                            <?php endforeach; ?>
-                                        </select>
+                                        <label class="form-label fw-bold small">Select Product / Variant <span class="text-danger">*</span></label>
+                                        
+                                        <!-- Search input for quick filtering -->
+                                        <div class="input-group input-group-sm mb-2" id="searchGroup_<?= $s_id; ?>">
+                                            <span class="input-group-text bg-white border-end-0"><i class="bi bi-search text-muted"></i></span>
+                                            <input type="text" class="form-control border-start-0" id="itemSearch_<?= $s_id; ?>" 
+                                                   placeholder="Search product or variant by name..." 
+                                                   autocomplete="off"
+                                                   oninput="filterLinkItems(<?= $s_id; ?>, this.value)">
+                                            <button class="btn btn-outline-secondary" type="button" onclick="clearLinkSearch(<?= $s_id; ?>)" title="Clear search">
+                                                <i class="bi bi-x-lg"></i>
+                                            </button>
+                                        </div>
+
+                                        <!-- Selected Item Preview Card -->
+                                        <div id="selectedCard_<?= $s_id; ?>" class="alert alert-success border-success py-2 px-3 mb-2 d-none d-flex justify-content-between align-items-center">
+                                            <div>
+                                                <div class="d-flex align-items-center gap-2 mb-1">
+                                                    <span class="badge" id="selectedBadge_<?= $s_id; ?>"></span>
+                                                    <span class="fw-bold text-dark fs-6" id="selectedName_<?= $s_id; ?>"></span>
+                                                </div>
+                                                <div class="text-muted small" id="selectedMeta_<?= $s_id; ?>"></div>
+                                            </div>
+                                            <button type="button" class="btn btn-sm btn-outline-danger fw-semibold" onclick="deselectLinkItem(<?= $s_id; ?>)">
+                                                <i class="bi bi-arrow-repeat"></i> Change
+                                            </button>
+                                        </div>
+                                        <input type="hidden" name="target_item" id="targetItem_<?= $s_id; ?>" required>
+
+                                        <!-- Scrollable Filterable Items List -->
+                                        <div class="border rounded bg-white shadow-sm" id="itemsListContainer_<?= $s_id; ?>" style="max-height: 220px; overflow-y: auto;">
+                                            <div class="list-group list-group-flush" id="itemsList_<?= $s_id; ?>">
+                                                <?php foreach ($unlinked_items as $item): ?>
+                                                    <button type="button" 
+                                                            class="list-group-item list-group-item-action py-2 px-3 d-flex justify-content-between align-items-center link-item-btn" 
+                                                            data-search="<?= htmlspecialchars(strtolower($item['name'] . ' ' . $item['type'])); ?>"
+                                                            onclick="selectLinkItem(<?= $s_id; ?>, '<?= $item['val']; ?>', '<?= htmlspecialchars(addslashes($item['name'])); ?>', '<?= $item['type']; ?>', '₱<?= number_format($item['price'], 2); ?> • Current Stock: <?= $item['stock']; ?>')">
+                                                        <div class="text-start">
+                                                            <span class="badge <?= $item['type'] === 'Variant' ? 'bg-info-subtle text-info border border-info' : 'bg-primary-subtle text-primary border border-primary'; ?> me-1">
+                                                                <?= $item['type']; ?>
+                                                            </span>
+                                                            <span class="fw-semibold text-dark"><?= htmlspecialchars($item['name']); ?></span>
+                                                        </div>
+                                                        <div class="text-end small">
+                                                            <span class="fw-bold text-dark">₱<?= number_format($item['price'], 2); ?></span>
+                                                            <small class="text-muted ms-1">(Stock: <?= $item['stock']; ?>)</small>
+                                                        </div>
+                                                    </button>
+                                                <?php endforeach; ?>
+                                                <div class="p-3 text-center text-muted small d-none" id="noMatch_<?= $s_id; ?>">
+                                                    <i class="bi bi-search me-1"></i> No matching products or variants found.
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <small class="text-muted mt-1 d-block" id="helperText_<?= $s_id; ?>">Click any item above to select it.</small>
                                     </div>
 
                                     <div class="mb-3">
@@ -953,7 +1008,7 @@ $recent_movements = $movements_stmt->fetchAll(PDO::FETCH_ASSOC);
                                     <?php foreach ($recent_movements as $m): 
                                         $qty_chg = floatval($m['qty_in_base_unit']);
                                         $item_name = !empty($m['variant_name']) 
-                                            ? htmlspecialchars($m['product_name']) . " (" . htmlspecialchars($m['variant_name']) . ")" 
+                                            ? htmlspecialchars($m['variant_name']) 
                                             : (!empty($m['product_name']) ? htmlspecialchars($m['product_name']) : '-');
                                     ?>
                                     <tr>
@@ -1005,6 +1060,74 @@ $recent_movements = $movements_stmt->fetchAll(PDO::FETCH_ASSOC);
                     appSidebar.classList.remove('show');
                 }
             });
+        }
+
+        // Live Search Filter for Link Variant Modal
+        function filterLinkItems(sourceId, query) {
+            const q = (query || '').toLowerCase().trim();
+            const container = document.getElementById('itemsList_' + sourceId);
+            if (!container) return;
+            const items = container.getElementsByClassName('link-item-btn');
+            let visibleCount = 0;
+
+            for (let i = 0; i < items.length; i++) {
+                const searchData = items[i].getAttribute('data-search') || '';
+                if (q === '' || searchData.includes(q)) {
+                    items[i].classList.remove('d-none');
+                    visibleCount++;
+                } else {
+                    items[i].classList.add('d-none');
+                }
+            }
+
+            const noMatch = document.getElementById('noMatch_' + sourceId);
+            if (noMatch) {
+                if (visibleCount === 0) {
+                    noMatch.classList.remove('d-none');
+                } else {
+                    noMatch.classList.add('d-none');
+                }
+            }
+        }
+
+        function clearLinkSearch(sourceId) {
+            const input = document.getElementById('itemSearch_' + sourceId);
+            if (input) {
+                input.value = '';
+                filterLinkItems(sourceId, '');
+                input.focus();
+            }
+        }
+
+        function selectLinkItem(sourceId, val, name, type, meta) {
+            document.getElementById('targetItem_' + sourceId).value = val;
+            document.getElementById('selectedName_' + sourceId).textContent = name;
+            
+            const badge = document.getElementById('selectedBadge_' + sourceId);
+            badge.textContent = type;
+            badge.className = 'badge ' + (type === 'Variant' ? 'bg-info-subtle text-info border border-info' : 'bg-primary-subtle text-primary border border-primary');
+
+            document.getElementById('selectedMeta_' + sourceId).textContent = meta;
+
+            document.getElementById('selectedCard_' + sourceId).classList.remove('d-none');
+            document.getElementById('itemsListContainer_' + sourceId).classList.add('d-none');
+            document.getElementById('searchGroup_' + sourceId).classList.add('d-none');
+            document.getElementById('helperText_' + sourceId).classList.add('d-none');
+        }
+
+        function deselectLinkItem(sourceId) {
+            document.getElementById('targetItem_' + sourceId).value = '';
+            document.getElementById('selectedCard_' + sourceId).classList.add('d-none');
+            document.getElementById('itemsListContainer_' + sourceId).classList.remove('d-none');
+            document.getElementById('searchGroup_' + sourceId).classList.remove('d-none');
+            document.getElementById('helperText_' + sourceId).classList.remove('d-none');
+
+            const input = document.getElementById('itemSearch_' + sourceId);
+            if (input) {
+                input.value = '';
+                filterLinkItems(sourceId, '');
+                input.focus();
+            }
         }
     </script>
 </body>
