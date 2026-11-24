@@ -227,6 +227,9 @@ max-height:45vh
 </h2>
 <div class="navbar-tools">
 <input type="text" id="liveSearch" class="form-control form-control-sm search-box" placeholder="Search products..." onkeyup="filterProducts()">
+<a href="salesHistory.php" class="btn btn-outline-light btn-sm">
+<i class="bi bi-clock-history"></i> <span>Sales & Corrections</span>
+</a>
 <a href="onlineOrders.php" class="btn btn-outline-light btn-sm position-relative">
 <i class="bi bi-globe"></i> <span>Online Orders</span>
 <?php if($order_count>0): ?>

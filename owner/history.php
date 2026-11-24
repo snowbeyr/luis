@@ -165,6 +165,7 @@ body{
     <a href="sales.php" class="sidebar-link"><i class="bi bi-cash-stack"></i> Sales</a>
     <a href="inventory.php" class="sidebar-link"><i class="bi bi-box-seam"></i> Inventory Report</a>
     <a href="orders.php" class="sidebar-link"><i class="bi bi-clipboard-check"></i> Order Mgt. Monitoring</a>
+    <a href="corrections.php" class="sidebar-link"><i class="bi bi-arrow-repeat"></i> Corrections</a>
     <a href="history.php" class="sidebar-link active"><i class="bi bi-clock-history"></i> History</a>
     <a href="auditTrail.php" class="sidebar-link"><i class="bi bi-shield-lock"></i> Audit Trail</a>
      <a href="accountManagement.php" class="sidebar-link"><i class="bi bi-person-gear"></i> Account Management</a>
@@ -267,7 +268,14 @@ body{
                                     foreach($posRows as $row) { 
                                 ?>
                                 <tr>
-                                    <td class="ps-4 fw-bold">#<?php echo $row['id']; ?></td>
+                                    <td class="ps-4 fw-bold">
+                                        #<?php echo $row['id']; ?>
+                                        <?php if (!empty($row['is_corrected'])): ?>
+                                            <span class="badge bg-success ms-1"><i class="bi bi-patch-check me-1"></i>Corrected</span>
+                                        <?php elseif (!empty($row['correction_status']) && $row['correction_status'] === 'pending'): ?>
+                                            <span class="badge bg-warning text-dark ms-1"><i class="bi bi-hourglass-split me-1"></i>Correction Pending</span>
+                                        <?php endif; ?>
+                                    </td>
                                     <td><i class="bi bi-person me-1 text-muted"></i> <?php echo htmlspecialchars($row['cashier_name']); ?></td>
                                     <td class="fw-bold text-success">₱<?php echo number_format($row['total_amount'], 2); ?></td>
                                     <td class="text-end pe-4">

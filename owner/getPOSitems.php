@@ -55,6 +55,8 @@ try {
             $p_price = floatval($item['price'] ?? 0);
             $p_qty = intval($item['qty'] ?? ($item['quantity'] ?? 1));
             $items[] = [
+                'product_id'       => !empty($item['product_id']) ? (int)$item['product_id'] : null,
+                'variant_id'       => !empty($item['variant_id']) ? (int)$item['variant_id'] : null,
                 'product_name'     => $p_name,
                 'price'            => $p_price,
                 'qty'              => $p_qty,
@@ -91,6 +93,8 @@ try {
             $p_price = floatval($row['price'] ?? 0);
             $p_qty = intval($row['qty'] ?? ($row['quantity'] ?? 1));
             $items[] = [
+                'product_id'       => !empty($row['product_id']) ? (int)$row['product_id'] : null,
+                'variant_id'       => !empty($row['variant_id']) ? (int)$row['variant_id'] : null,
                 'product_name'     => $p_name,
                 'price'            => $p_price,
                 'qty'              => $p_qty,
