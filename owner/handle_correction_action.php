@@ -5,7 +5,7 @@ require_once __DIR__ . '/../includes/correction_functions.php';
 header('Content-Type: application/json');
 
 if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'owner') {
-    echo json_encode(['status' => 'error', 'message' => 'Unauthorized. Owner access required.']);
+    echo json_encode(['status' => 'error', 'message' => 'Unauthorized. Only an authorized Owner account can approve or reject correction requests.']);
     exit();
 }
 
@@ -13,6 +13,7 @@ $owner_name = $_SESSION['username'] ?? 'Owner';
 $owner_id = (int)($_SESSION['user_id'] ?? $_SESSION['id'] ?? 0);
 $request_id = (int)($_POST['request_id'] ?? 0);
 $action = trim($_POST['action'] ?? '');
+$owner_remarks = trim($_POST['owner_remarks'] ?? ($_POST['approval_remarks'] ?? ''));
 
 if ($request_id <= 0) {
     echo json_encode(['status' => 'error', 'message' => 'Invalid correction request ID.']);
@@ -20,7 +21,7 @@ if ($request_id <= 0) {
 }
 
 try {
-    $stmt = $pdo->prepare("SELECT * FROM pos_correction_requests WHERE id = ?");
+    $stmt = $pdo->prepare("SELECT * FROM pos_correction_requests WHERE id = ? FOR UPDATE");
     $stmt->execute([$request_id]);
     $req = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -29,12 +30,18 @@ try {
         exit();
     }
 
-    if ($action === 'approve') {
+    // Server-side check to prevent double review
+    if ($action === 'approve' || $action === 'reject') {
         if ($req['status'] !== 'Pending Review') {
-            echo json_encode(['status' => 'error', 'message' => 'Request is not in Pending Review status. Current: ' . $req['status']]);
+            echo json_encode([
+                'status' => 'error',
+                'message' => "This correction request has already been reviewed and processed (Current status: {$req['status']}). Action cannot be repeated."
+            ]);
             exit();
         }
+    }
 
+    if ($action === 'approve') {
         // 1. Validate Stock Availability
         list($is_stock_valid, $stock_msg, $details) = validateCorrectionStock($pdo, $request_id);
         if (!$is_stock_valid) {
@@ -47,18 +54,43 @@ try {
         }
 
         $diff = (float)$req['payment_difference'];
+        $is_late = !empty($req['is_late_request']);
+
+        // Look up owner ID for audit constraint safety
+        if ($owner_id <= 0) {
+            $stmt_u = $pdo->prepare("SELECT id FROM users WHERE username = ? LIMIT 1");
+            $stmt_u->execute([$owner_name]);
+            $owner_id = (int)$stmt_u->fetchColumn();
+            if ($owner_id <= 0) {
+                $owner_id = (int)$pdo->query("SELECT id FROM users WHERE role = 'owner' ORDER BY id ASC LIMIT 1")->fetchColumn() ?: 1;
+            }
+        }
 
         // If no financial difference (diff == 0), automatically synchronize inventory & complete!
         if (abs($diff) < 0.001) {
             list($exec_success, $exec_msg) = executeCorrectionSettlement($pdo, $request_id, $owner_name, 'None (Even Exchange)', 'N/A', 0);
             if ($exec_success) {
                 // Record owner review data
-                $upd_rev = $pdo->prepare("UPDATE pos_correction_requests SET owner_id = ?, owner_name = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ?");
-                $upd_rev->execute([$owner_id > 0 ? $owner_id : null, $owner_name, $request_id]);
+                $upd_rev = $pdo->prepare("
+                    UPDATE pos_correction_requests 
+                    SET owner_id = ?, 
+                        owner_name = ?, 
+                        reviewed_at = CURRENT_TIMESTAMP,
+                        owner_remarks = ?,
+                        late_reviewed_by = CASE WHEN is_late_request = TRUE THEN ? ELSE late_reviewed_by END,
+                        late_reviewed_at = CASE WHEN is_late_request = TRUE THEN CURRENT_TIMESTAMP ELSE late_reviewed_at END,
+                        late_review_remarks = CASE WHEN is_late_request = TRUE THEN ? ELSE late_review_remarks END
+                    WHERE id = ?
+                ");
+                $upd_rev->execute([$owner_id, $owner_name, $owner_remarks, $owner_name, $owner_remarks, $request_id]);
+
+                $msg = $is_late 
+                    ? "Late correction request approved with owner override and automatically completed! Inventory has been synchronized."
+                    : "Correction request approved and automatically completed! Since there was no financial difference, inventory has been synchronized.";
 
                 echo json_encode([
                     'status' => 'success',
-                    'message' => 'Correction request approved and automatically completed! Since there was no financial difference, inventory has been synchronized.',
+                    'message' => $msg,
                     'next_status' => 'Completed'
                 ]);
             } else {
@@ -72,32 +104,35 @@ try {
 
         $stmt_app = $pdo->prepare("
             UPDATE pos_correction_requests 
-            SET status = ?, owner_id = ?, owner_name = ?, reviewed_at = CURRENT_TIMESTAMP
+            SET status = ?, 
+                owner_id = ?, 
+                owner_name = ?, 
+                reviewed_at = CURRENT_TIMESTAMP,
+                owner_remarks = ?,
+                late_reviewed_by = CASE WHEN is_late_request = TRUE THEN ? ELSE late_reviewed_by END,
+                late_reviewed_at = CASE WHEN is_late_request = TRUE THEN CURRENT_TIMESTAMP ELSE late_reviewed_at END,
+                late_review_remarks = CASE WHEN is_late_request = TRUE THEN ? ELSE late_review_remarks END
             WHERE id = ?
         ");
-        $stmt_app->execute([$new_status, $owner_id > 0 ? $owner_id : null, $owner_name, $request_id]);
+        $stmt_app->execute([$new_status, $owner_id, $owner_name, $owner_remarks, $owner_name, $owner_remarks, $request_id]);
 
         // Audit Log
-        $owner_id = (int)($_SESSION['user_id'] ?? $_SESSION['id'] ?? 0);
-        if ($owner_id <= 0) {
-            $stmt_u = $pdo->prepare("SELECT id FROM users WHERE username = ? LIMIT 1");
-            $stmt_u->execute([$owner_name]);
-            $owner_id = (int)$stmt_u->fetchColumn();
-            if ($owner_id <= 0) {
-                $owner_id = (int)$pdo->query("SELECT id FROM users WHERE role = 'owner' ORDER BY id ASC LIMIT 1")->fetchColumn() ?: 1;
-            }
-        }
-        $action_log = "POS Correction Approved";
+        $action_log = $is_late ? "POS Late Correction Approved (Owner Override)" : "POS Correction Approved";
         $diff_fmt = $diff > 0 ? "+₱" . number_format($diff, 2) : "-₱" . number_format(abs($diff), 2);
-        $details_log = "Owner $owner_name approved Correction Request #$request_id for POS Receipt #{$req['transaction_id']}. Financial difference: $diff_fmt. Status set to: $new_status.";
+        $late_audit = $is_late ? " [Owner Override granted for late request]" : "";
+        $details_log = "Owner $owner_name approved {$action_log} #$request_id for POS Receipt #{$req['transaction_id']}. Financial diff: $diff_fmt. Status set to: $new_status. Remarks: {$owner_remarks}{$late_audit}";
         $ip = $_SERVER['REMOTE_ADDR'] ?? 'N/A';
 
         $stmt_audit = $pdo->prepare("INSERT INTO audit_log (user_id, username, role, action, details, ip_address) VALUES (?, ?, 'owner', ?, ?, ?)");
         $stmt_audit->execute([$owner_id, $owner_name, $action_log, $details_log, $ip]);
 
+        $msg = $is_late
+            ? "Late correction request approved with Owner Override! Status updated to '$new_status'. Payment/refund can now proceed to settlement."
+            : "Correction request approved! Status updated to '$new_status'. Payment/refund can now be settled.";
+
         echo json_encode([
             'status' => 'success',
-            'message' => "Correction request approved! Status updated to '$new_status'. Payment/refund can now be settled.",
+            'message' => $msg,
             'next_status' => $new_status
         ]);
         exit();
@@ -105,27 +140,12 @@ try {
     } elseif ($action === 'reject') {
         $rejection_reason = trim($_POST['rejection_reason'] ?? '');
         if (empty($rejection_reason)) {
-            echo json_encode(['status' => 'error', 'message' => 'A rejection reason is required when rejecting a correction request.']);
+            echo json_encode(['status' => 'error', 'message' => 'A rejection reason is mandatory when rejecting a correction request.']);
             exit();
         }
 
-        $stmt_rej = $pdo->prepare("
-            UPDATE pos_correction_requests 
-            SET status = 'Rejected', rejection_reason = ?, owner_id = ?, owner_name = ?, reviewed_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-        ");
-        $stmt_rej->execute([$rejection_reason, $owner_id > 0 ? $owner_id : null, $owner_name, $request_id]);
+        $is_late = !empty($req['is_late_request']);
 
-        // Unlock transaction
-        $stmt_unl = $pdo->prepare("UPDATE pos_transaction SET correction_status = 'none' WHERE id = ?");
-        $stmt_unl->execute([$req['transaction_id']]);
-
-        // Audit Log
-        $action_log = "POS Correction Rejected";
-        $details_log = "Owner $owner_name rejected Correction Request #$request_id for POS Receipt #{$req['transaction_id']}. Reason: $rejection_reason";
-        $ip = $_SERVER['REMOTE_ADDR'] ?? 'N/A';
-
-        $owner_id = (int)($_SESSION['user_id'] ?? $_SESSION['id'] ?? 0);
         if ($owner_id <= 0) {
             $stmt_u = $pdo->prepare("SELECT id FROM users WHERE username = ? LIMIT 1");
             $stmt_u->execute([$owner_name]);
@@ -134,6 +154,31 @@ try {
                 $owner_id = (int)$pdo->query("SELECT id FROM users WHERE role = 'owner' ORDER BY id ASC LIMIT 1")->fetchColumn() ?: 1;
             }
         }
+
+        $stmt_rej = $pdo->prepare("
+            UPDATE pos_correction_requests 
+            SET status = 'Rejected', 
+                rejection_reason = ?, 
+                owner_remarks = ?,
+                owner_id = ?, 
+                owner_name = ?, 
+                reviewed_at = CURRENT_TIMESTAMP,
+                late_reviewed_by = CASE WHEN is_late_request = TRUE THEN ? ELSE late_reviewed_by END,
+                late_reviewed_at = CASE WHEN is_late_request = TRUE THEN CURRENT_TIMESTAMP ELSE late_reviewed_at END,
+                late_review_remarks = CASE WHEN is_late_request = TRUE THEN ? ELSE late_review_remarks END
+            WHERE id = ?
+        ");
+        $stmt_rej->execute([$rejection_reason, $rejection_reason, $owner_id, $owner_name, $owner_name, $rejection_reason, $request_id]);
+
+        // Unlock transaction
+        $stmt_unl = $pdo->prepare("UPDATE pos_transaction SET correction_status = 'none' WHERE id = ?");
+        $stmt_unl->execute([$req['transaction_id']]);
+
+        // Audit Log
+        $action_log = $is_late ? "POS Late Correction Rejected" : "POS Correction Rejected";
+        $details_log = "Owner $owner_name rejected {$action_log} #$request_id for POS Receipt #{$req['transaction_id']}. Reason: $rejection_reason";
+        $ip = $_SERVER['REMOTE_ADDR'] ?? 'N/A';
+
         $stmt_audit = $pdo->prepare("INSERT INTO audit_log (user_id, username, role, action, details, ip_address) VALUES (?, ?, 'owner', ?, ?, ?)");
         $stmt_audit->execute([$owner_id, $owner_name, $action_log, $details_log, $ip]);
 

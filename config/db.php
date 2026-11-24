@@ -2,6 +2,8 @@
 
 require_once __DIR__ . '/../vendor/autoload.php';
 
+date_default_timezone_set('Asia/Manila');
+
 if (file_exists(dirname(__DIR__) . '/.env.php') && !file_exists(dirname(__DIR__) . '/.env')) {
     $dotenv = Dotenv\Dotenv::createImmutable(dirname(__DIR__), '.env.php');
 } else {

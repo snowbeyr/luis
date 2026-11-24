@@ -11,6 +11,7 @@ $cashier_name = $_SESSION['username'] ?? 'Cashier';
 $cashier_id = (int)($_SESSION['user_id'] ?? $_SESSION['id'] ?? 0);
 $filter_date = $_GET['filter_date'] ?? '';
 $search_query = trim($_GET['search'] ?? '');
+$req_category_filter = $_GET['req_category'] ?? 'all';
 
 // 1. Fetch POS Transactions
 $where_pos = "WHERE 1=1";
@@ -30,7 +31,8 @@ if (!empty($search_query)) {
 $stmt_tx = $pdo->prepare("
     SELECT pt.*,
            (SELECT status FROM pos_correction_requests WHERE transaction_id = pt.id ORDER BY id DESC LIMIT 1) AS latest_correction_status,
-           (SELECT id FROM pos_correction_requests WHERE transaction_id = pt.id ORDER BY id DESC LIMIT 1) AS latest_correction_id
+           (SELECT id FROM pos_correction_requests WHERE transaction_id = pt.id ORDER BY id DESC LIMIT 1) AS latest_correction_id,
+           (SELECT is_late_request FROM pos_correction_requests WHERE transaction_id = pt.id ORDER BY id DESC LIMIT 1) AS latest_is_late
     FROM pos_transaction pt
     $where_pos
     ORDER BY pt.id DESC
@@ -40,14 +42,23 @@ $stmt_tx->execute($params_pos);
 $transactions = $stmt_tx->fetchAll(PDO::FETCH_ASSOC);
 
 // 2. Fetch My Correction Requests
+$where_my_req = "(pcr.cashier_name = ? OR pcr.cashier_id = ?)";
+$params_my_req = [$cashier_name, $cashier_id];
+
+if ($req_category_filter === 'normal') {
+    $where_my_req .= " AND (pcr.is_late_request = FALSE OR pcr.is_late_request IS NULL)";
+} elseif ($req_category_filter === 'late') {
+    $where_my_req .= " AND pcr.is_late_request = TRUE";
+}
+
 $stmt_my_req = $pdo->prepare("
     SELECT pcr.*, pt.transaction_date AS original_tx_date
     FROM pos_correction_requests pcr
     JOIN pos_transaction pt ON pcr.transaction_id = pt.id
-    WHERE pcr.cashier_name = ? OR pcr.cashier_id = ?
+    WHERE $where_my_req
     ORDER BY pcr.id DESC
 ");
-$stmt_my_req->execute([$cashier_name, $cashier_id]);
+$stmt_my_req->execute($params_my_req);
 $my_requests = $stmt_my_req->fetchAll(PDO::FETCH_ASSOC);
 
 // Metrics for cashier requests
@@ -55,11 +66,13 @@ $count_pending = 0;
 $count_approved = 0;
 $count_completed = 0;
 $count_rejected = 0;
+$count_late = 0;
 foreach ($my_requests as $r) {
     if ($r['status'] === 'Pending Review') $count_pending++;
     elseif (in_array($r['status'], ['Approved', 'Pending Additional Payment', 'Pending Refund'])) $count_approved++;
     elseif ($r['status'] === 'Completed') $count_completed++;
     elseif ($r['status'] === 'Rejected') $count_rejected++;
+    if (!empty($r['is_late_request'])) $count_late++;
 }
 
 // Online orders notification count
@@ -98,6 +111,9 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
 .diff-badge-zero { background: #f5f5f5; color: #616161; font-weight: bold; padding: 4px 8px; border-radius: 4px; }
 .item-table th { background: #e9ecef; font-size: 0.85rem; }
 .item-table td { font-size: 0.88rem; vertical-align: middle; }
+.deadline-badge-active { background: #d1e7dd; color: #0f5132; font-size: 0.78rem; font-weight: 600; }
+.deadline-badge-urgent { background: #fff3cd; color: #664d03; font-size: 0.78rem; font-weight: 600; }
+.deadline-badge-expired { background: #f8d7da; color: #842029; font-size: 0.78rem; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -182,8 +198,11 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
 
             <!-- Transactions Table -->
             <div class="card shadow-sm border-0">
-                <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
-                    <h6 class="mb-0 fw-bold text-dark"><i class="bi bi-list-check me-2"></i>Recent POS Transactions</h6>
+                <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <div>
+                        <h6 class="mb-0 fw-bold text-dark"><i class="bi bi-list-check me-2"></i>Recent POS Transactions</h6>
+                        <small class="text-muted">Normal correction requests are allowed within 24 hours of transaction completion.</small>
+                    </div>
                     <span class="badge bg-light text-dark border">Showing latest <?= count($transactions); ?> transactions</span>
                 </div>
                 <div class="table-responsive">
@@ -191,7 +210,8 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
                         <thead class="table-light">
                             <tr>
                                 <th>Receipt #</th>
-                                <th>Date & Time</th>
+                                <th>Date Completed</th>
+                                <th>24-Hour Deadline</th>
                                 <th>Cashier</th>
                                 <th>Total Amount</th>
                                 <th>Paid / Change</th>
@@ -204,10 +224,40 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
                                 <?php foreach ($transactions as $t): ?>
                                     <?php
                                     $is_locked = in_array($t['latest_correction_status'], ['Pending Review', 'Approved', 'Pending Additional Payment', 'Pending Refund']);
+                                    
+                                    // 24-Hour Deadline Calculation (Asia/Manila)
+                                    $tx_ts = strtotime($t['transaction_date']);
+                                    $deadline_ts = $tx_ts + (24 * 3600);
+                                    $now_ts = time();
+                                    $is_expired = ($now_ts > $deadline_ts);
+                                    $deadline_str = date('M d, Y h:i A', $deadline_ts);
+
+                                    if (!$is_expired) {
+                                        $diff_sec = $deadline_ts - $now_ts;
+                                        $hrs_left = floor($diff_sec / 3600);
+                                        $mins_left = floor(($diff_sec % 3600) / 60);
+                                        $badge_class = ($hrs_left < 3) ? 'deadline-badge-urgent' : 'deadline-badge-active';
+                                        $time_text = "{$hrs_left}h {$mins_left}m left";
+                                    } else {
+                                        $diff_sec = $now_ts - $deadline_ts;
+                                        $hrs_ago = floor($diff_sec / 3600);
+                                        $mins_ago = floor(($diff_sec % 3600) / 60);
+                                        $badge_class = 'deadline-badge-expired';
+                                        $time_text = ($hrs_ago > 0) ? "Expired ({$hrs_ago}h ago)" : "Expired ({$mins_ago}m ago)";
+                                    }
                                     ?>
                                     <tr>
                                         <td class="fw-bold">#<?= htmlspecialchars($t['id']); ?></td>
-                                        <td><?= date('M d, Y h:i A', strtotime($t['transaction_date'])); ?></td>
+                                        <td>
+                                            <div><?= date('M d, Y', $tx_ts); ?></div>
+                                            <small class="text-muted"><?= date('h:i A', $tx_ts); ?></small>
+                                        </td>
+                                        <td>
+                                            <div class="small fw-semibold text-dark"><?= $deadline_str; ?></div>
+                                            <span class="badge <?= $badge_class; ?> rounded-pill px-2 py-1 mt-1">
+                                                <i class="bi bi-clock me-1"></i><?= $time_text; ?>
+                                            </span>
+                                        </td>
                                         <td><?= htmlspecialchars($t['cashier_name']); ?></td>
                                         <td class="fw-bold text-primary">₱<?= number_format((float)$t['total_amount'], 2); ?></td>
                                         <td class="small text-muted">
@@ -217,6 +267,9 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
                                         <td>
                                             <?php if ($t['latest_correction_status'] === 'Pending Review'): ?>
                                                 <span class="badge bg-warning text-dark"><i class="bi bi-hourglass-split me-1"></i>Pending Review</span>
+                                                <?php if (!empty($t['latest_is_late'])): ?>
+                                                    <span class="badge bg-danger small ms-1">Late</span>
+                                                <?php endif; ?>
                                             <?php elseif ($t['latest_correction_status'] === 'Pending Additional Payment'): ?>
                                                 <span class="badge bg-info text-dark"><i class="bi bi-cash me-1"></i>Needs Payment</span>
                                             <?php elseif ($t['latest_correction_status'] === 'Pending Refund'): ?>
@@ -229,17 +282,22 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
                                                 <span class="badge bg-light text-muted border">No Corrections</span>
                                             <?php endif; ?>
                                         </td>
-                                        <td class="text-end">
+                                        <td class="text-end text-nowrap">
                                             <button class="btn btn-sm btn-outline-dark me-1" onclick="viewTransactionReceipt(<?= $t['id']; ?>)">
                                                 <i class="bi bi-receipt me-1"></i> Receipt
                                             </button>
+
                                             <?php if ($is_locked): ?>
-                                                <button class="btn btn-sm btn-secondary" disabled title="A correction request is currently pending or awaiting settlement for this transaction.">
+                                                <button class="btn btn-sm btn-secondary" disabled title="A correction request is currently under review or awaiting settlement for this transaction.">
                                                     <i class="bi bi-lock-fill me-1"></i> Locked
                                                 </button>
-                                            <?php else: ?>
-                                                <button class="btn btn-sm btn-warning" onclick="openCorrectionModal(<?= $t['id']; ?>)">
+                                            <?php elseif (!$is_expired): ?>
+                                                <button class="btn btn-sm btn-warning fw-semibold" onclick="openCorrectionModal(<?= $t['id']; ?>, false, '<?= date('M d, Y h:i A', $tx_ts); ?>', '<?= $deadline_str; ?>')">
                                                     <i class="bi bi-pencil-square me-1"></i> Request Correction
+                                                </button>
+                                            <?php else: ?>
+                                                <button class="btn btn-sm btn-outline-danger fw-semibold" onclick="openCorrectionModal(<?= $t['id']; ?>, true, '<?= date('M d, Y h:i A', $tx_ts); ?>', '<?= $deadline_str; ?>')">
+                                                    <i class="bi bi-clock-history me-1"></i> Request Late Correction
                                                 </button>
                                             <?php endif; ?>
                                         </td>
@@ -247,7 +305,7 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
                                 <?php endforeach; ?>
                             <?php else: ?>
                                 <tr>
-                                    <td colspan="7" class="text-center py-4 text-muted">No POS transactions found.</td>
+                                    <td colspan="8" class="text-center py-4 text-muted">No POS transactions found.</td>
                                 </tr>
                             <?php endif; ?>
                         </tbody>
@@ -287,6 +345,14 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
                 </div>
             </div>
 
+            <!-- Category Filter Pills -->
+            <div class="d-flex align-items-center gap-2 mb-3">
+                <span class="small fw-bold text-muted me-2">Category Filter:</span>
+                <a href="?req_category=all" class="btn btn-sm <?= $req_category_filter === 'all' ? 'btn-dark' : 'btn-outline-secondary'; ?>">All (<?= count($my_requests); ?>)</a>
+                <a href="?req_category=normal" class="btn btn-sm <?= $req_category_filter === 'normal' ? 'btn-primary' : 'btn-outline-secondary'; ?>">Normal Requests</a>
+                <a href="?req_category=late" class="btn btn-sm <?= $req_category_filter === 'late' ? 'btn-danger' : 'btn-outline-secondary'; ?>">Late Requests (<?= $count_late; ?>)</a>
+            </div>
+
             <!-- Requests Table -->
             <div class="card shadow-sm border-0">
                 <div class="card-header bg-white py-3">
@@ -298,6 +364,7 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
                             <tr>
                                 <th>Request ID</th>
                                 <th>Receipt #</th>
+                                <th>Category</th>
                                 <th>Date Requested</th>
                                 <th>Correction Type</th>
                                 <th>Original Total</th>
@@ -312,12 +379,25 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
                                 <?php foreach ($my_requests as $r): ?>
                                     <?php
                                     $diff = (float)$r['payment_difference'];
+                                    $is_late = !empty($r['is_late_request']);
                                     ?>
                                     <tr>
                                         <td class="fw-bold">#REQ-<?= $r['id']; ?></td>
                                         <td>#<?= $r['transaction_id']; ?></td>
+                                        <td>
+                                            <?php if ($is_late): ?>
+                                                <span class="badge bg-danger"><i class="bi bi-exclamation-triangle-fill me-1"></i>Late Request</span>
+                                            <?php else: ?>
+                                                <span class="badge bg-light text-dark border">Normal (24h)</span>
+                                            <?php endif; ?>
+                                        </td>
                                         <td><?= date('M d, Y h:i A', strtotime($r['created_at'])); ?></td>
-                                        <td><span class="badge bg-light text-dark border"><?= htmlspecialchars($r['correction_type']); ?></span></td>
+                                        <td>
+                                            <span class="badge bg-light text-dark border fw-semibold"><?= htmlspecialchars($r['correction_type']); ?></span>
+                                            <?php if ($r['correction_type'] === 'Others' && !empty($r['other_details'])): ?>
+                                                <small class="d-block text-muted text-truncate" style="max-width: 150px;"><?= htmlspecialchars($r['other_details']); ?></small>
+                                            <?php endif; ?>
+                                        </td>
                                         <td>₱<?= number_format((float)$r['original_total'], 2); ?></td>
                                         <td class="fw-bold text-primary">₱<?= number_format((float)$r['proposed_total'], 2); ?></td>
                                         <td>
@@ -344,7 +424,7 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
                                                 <span class="badge bg-secondary"><?= htmlspecialchars($r['status']); ?></span>
                                             <?php endif; ?>
                                         </td>
-                                        <td class="text-end">
+                                        <td class="text-end text-nowrap">
                                             <button class="btn btn-sm btn-outline-primary me-1" onclick="viewCorrectionDetails(<?= $r['id']; ?>)">
                                                 <i class="bi bi-eye"></i> Details
                                             </button>
@@ -366,7 +446,7 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
                                 <?php endforeach; ?>
                             <?php else: ?>
                                 <tr>
-                                    <td colspan="9" class="text-center py-4 text-muted">You have not submitted any correction requests yet.</td>
+                                    <td colspan="10" class="text-center py-4 text-muted">You have not submitted any correction requests under this category yet.</td>
                                 </tr>
                             <?php endif; ?>
                         </tbody>
@@ -384,13 +464,16 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
 <div class="modal fade" id="correctionModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
     <div class="modal-dialog modal-xl modal-dialog-scrollable">
         <div class="modal-content">
-            <div class="modal-header bg-primary text-white">
-                <h5 class="modal-title fw-bold"><i class="bi bi-pencil-square me-2"></i>Submit Transaction Correction Request</h5>
+            <div class="modal-header text-white" id="corrModalHeader">
+                <h5 class="modal-title fw-bold" id="corrModalTitle">
+                    <i class="bi bi-pencil-square me-2"></i>Submit Transaction Correction Request
+                </h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body p-4">
                 <form id="correctionForm" enctype="multipart/form-data">
                     <input type="hidden" name="transaction_id" id="corr_transaction_id">
+                    <input type="hidden" name="is_late_request" id="corr_is_late_request" value="0">
                     <input type="hidden" name="original_items" id="corr_original_items_input">
                     <input type="hidden" name="corrected_items" id="corr_corrected_items_input">
 
@@ -398,34 +481,58 @@ body { background: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sa
                     <div class="alert alert-light border p-3 mb-3">
                         <div class="row g-2">
                             <div class="col-sm-3"><strong>Receipt No:</strong> <span id="corr_receipt_no" class="text-primary fw-bold"></span></div>
-                            <div class="col-sm-3"><strong>Date:</strong> <span id="corr_receipt_date"></span></div>
-                            <div class="col-sm-3"><strong>Cashier:</strong> <span id="corr_receipt_cashier"></span></div>
+                            <div class="col-sm-3"><strong>Completed:</strong> <span id="corr_receipt_date"></span></div>
+                            <div class="col-sm-3"><strong>24h Deadline:</strong> <span id="corr_receipt_deadline" class="fw-semibold"></span></div>
                             <div class="col-sm-3"><strong>Original Total:</strong> <span id="corr_receipt_orig_total" class="fw-bold"></span></div>
                         </div>
                     </div>
 
+                    <!-- Late Notice Banner (Shown only if expired) -->
+                    <div id="lateRequestNotice" class="alert alert-danger mb-3" style="display: none;">
+                        <h6 class="fw-bold mb-1"><i class="bi bi-exclamation-octagon-fill me-2"></i>24-Hour Correction Period Expired</h6>
+                        <p class="small mb-0">The 24-hour correction request period has expired. This request will be submitted as a <strong>Late Correction Request</strong> and requires Owner review and override approval. A mandatory explanation for the delay is required below.</p>
+                    </div>
+
+                    <!-- Late Reason Explanation (Mandatory if Late) -->
+                    <div class="mb-3" id="lateReasonContainer" style="display: none;">
+                        <label class="form-label fw-bold text-danger">
+                            <i class="bi bi-clock-history me-1"></i> Reason for Late Submission (Beyond 24 Hours) <span class="text-danger">*</span>
+                        </label>
+                        <textarea name="late_reason" id="corr_late_reason" class="form-control border-danger" rows="2" placeholder="Explain why this correction was not reported within the 24-hour window (e.g. customer returned next day, shift handover discrepancy)..."></textarea>
+                    </div>
+
                     <!-- Correction Type & Reason -->
-                    <div class="row g-3 mb-4">
+                    <div class="row g-3 mb-3">
                         <div class="col-md-6">
                             <label class="form-label fw-bold">Correction Type <span class="text-danger">*</span></label>
-                            <select name="correction_type" id="corr_type_select" class="form-select" required>
+                            <select name="correction_type" id="corr_type_select" class="form-select" required onchange="handleCorrectionTypeChange()">
                                 <option value="" disabled selected>-- Select Type of Error --</option>
-                                <option value="Wrong Product">Wrong Product</option>
-                                <option value="Wrong Product Variant">Wrong Product Variant</option>
+                                <option value="Wrong Product Input">Wrong Product Input</option>
                                 <option value="Incorrect Quantity">Incorrect Quantity</option>
-                                <option value="Incorrect Price / Transaction Amount">Incorrect Price / Transaction Amount</option>
                                 <option value="Incorrect Payment Information">Incorrect Payment Information</option>
-                                <option value="Other Transaction Error">Other Transaction Error</option>
+                                <option value="Others">Others</option>
                             </select>
+                            <div class="form-text small" id="typeHelpText">Select the category that best matches the error.</div>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label fw-bold">Supporting Evidence (Optional)</label>
                             <input type="file" name="evidence" class="form-control" accept="image/*,.pdf">
                             <small class="text-muted">Attach receipt photo, wrong item photo, customer note, etc.</small>
                         </div>
+
+                        <!-- Specific Field for Others Category -->
+                        <div class="col-12" id="othersDetailsContainer" style="display: none;">
+                            <div class="card bg-light border p-3">
+                                <label class="form-label fw-bold text-dark">
+                                    <i class="bi bi-info-circle me-1"></i> Specific Issue Details (Others) <span class="text-danger">*</span>
+                                </label>
+                                <textarea name="other_details" id="corr_other_details" class="form-control" rows="2" placeholder="Please specify in detail the exact problem and correction needed..."></textarea>
+                            </div>
+                        </div>
+
                         <div class="col-12">
                             <label class="form-label fw-bold">Explanation / Reason for Correction <span class="text-danger">*</span></label>
-                            <textarea name="reason" class="form-control" rows="2" placeholder="Describe why this correction is needed and what customer agreement was made..." required></textarea>
+                            <textarea name="reason" id="corr_reason" class="form-control" rows="2" placeholder="Describe why this correction is needed and what customer agreement was made..." required></textarea>
                         </div>
                     </div>
 
@@ -655,10 +762,73 @@ const settleModal = new bootstrap.Modal(document.getElementById('settleModal'));
 const receiptModal = new bootstrap.Modal(document.getElementById('receiptModal'));
 const requestDetailsModal = new bootstrap.Modal(document.getElementById('requestDetailsModal'));
 
+// Dynamic Correction Type handling
+function handleCorrectionTypeChange() {
+    const typeSelect = document.getElementById('corr_type_select');
+    const othersContainer = document.getElementById('othersDetailsContainer');
+    const othersInput = document.getElementById('corr_other_details');
+    const helpText = document.getElementById('typeHelpText');
+    const reasonInput = document.getElementById('corr_reason');
+
+    if (typeSelect.value === 'Others') {
+        othersContainer.style.display = 'block';
+        othersInput.required = true;
+        helpText.innerText = "Please provide detailed specifics about the error in the field below.";
+        reasonInput.placeholder = "Describe the circumstance that resulted in this error...";
+    } else {
+        othersContainer.style.display = 'none';
+        othersInput.required = false;
+
+        if (typeSelect.value === 'Wrong Product Input') {
+            helpText.innerText = "Identify the incorrectly recorded product in the original list and replace it with the intended product.";
+            reasonInput.placeholder = "State which product was mistakenly scanned/entered and why the replacement is required...";
+        } else if (typeSelect.value === 'Incorrect Quantity') {
+            helpText.innerText = "Adjust the quantity of the item(s) to match what the customer actually received.";
+            reasonInput.placeholder = "Explain how the quantity error occurred and what the verified quantity is...";
+        } else if (typeSelect.value === 'Incorrect Payment Information') {
+            helpText.innerText = "Correct payment details, reference information, or tendered amounts subject to owner review.";
+            reasonInput.placeholder = "Explain the payment correction (e.g. customer switched to GCash, wrong reference number recorded)...";
+        }
+    }
+}
+
 // 1. OPEN CORRECTION MODAL & LOAD TRANSACTION ITEMS
-function openCorrectionModal(txId) {
+function openCorrectionModal(txId, isLate, txDateStr, deadlineStr) {
     document.getElementById('corr_transaction_id').value = txId;
     document.getElementById('corr_receipt_no').innerText = '#' + txId;
+    document.getElementById('corr_is_late_request').value = isLate ? "1" : "0";
+
+    // Set UI for Normal vs Late Request
+    const header = document.getElementById('corrModalHeader');
+    const title = document.getElementById('corrModalTitle');
+    const lateNotice = document.getElementById('lateRequestNotice');
+    const lateContainer = document.getElementById('lateReasonContainer');
+    const lateReasonInput = document.getElementById('corr_late_reason');
+    const submitBtn = document.getElementById('submitCorrectionBtn');
+
+    if (isLate) {
+        header.className = "modal-header bg-danger text-white";
+        title.innerHTML = '<i class="bi bi-exclamation-diamond-fill me-2"></i>Submit Late Correction Request (Owner Override)';
+        lateNotice.style.display = 'block';
+        lateContainer.style.display = 'block';
+        lateReasonInput.required = true;
+        submitBtn.className = 'btn btn-danger px-4 fw-bold';
+        submitBtn.innerHTML = '<i class="bi bi-clock-history me-1"></i> Submit Late Request for Owner Override';
+    } else {
+        header.className = "modal-header bg-primary text-white";
+        title.innerHTML = '<i class="bi bi-pencil-square me-2"></i>Submit Transaction Correction Request';
+        lateNotice.style.display = 'none';
+        lateContainer.style.display = 'none';
+        lateReasonInput.required = false;
+        submitBtn.className = 'btn btn-primary px-4 fw-bold';
+        submitBtn.innerHTML = '<i class="bi bi-send me-1"></i> Submit Request for Owner Review';
+    }
+
+    // Reset fields
+    document.getElementById('corr_type_select').value = '';
+    document.getElementById('corr_reason').value = '';
+    document.getElementById('corr_other_details').value = '';
+    document.getElementById('othersDetailsContainer').style.display = 'none';
     document.getElementById('originalItemsTbody').innerHTML = '<tr><td colspan="4" class="text-center py-3 text-muted">Loading...</td></tr>';
     document.getElementById('correctedItemsTbody').innerHTML = '<tr><td colspan="5" class="text-center py-3 text-muted">Loading...</td></tr>';
 
@@ -666,8 +836,8 @@ function openCorrectionModal(txId) {
     .then(res => res.json())
     .then(data => {
         let tx = data.transaction || {};
-        document.getElementById('corr_receipt_date').innerText = tx.transaction_date || 'N/A';
-        document.getElementById('corr_receipt_cashier').innerText = tx.cashier_name || 'Cashier';
+        document.getElementById('corr_receipt_date').innerText = txDateStr || tx.transaction_date || 'N/A';
+        document.getElementById('corr_receipt_deadline').innerText = deadlineStr || 'N/A';
         document.getElementById('corr_receipt_orig_total').innerText = '₱' + parseFloat(tx.total_amount || 0).toFixed(2);
 
         let items = [];
@@ -684,7 +854,6 @@ function openCorrectionModal(txId) {
             subtotal: parseFloat(it.subtotal || (parseFloat(it.price || 0) * parseInt(it.qty || 1)))
         }));
 
-        // Clone into editable corrected cart
         currentCorrectionCart = JSON.parse(JSON.stringify(currentOriginalCart));
 
         renderOriginalItems();
@@ -729,9 +898,7 @@ function renderCorrectedItems() {
 
         html += `
             <tr>
-                <td>
-                    <b>${it.product_name}</b>
-                </td>
+                <td><b>${it.product_name}</b></td>
                 <td>
                     <input type="number" step="0.01" min="0" class="form-control form-control-sm" value="${it.price.toFixed(2)}" onchange="updateItemPrice(${idx}, this.value)">
                 </td>
@@ -755,7 +922,6 @@ function renderCorrectedItems() {
     tbody.innerHTML = html || '<tr><td colspan="5" class="text-center text-muted py-3">No items. Click "+ Add / Replace Product" to add.</td></tr>';
     document.getElementById('propTotalDisplay').innerText = '₱' + total.toFixed(2);
 
-    // Update Difference & Badges
     let origTotal = currentOriginalCart.reduce((acc, i) => acc + i.subtotal, 0);
     let diff = total - origTotal;
     let diffBadge = document.getElementById('diffAmountBadge');
@@ -764,11 +930,11 @@ function renderCorrectedItems() {
     if (diff > 0) {
         diffBadge.className = 'fs-5 fw-bold text-success';
         diffBadge.innerText = '+₱' + diff.toFixed(2);
-        diffText.innerText = 'Additional payment of ₱' + diff.toFixed(2) + ' must be collected from the customer upon owner approval.';
+        diffText.innerText = 'Additional payment of ₱' + diff.toFixed(2) + ' must be collected from customer upon owner approval.';
     } else if (diff < 0) {
         diffBadge.className = 'fs-5 fw-bold text-danger';
         diffBadge.innerText = '-₱' + Math.abs(diff).toFixed(2);
-        diffText.innerText = 'A refund of ₱' + Math.abs(diff).toFixed(2) + ' must be issued to the customer upon owner approval.';
+        diffText.innerText = 'A refund of ₱' + Math.abs(diff).toFixed(2) + ' must be issued to customer upon owner approval.';
     } else {
         diffBadge.className = 'fs-5 fw-bold text-secondary';
         diffBadge.innerText = '₱0.00';
@@ -862,6 +1028,26 @@ document.getElementById('correctionForm').addEventListener('submit', function(e)
     if (currentCorrectionCart.length === 0) {
         alert("The corrected transaction must have at least one product item.");
         return;
+    }
+
+    let isLate = document.getElementById('corr_is_late_request').value === "1";
+    if (isLate) {
+        let lateReason = document.getElementById('corr_late_reason').value.trim();
+        if (!lateReason) {
+            alert("Please provide the mandatory explanation describing why this correction was not reported within 24 hours.");
+            document.getElementById('corr_late_reason').focus();
+            return;
+        }
+    }
+
+    let type = document.getElementById('corr_type_select').value;
+    if (type === 'Others') {
+        let otherDetails = document.getElementById('corr_other_details').value.trim();
+        if (!otherDetails) {
+            alert("Please provide specific error details for the 'Others' category.");
+            document.getElementById('corr_other_details').focus();
+            return;
+        }
     }
 
     let btn = document.getElementById('submitCorrectionBtn');
@@ -1083,6 +1269,8 @@ function printCorrectedReceipt(reqId) {
             `;
         }
 
+        let lateBadge = req.is_late_request ? '<div class="badge bg-danger text-uppercase mb-1">Late Correction - Owner Override</div>' : '';
+
         let html = `
             <div class="text-center mb-2">
                 <h5 class="fw-bold my-0">*** R. TAIPAN HARDWARE ***</h5>
@@ -1091,6 +1279,7 @@ function printCorrectedReceipt(reqId) {
                 <small class="d-block">Contact: 0907 456 5632</small>
                 <div class="receipt-line"></div>
                 <h6 class="fw-bold my-1 text-uppercase text-danger">*** CORRECTED RECEIPT ***</h6>
+                ${lateBadge}
                 <div class="receipt-line"></div>
             </div>
 
@@ -1098,9 +1287,11 @@ function printCorrectedReceipt(reqId) {
             <p class="small mb-1"><b>Correction Ref No:</b> #REQ-${req.id}</p>
             <p class="small mb-1"><b>Approval Date:</b> ${req.completed_at || req.reviewed_at || 'N/A'}</p>
             <p class="small mb-1"><b>Cashier:</b> ${req.cashier_name}</p>
-            <p class="small mb-1"><b>Approved By:</b> ${req.owner_name || 'Owner'}</p>
+            <p class="small mb-1"><b>Approved By:</b> ${req.owner_name || req.late_reviewed_by || 'Owner'}</p>
             <p class="small mb-1"><b>Correction Type:</b> ${req.correction_type}</p>
+            ${req.other_details ? `<p class="small mb-1"><b>Other Details:</b> ${req.other_details}</p>` : ''}
             <p class="small mb-1"><b>Reason:</b> ${req.reason}</p>
+            ${req.is_late_request ? `<p class="small mb-1 text-danger"><b>Late Reason:</b> ${req.late_reason || 'N/A'}</p>` : ''}
 
             <div class="receipt-line"></div>
             <small class="fw-bold text-uppercase d-block mb-1 text-center">CORRECTED ITEM DETAILS</small>
@@ -1221,6 +1412,25 @@ function viewCorrectionDetails(reqId) {
         else if (diff < 0) diffBadge = `<span class="badge bg-danger">-₱${Math.abs(diff).toFixed(2)} (Refund Due)</span>`;
         else diffBadge = `<span class="badge bg-secondary">₱0.00 (No Diff)</span>`;
 
+        let categoryBadge = r.is_late_request
+            ? `<span class="badge bg-danger"><i class="bi bi-clock-history me-1"></i>Late Request (Owner Override)</span>`
+            : `<span class="badge bg-light text-dark border">Normal Request (Within 24h)</span>`;
+
+        let lateAlert = r.is_late_request ? `
+            <div class="alert alert-danger mb-3">
+                <h6 class="fw-bold mb-1"><i class="bi bi-exclamation-triangle-fill me-1"></i>Late Request Explanation:</h6>
+                <p class="mb-0">${r.late_reason || 'N/A'}</p>
+                ${r.late_review_remarks ? `<div class="mt-2 text-dark small"><strong>Owner Remarks:</strong> ${r.late_review_remarks}</div>` : ''}
+            </div>
+        ` : '';
+
+        let othersAlert = (r.correction_type === 'Others' && r.other_details) ? `
+            <div class="alert alert-secondary mb-3">
+                <h6 class="fw-bold mb-1"><i class="bi bi-info-circle me-1"></i>Specific Details (Others):</h6>
+                <p class="mb-0">${r.other_details}</p>
+            </div>
+        ` : '';
+
         let evidenceHtml = r.evidence_path ? `<div class="mt-2"><a href="../${r.evidence_path}" target="_blank" class="btn btn-sm btn-outline-primary"><i class="bi bi-paperclip me-1"></i>View Uploaded Evidence</a></div>` : '<span class="text-muted small">None provided</span>';
 
         let rejectionHtml = r.status === 'Rejected' ? `
@@ -1235,9 +1445,13 @@ function viewCorrectionDetails(reqId) {
                 <div class="col-sm-4"><strong>POS Receipt:</strong> #${r.transaction_id}</div>
                 <div class="col-sm-4"><strong>Date Requested:</strong> ${r.created_at}</div>
                 <div class="col-sm-4"><strong>Status:</strong> <span class="badge bg-dark">${r.status}</span></div>
-                <div class="col-sm-6"><strong>Correction Type:</strong> ${r.correction_type}</div>
-                <div class="col-sm-6"><strong>Financial Diff:</strong> ${diffBadge}</div>
+                <div class="col-sm-4"><strong>Category:</strong> ${categoryBadge}</div>
+                <div class="col-sm-4"><strong>Correction Type:</strong> <span class="badge bg-light text-dark border">${r.correction_type}</span></div>
+                <div class="col-sm-4"><strong>Financial Diff:</strong> ${diffBadge}</div>
             </div>
+
+            ${lateAlert}
+            ${othersAlert}
 
             <div class="card bg-light border p-3 mb-3">
                 <strong class="small text-muted text-uppercase d-block mb-1">Reason / Explanation:</strong>
