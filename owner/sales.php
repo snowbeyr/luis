@@ -216,7 +216,6 @@ body{
     <a href="sales.php" class="sidebar-link active"><i class="bi bi-cash-stack"></i> Sales</a>
     <a href="inventory.php" class="sidebar-link"><i class="bi bi-box-seam"></i> Inventory</a>
     <a href="orders.php" class="sidebar-link"><i class="bi bi-clipboard-check"></i> Order Mgt. Monitoring</a>
-    <a href="corrections.php" class="sidebar-link"><i class="bi bi-arrow-repeat"></i> Corrections</a>
     <a href="history.php" class="sidebar-link"><i class="bi bi-clock-history"></i> History</a>
     <a href="auditTrail.php" class="sidebar-link"><i class="bi bi-shield-lock"></i> Audit Trail</a>
     <a href="accountManagement.php" class="sidebar-link"><i class="bi bi-person-gear"></i> Account Management</a>

@@ -182,10 +182,6 @@ body{
         <i class="bi bi-clipboard-check"></i> Order Mgt. Monitoring
     </a>
 
-    <a href="corrections.php" class="sidebar-link">
-        <i class="bi bi-arrow-repeat"></i> Corrections
-    </a>
-
     <a href="history.php" class="sidebar-link">
         <i class="bi bi-clock-history"></i> History
     </a>
