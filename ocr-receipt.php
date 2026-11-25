@@ -90,6 +90,64 @@ function ocrNormalizeAmount($raw): string
 }
 
 /**
+ * Normalize extracted receipt date/time into PH timezone (Y-m-d H:i or Y-m-d).
+ */
+function ocrNormalizeReceiptIso(string $isoRaw, string $dtRaw): string
+{
+    $tz = new DateTimeZone('Asia/Manila');
+
+    foreach ([$isoRaw, $dtRaw] as $candidate) {
+        $val = trim($candidate);
+        if ($val === '') {
+            continue;
+        }
+
+        // Clean ordinal suffixes (e.g. "26th") and extra commas/spaces
+        $cleaned = preg_replace('/(\d+)(st|nd|rd|th)\b/i', '$1', $val);
+        $cleaned = preg_replace('/\s+/', ' ', str_replace(['•', '|'], ' ', (string) $cleaned));
+
+        if (preg_match('/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?$/', $cleaned)) {
+            $dt = date_create_immutable($cleaned, $tz);
+            if ($dt instanceof DateTimeImmutable) {
+                return $dt->format('Y-m-d H:i');
+            }
+        }
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $cleaned)) {
+            $dt = DateTimeImmutable::createFromFormat('!Y-m-d', $cleaned, $tz);
+            if ($dt instanceof DateTimeImmutable) {
+                return $dt->format('Y-m-d');
+            }
+        }
+
+        $dt = date_create_immutable($cleaned, $tz);
+        if ($dt instanceof DateTimeImmutable) {
+            $hasTime = (bool) preg_match('/\d{1,2}:\d{2}/', $cleaned);
+            return $dt->format($hasTime ? 'Y-m-d H:i' : 'Y-m-d');
+        }
+    }
+
+    return '';
+}
+
+/**
+ * Check whether a normalized payment reference number already exists in orders (any status).
+ */
+function ocrIsDuplicateRefNo(PDO $pdo, string $normalizedRef): bool
+{
+    if ($normalizedRef === '') {
+        return false;
+    }
+
+    $stmt = $pdo->prepare(
+        "SELECT 1 FROM orders
+         WHERE UPPER(REGEXP_REPLACE(COALESCE(ref_no, ''), '[^A-Za-z0-9]', '', 'g')) = :ref_norm
+         LIMIT 1"
+    );
+    $stmt->execute([':ref_norm' => $normalizedRef]);
+    return (bool) $stmt->fetchColumn();
+}
+
+/**
  * Send receipt image to a specific Gemini Flash model and decode the JSON body.
  */
 function callGeminiReceiptModel(string $model, string $apiKey, string $mimeType, string $base64Data, string $prompt): array
@@ -165,7 +223,8 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     ocrRespond(405, ['success' => false, 'fallback' => false, 'error' => 'Method not allowed.']);
 }
 
-$mode = ($_POST['mode'] ?? 'payment') === 'refund' ? 'refund' : 'payment';
+$rawMode = $_POST['mode'] ?? 'payment';
+$mode = in_array($rawMode, ['refund', 'check_ref'], true) ? $rawMode : 'payment';
 
 if ($mode === 'refund') {
     if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
@@ -176,6 +235,16 @@ if ($mode === 'refund') {
     if (!$hasCustomerContext) {
         ocrRespond(403, ['success' => false, 'fallback' => false, 'error' => 'Active checkout session required.']);
     }
+}
+
+if ($mode === 'check_ref') {
+    $normRef = ocrNormalizeRefNo((string) ($_POST['ref_no'] ?? ''));
+    $isDuplicate = $normRef !== '' ? ocrIsDuplicateRefNo($pdo, $normRef) : false;
+    ocrRespond(200, [
+        'success' => true,
+        'ref_no' => $normRef,
+        'is_duplicate_ref' => $isDuplicate,
+    ]);
 }
 
 if (!function_exists('curl_init')) {
@@ -233,6 +302,7 @@ Inspect the image carefully and return ONLY a single valid JSON object with thes
   "amount": string,
   "sent_to": string,
   "receipt_dt": string,
+  "receipt_iso": string,
   "raw_text": string
 }
 
@@ -242,7 +312,8 @@ Rules:
 - "ref_no": exact transaction Reference Number / Ref No. / Transaction ID / Trace No. / Confirmation No. with spaces removed (uppercase alphanumeric). NEVER return a mobile phone number (09XXXXXXXXX or +639XXXXXXXXX) as "ref_no". Use "" if not clearly visible.
 - "amount": exact primary amount sent or paid as plain numeric string with 2 decimals (e.g. "1250.00"), ignoring transfer fees, convenience fees, discounts, or remaining wallet balance. Use "" if not clearly visible.
 - "sent_to": recipient mobile number or recipient account number shown under Sent To / Recipient / Mobile Number / Account Number (if Philippine mobile number, return normalized 11 digits starting with 09 like "09073595023" when unmasked; if partially masked or not visible, keep what is visible or "").
-- "receipt_dt": exact date and time string printed on the receipt (e.g. "Nov 25, 2026, 2:15 PM"), else "".
+- "receipt_dt": exact date and time string printed on the receipt (e.g. "Nov 26, 2026, 2:15 PM"), else "".
+- "receipt_iso": transaction timestamp converted to 24-hour "YYYY-MM-DD HH:MM" (or "YYYY-MM-DD" if time is not shown), else "".
 - "raw_text": faithful plain-text transcription of the main readable lines on the receipt separated by newlines.
 PROMPT;
 
@@ -294,13 +365,19 @@ if ($normalizedSentTo === '' && $rawText !== '') {
     }
 }
 
+$refNoNorm = ocrNormalizeRefNo((string) ($parsedData['ref_no'] ?? ''));
+$receiptDt = trim((string) ($parsedData['receipt_dt'] ?? ''));
+$receiptIso = ocrNormalizeReceiptIso(trim((string) ($parsedData['receipt_iso'] ?? '')), $receiptDt);
+
 $outData = [
     'is_receipt' => isset($parsedData['is_receipt']) ? (bool) $parsedData['is_receipt'] : true,
     'provider' => trim((string) ($parsedData['provider'] ?? '')),
-    'ref_no' => ocrNormalizeRefNo((string) ($parsedData['ref_no'] ?? '')),
+    'ref_no' => $refNoNorm,
+    'is_duplicate_ref' => ($mode === 'payment' && $refNoNorm !== '') ? ocrIsDuplicateRefNo($pdo, $refNoNorm) : false,
     'amount' => ocrNormalizeAmount($parsedData['amount'] ?? ''),
     'sent_to' => $normalizedSentTo !== '' ? $normalizedSentTo : (preg_replace('/\D+/', '', $sentToRaw) !== '' ? $sentToRaw : ''),
-    'receipt_dt' => trim((string) ($parsedData['receipt_dt'] ?? '')),
+    'receipt_dt' => $receiptDt,
+    'receipt_iso' => $receiptIso,
     'raw_text' => $rawText,
 ];
 

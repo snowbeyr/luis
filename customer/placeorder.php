@@ -121,26 +121,154 @@ if (isset($_POST['place_order'])) {
     $proof_of_payment = null;
     
     // Retrieve OCR Extracted Values
-    $ref_no = !empty($_POST['ref_no']) ? substr(trim($_POST['ref_no']), 0, 50) : null;
-    $receiptdt = !empty($_POST['receiptdt']) ? trim($_POST['receiptdt']) : null;
-    $sent_to = !empty($_POST['sent_to']) ? trim($_POST['sent_to']) : null;
-    $detected_paid_amount = !empty($_POST['paid_amount']) ? (float)$_POST['paid_amount'] : 0;
+    $ref_no_raw = !empty($_POST['ref_no']) ? trim((string) $_POST['ref_no']) : '';
+    $ref_norm = strtoupper((string) preg_replace('/[^A-Za-z0-9]/', '', $ref_no_raw));
+    $ref_no = $ref_norm !== '' ? substr($ref_norm, 0, 50) : null;
+    $receiptdt = !empty($_POST['receiptdt']) ? trim((string) $_POST['receiptdt']) : null;
+    $receipt_iso_post = !empty($_POST['receipt_iso']) ? trim((string) $_POST['receipt_iso']) : '';
+    $sent_to_raw = !empty($_POST['sent_to']) ? trim((string) $_POST['sent_to']) : '';
+    $sent_to = $sent_to_raw !== '' ? $sent_to_raw : null;
+    $detected_paid_amount = !empty($_POST['paid_amount']) ? (float)$_POST['paid_amount'] : 0.0;
 
-    // ONLINE PAYMENTS VALIDATION (GCash / Maya)
-    if (in_array($payment_method, ['GCash', 'Maya'])) {
-        // Ensure customer uploaded a proof of payment screenshot
-        if (empty($_FILES['proof_of_payment']['name'])) {
-            $_SESSION['app_modal'] = [
-                'title' => 'Order Failed',
-                'message' => 'Please upload your proof of payment receipt screenshot before submitting.',
-                'type' => 'danger'
-            ];
-            header("Location: placeorder.php" . ($checkout_source === 'buynow' ? '?from=buynow' : ''));
-            exit();
+    $redirectOrderError = function (string $title, string $message) use ($checkout_source): void {
+        $_SESSION['app_modal'] = [
+            'title' => $title,
+            'message' => $message,
+            'type' => 'danger',
+        ];
+        header("Location: placeorder.php" . ($checkout_source === 'buynow' ? '?from=buynow' : ''));
+        exit();
+    };
+
+    // ONLINE PAYMENTS STRICT VALIDATION (GCash / Maya)
+    if (in_array($payment_method, ['GCash', 'Maya'], true)) {
+        // 1. Ensure customer uploaded a valid image proof of payment
+        if (
+            empty($_FILES['proof_of_payment']['name']) ||
+            !isset($_FILES['proof_of_payment']['error']) ||
+            $_FILES['proof_of_payment']['error'] !== UPLOAD_ERR_OK ||
+            empty($_FILES['proof_of_payment']['tmp_name']) ||
+            !file_exists($_FILES['proof_of_payment']['tmp_name'])
+        ) {
+            $redirectOrderError('Payment Proof Required', 'Please upload your proof of payment receipt screenshot before submitting.');
         }
+
+        $allowed_types = ['image/jpeg', 'image/png', 'image/jpg', 'image/webp'];
+        $file_mime_check = mime_content_type($_FILES['proof_of_payment']['tmp_name']);
+        if (!in_array($file_mime_check, $allowed_types, true)) {
+            $redirectOrderError('Invalid File Format', 'Please upload a valid receipt image (JPEG, PNG, or WebP).');
+        }
+
+        // 2. Enforce exact payment amount (reject both underpayment and overpayment)
+        $expected_amount = ($grand_total >= 5000 && $payment_scheme === '50_percent')
+            ? round($grand_total * 0.5, 2)
+            : round($grand_total, 2);
+
+        if ($detected_paid_amount <= 0 || abs($detected_paid_amount - $expected_amount) > 0.05) {
+            $redirectOrderError(
+                'Invalid Payment Amount',
+                'The receipt payment amount must exactly match the required amount of ₱' . number_format($expected_amount, 2) . '. Underpayments and overpayments cannot proceed.'
+            );
+        }
+
+        // 3. Enforce strict recipient number matching the selected payment method
+        $expected_recipient = ($payment_method === 'GCash') ? '09073595023' : '09682770376';
+        $sent_digits = preg_replace('/\D+/', '', $sent_to_raw);
+        if (is_string($sent_digits)) {
+            if (strlen($sent_digits) === 12 && strpos($sent_digits, '639') === 0) {
+                $sent_digits = '0' . substr($sent_digits, 2);
+            } elseif (strlen($sent_digits) === 10 && strpos($sent_digits, '9') === 0) {
+                $sent_digits = '0' . $sent_digits;
+            }
+        } else {
+            $sent_digits = '';
+        }
+
+        if ($sent_digits !== $expected_recipient) {
+            $redirectOrderError(
+                'Incorrect Recipient Number',
+                'You selected ' . $payment_method . '. Payment must be sent strictly to our official ' . $payment_method . ' number (' . $expected_recipient . ').'
+            );
+        }
+        $sent_to = $sent_digits;
+
+        // 4. Enforce receipt date/time is within today (Asia/Manila) and not in the future
+        $manilaTz = new DateTimeZone('Asia/Manila');
+        $nowManila = new DateTimeImmutable('now', $manilaTz);
+        $parsedReceiptDt = null;
+        $receiptHasTime = false;
+
+        foreach ([$receipt_iso_post, (string) ($receiptdt ?? '')] as $dtCandidate) {
+            $dtCandidate = trim($dtCandidate);
+            if ($dtCandidate === '') {
+                continue;
+            }
+            $cleanedDt = preg_replace('/(\d+)(st|nd|rd|th)\b/i', '$1', $dtCandidate);
+            $cleanedDt = preg_replace('/\s+/', ' ', str_replace(['•', '|'], ' ', (string) $cleanedDt));
+            if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $cleanedDt)) {
+                $tmpDt = DateTimeImmutable::createFromFormat('!Y-m-d', $cleanedDt, $manilaTz);
+                if ($tmpDt instanceof DateTimeImmutable) {
+                    $parsedReceiptDt = $tmpDt;
+                    $receiptHasTime = false;
+                    break;
+                }
+            }
+            $tmpDt = date_create_immutable($cleanedDt, $manilaTz);
+            if ($tmpDt instanceof DateTimeImmutable) {
+                $parsedReceiptDt = $tmpDt;
+                $receiptHasTime = (bool) preg_match('/\d{1,2}:\d{2}/', $cleanedDt);
+                break;
+            }
+        }
+
+        if (
+            !($parsedReceiptDt instanceof DateTimeImmutable) ||
+            $parsedReceiptDt->format('Y-m-d') !== $nowManila->format('Y-m-d') ||
+            ($receiptHasTime && $parsedReceiptDt->getTimestamp() > ($nowManila->getTimestamp() + 300))
+        ) {
+            $redirectOrderError(
+                'Invalid Receipt Date & Time',
+                'Your payment receipt must show today\'s date (' . $nowManila->format('M d, Y') . ') in Philippine time and must not be an older or future-dated transaction.'
+            );
+        }
+
+        // 5. Enforce valid & unique reference number (block duplicates across all order statuses)
+        $ref_digits_only = preg_replace('/\D+/', '', $ref_norm);
+        $is_phone_ref = ($ref_digits_only === $ref_norm) && (
+            (strlen($ref_digits_only) === 11 && strpos($ref_digits_only, '09') === 0) ||
+            (strlen($ref_digits_only) === 12 && strpos($ref_digits_only, '639') === 0)
+        );
+        if ($ref_norm === '' || strlen($ref_norm) < 6 || ctype_alpha($ref_norm) || $is_phone_ref) {
+            $redirectOrderError(
+                'Missing Reference Number',
+                'A valid transaction reference number could not be verified from your receipt. Please upload a clearer receipt screenshot.'
+            );
+        }
+
+        try {
+            $dupStmt = $pdo->prepare(
+                "SELECT 1 FROM orders
+                 WHERE UPPER(REGEXP_REPLACE(COALESCE(ref_no, ''), '[^A-Za-z0-9]', '', 'g')) = :ref_norm
+                 LIMIT 1"
+            );
+            $dupStmt->execute([':ref_norm' => $ref_norm]);
+            if ($dupStmt->fetchColumn()) {
+                $redirectOrderError(
+                    'Duplicate Reference Number',
+                    'This reference number has already been used in a previous order. Please upload a new valid payment receipt.'
+                );
+            }
+        } catch (PDOException $e) {
+            error_log("Duplicate ref check error: " . $e->getMessage());
+            $redirectOrderError('Verification Error', 'Unable to verify your payment reference number right now. Please try again.');
+        }
+
         $paid_amount = $detected_paid_amount;
     } else {
         $paid_amount = 0;
+        $ref_no = null;
+        $receiptdt = null;
+        $sent_to = null;
     }
 
     // UPLOAD CUSTOMER PROOF OF PAYMENT DIRECTLY TO GOOGLE DRIVE / LOCAL FOLDER
@@ -188,6 +316,22 @@ if (isset($_POST['place_order'])) {
     try {
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $pdo->beginTransaction();
+
+        if (in_array($payment_method, ['GCash', 'Maya'], true) && $ref_no !== null) {
+            $dupTxStmt = $pdo->prepare(
+                "SELECT 1 FROM orders
+                 WHERE UPPER(REGEXP_REPLACE(COALESCE(ref_no, ''), '[^A-Za-z0-9]', '', 'g')) = :ref_norm
+                 LIMIT 1"
+            );
+            $dupTxStmt->execute([':ref_norm' => $ref_no]);
+            if ($dupTxStmt->fetchColumn()) {
+                $pdo->rollBack();
+                $redirectOrderError(
+                    'Duplicate Reference Number',
+                    'This reference number has already been used in a previous order. Please upload a new valid payment receipt.'
+                );
+            }
+        }
 
         // Insert order into database
         $order_query = "INSERT INTO orders 
@@ -807,6 +951,7 @@ if (isset($_POST['place_order'])) {
                         <input type="hidden" name="ref_no" id="ref_no_input">
                         <input type="hidden" name="paid_amount" id="paid_amount_input">
                         <input type="hidden" name="receiptdt" id="receiptdt_input">
+                        <input type="hidden" name="receipt_iso" id="receipt_iso_input">
                         <input type="hidden" name="sent_to" id="sent_to_input">
 
                         <!-- OCR Status Message Box -->
@@ -956,6 +1101,10 @@ function togglePaymentFields() {
             if (gcashCard) gcashCard.classList.add('d-none');
             if (mayaCard) mayaCard.classList.remove('d-none');
         }
+
+        if (proofInput && proofInput.files && proofInput.files.length > 0) {
+            processReceiptOCR(proofInput);
+        }
     } else if (selectedMethod === 'Cash on Delivery (COD)') {
         if (onlineFields) onlineFields.classList.add('d-none');
         if (codMessage) codMessage.classList.remove('d-none');
@@ -967,7 +1116,12 @@ function togglePaymentFields() {
         document.getElementById('ref_no_input').value = "";
         document.getElementById('paid_amount_input').value = "";
         document.getElementById('receiptdt_input').value = "";
+        const isoEl = document.getElementById('receipt_iso_input');
+        if (isoEl) isoEl.value = "";
         document.getElementById('sent_to_input').value = "";
+        const statusBox = document.getElementById('ocr_status');
+        if (statusBox) statusBox.classList.add('d-none');
+        if (typeof resetOcrValidationState === 'function') resetOcrValidationState();
     }
 }
 
@@ -1208,49 +1362,245 @@ async function callGeminiReceiptOCR(file, mode) {
     }
 }
 
-function parseReceiptTextFields(text, requiredAmount) {
+let ocrValidationState = {
+    scanning: false,
+    passed: false,
+    reasonTitle: 'Payment Receipt Verification Required',
+    reasonMessage: 'Please upload a valid payment receipt screenshot matching your selected payment method, amount, recipient, and today\'s date.'
+};
+
+function resetOcrValidationState(reasonTitle, reasonMessage) {
+    ocrValidationState = {
+        scanning: false,
+        passed: false,
+        reasonTitle: reasonTitle || 'Payment Receipt Verification Required',
+        reasonMessage: reasonMessage || 'Please upload a valid payment receipt screenshot before submitting your order.'
+    };
+}
+
+function getExpectedRecipientInfo() {
+    const selectedRadio = document.querySelector('input[name="payment_method"]:checked');
+    const method = selectedRadio ? selectedRadio.value : '';
+    if (method === 'GCash') return { method: 'GCash', expectedNumber: '09073595023' };
+    if (method === 'Maya') return { method: 'Maya', expectedNumber: '09682770376' };
+    return { method: method, expectedNumber: '' };
+}
+
+function normalizePhMobileClient(raw) {
+    let digits = String(raw || '').replace(/\D/g, '');
+    if (digits.startsWith('63') && digits.length === 12) {
+        digits = '0' + digits.substring(2);
+    } else if (digits.length === 10 && digits.startsWith('9')) {
+        digits = '0' + digits;
+    }
+    return (digits.length === 11 && digits.startsWith('09')) ? digits : '';
+}
+
+async function checkDuplicateRefClient(refNo) {
+    if (!refNo) return false;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    try {
+        const formData = new FormData();
+        formData.append('mode', 'check_ref');
+        formData.append('ref_no', refNo);
+
+        const response = await fetch('../ocr-receipt.php', {
+            method: 'POST',
+            body: formData,
+            signal: controller.signal
+        });
+        const payload = await response.json().catch(() => null);
+        return Boolean(response.ok && payload && payload.success && payload.is_duplicate_ref);
+    } catch (e) {
+        console.warn("Duplicate ref check warning:", e);
+        return false;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function parseManilaDateCandidate(rawStr) {
+    if (!rawStr) return null;
+    const str = String(rawStr)
+        .replace(/(\d+)(st|nd|rd|th)\b/gi, '$1')
+        .replace(/[•|]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!str) return null;
+
+    const months = {
+        jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3,
+        apr: 4, april: 4, may: 5, jun: 6, june: 6,
+        jul: 7, july: 7, aug: 8, august: 8, sep: 9, sept: 9, september: 9,
+        oct: 10, october: 10, nov: 11, november: 11, dec: 12, december: 12
+    };
+
+    const makeManila = (year, month, day, hour, minute, hasTime) => {
+        if (year < 2020 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31) return null;
+        const h = hasTime ? (hour || 0) : 0;
+        const min = hasTime ? (minute || 0) : 0;
+        if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+
+        // Validate real calendar day without local timezone drift
+        const probe = new Date(Date.UTC(year, month - 1, day));
+        if (probe.getUTCFullYear() !== year || (probe.getUTCMonth() + 1) !== month || probe.getUTCDate() !== day) {
+            return null;
+        }
+
+        const pad2 = n => String(n).padStart(2, '0');
+        const dateStr = `${year}-${pad2(month)}-${pad2(day)}`;
+        const iso = hasTime ? `${dateStr} ${pad2(h)}:${pad2(min)}` : dateStr;
+        const epochMs = Date.UTC(year, month - 1, day, h - 8, min, 0);
+        return { dateStr, iso, hasTime, epochMs };
+    };
+
+    const parseTimePart = (tStr) => {
+        if (!tStr) return { hasTime: false, hour: 0, minute: 0 };
+        const tm = tStr.match(/(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)?/i);
+        if (!tm) return { hasTime: false, hour: 0, minute: 0 };
+        let h = parseInt(tm[1], 10);
+        const min = parseInt(tm[2], 10);
+        const mer = (tm[3] || '').toUpperCase();
+        if (mer === 'PM' && h < 12) h += 12;
+        if (mer === 'AM' && h === 12) h = 0;
+        return { hasTime: true, hour: h, minute: min };
+    };
+
+    // 1. ISO format YYYY-MM-DD [HH:MM]
+    let m = str.match(/(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:AM|PM))?))?/i);
+    if (m) {
+        const tp = parseTimePart(m[4]);
+        const res = makeManila(parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10), tp.hour, tp.minute, tp.hasTime);
+        if (res) return res;
+    }
+
+    // 2. Month DD, YYYY [HH:MM AM/PM]
+    m = str.match(/\b([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})(?:[\s,]+(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?))?/i);
+    if (m && months[m[1].toLowerCase()]) {
+        const tp = parseTimePart(m[4]);
+        const res = makeManila(parseInt(m[3], 10), months[m[1].toLowerCase()], parseInt(m[2], 10), tp.hour, tp.minute, tp.hasTime);
+        if (res) return res;
+    }
+
+    // 3. DD Month YYYY [HH:MM AM/PM]
+    m = str.match(/\b(\d{1,2})\s+([A-Za-z]+),?\s+(\d{4})(?:[\s,]+(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?))?/i);
+    if (m && months[m[2].toLowerCase()]) {
+        const tp = parseTimePart(m[4]);
+        const res = makeManila(parseInt(m[3], 10), months[m[2].toLowerCase()], parseInt(m[1], 10), tp.hour, tp.minute, tp.hasTime);
+        if (res) return res;
+    }
+
+    // 4. Numeric MM/DD/YYYY or DD/MM/YYYY [HH:MM AM/PM]
+    m = str.match(/\b(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{2,4})(?:[\s,]+(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?))?/i);
+    if (m) {
+        let p1 = parseInt(m[1], 10);
+        let p2 = parseInt(m[2], 10);
+        let yr = parseInt(m[3], 10);
+        if (yr < 100) yr += 2000;
+        let mo = p1;
+        let dy = p2;
+        if (p1 > 12 && p2 <= 12) {
+            dy = p1;
+            mo = p2;
+        }
+        const tp = parseTimePart(m[4]);
+        const res = makeManila(yr, mo, dy, tp.hour, tp.minute, tp.hasTime);
+        if (res) return res;
+    }
+
+    return null;
+}
+
+function validateReceiptDateManila(receiptIso, receiptDt, rawText) {
+    const todayManila = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Manila',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }).format(new Date());
+
+    let parsed = parseManilaDateCandidate(receiptIso) || parseManilaDateCandidate(receiptDt);
+    if (!parsed && rawText) {
+        const lines = rawText.split(/\n+/);
+        for (const line of lines) {
+            parsed = parseManilaDateCandidate(line);
+            if (parsed) break;
+        }
+    }
+
+    if (!parsed) {
+        return {
+            valid: false,
+            iso: '',
+            reason: 'We could not verify a valid transaction date from your receipt. Please upload a clear screenshot showing today\'s transaction date.'
+        };
+    }
+
+    if (parsed.dateStr !== todayManila) {
+        return {
+            valid: false,
+            iso: parsed.iso,
+            reason: `This receipt is dated ${parsed.dateStr}, which is not today (${todayManila}, Philippine time). Only receipts from today are accepted.`
+        };
+    }
+
+    if (parsed.hasTime && parsed.epochMs > (Date.now() + 5 * 60 * 1000)) {
+        return {
+            valid: false,
+            iso: parsed.iso,
+            reason: 'The receipt timestamp appears to be in the future. Please upload a valid transaction receipt from today.'
+        };
+    }
+
+    return { valid: true, iso: parsed.iso, reason: '' };
+}
+
+function parseReceiptTextFields(text, requiredAmount, expectedRecipient) {
     const officialNumbers = ['09073595023', '09682770376'];
     let detectedSentTo = '';
-    let isOfficialRecipient = false;
+    let isExpectedRecipient = false;
 
     const phoneRegex = /(?:\+?63\s*9\d{2}[\s\-]?\d{3}[\s\-]?\d{4}|09\d{2}[\s\-]?\d{3}[\s\-]?\d{4}|\b9\d{9}\b)/g;
     let allPhoneMatches = (text || '').match(phoneRegex) || [];
 
     let candidatePhones = [];
     for (let rawP of allPhoneMatches) {
-        let digits = rawP.replace(/\D/g, '');
-        if (digits.startsWith('63') && digits.length === 12) {
-            digits = '0' + digits.substring(2);
-        } else if (digits.length === 10 && digits.startsWith('9')) {
-            digits = '0' + digits;
+        let digits = normalizePhMobileClient(rawP);
+        if (digits && !candidatePhones.includes(digits)) {
+            candidatePhones.push(digits);
         }
-        if (digits.length === 11 && digits.startsWith('09')) {
-            if (!candidatePhones.includes(digits)) {
-                candidatePhones.push(digits);
+    }
+
+    const cleanDigitsOnly = (text || '').replace(/\D/g, '');
+    if (expectedRecipient) {
+        const exp63 = '63' + expectedRecipient.substring(1);
+        if (
+            candidatePhones.includes(expectedRecipient) ||
+            cleanDigitsOnly.includes(expectedRecipient) ||
+            cleanDigitsOnly.includes(exp63)
+        ) {
+            detectedSentTo = expectedRecipient;
+            isExpectedRecipient = true;
+        }
+    }
+
+    if (!isExpectedRecipient) {
+        for (let offNum of officialNumbers) {
+            if (offNum === expectedRecipient) continue;
+            const off63 = '63' + offNum.substring(1);
+            if (
+                candidatePhones.includes(offNum) ||
+                cleanDigitsOnly.includes(offNum) ||
+                cleanDigitsOnly.includes(off63)
+            ) {
+                detectedSentTo = offNum;
+                break;
             }
         }
     }
 
-    for (let p of candidatePhones) {
-        if (officialNumbers.includes(p)) {
-            detectedSentTo = p;
-            isOfficialRecipient = true;
-            break;
-        }
-    }
-
-    if (!isOfficialRecipient && text) {
-        const cleanDigitsOnly = text.replace(/\D/g, '');
-        if (cleanDigitsOnly.includes('09073595023') || cleanDigitsOnly.includes('639073595023')) {
-            detectedSentTo = '09073595023';
-            isOfficialRecipient = true;
-        } else if (cleanDigitsOnly.includes('09682770376') || cleanDigitsOnly.includes('639682770376')) {
-            detectedSentTo = '09682770376';
-            isOfficialRecipient = true;
-        }
-    }
-
-    if (!isOfficialRecipient && candidatePhones.length > 0) {
+    if (!detectedSentTo && candidatePhones.length > 0) {
         detectedSentTo = candidatePhones[0];
     }
 
@@ -1260,30 +1610,45 @@ function parseReceiptTextFields(text, requiredAmount) {
     let detectedDateTime = '';
     let dateTimeMatch = (text || '').match(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}(?:\s*,?\s*\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?)?\b/i);
     if (!dateTimeMatch) {
+        dateTimeMatch = (text || '').match(/\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*,?\s+\d{4}(?:\s*,?\s*\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?)?\b/i);
+    }
+    if (!dateTimeMatch) {
         dateTimeMatch = (text || '').match(/(?:\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4})\s*(?:\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?)?/i);
     }
     if (dateTimeMatch) {
         detectedDateTime = dateTimeMatch[0].trim();
     }
 
-    return { detectedRef, detectedAmount, detectedDateTime, detectedSentTo, isOfficialRecipient };
+    return { detectedRef, detectedAmount, detectedDateTime, detectedSentTo, isExpectedRecipient };
 }
 
 async function processReceiptOCR(fileInput) {
     const file = fileInput.files[0];
-    if (!file) return;
+    if (!file) {
+        resetOcrValidationState();
+        return;
+    }
 
     const statusBox = document.getElementById('ocr_status');
     const statusText = document.getElementById('ocr_status_text');
     const refInput = document.getElementById('ref_no_input');
     const paidInput = document.getElementById('paid_amount_input');
     const dtInput = document.getElementById('receiptdt_input');
+    const isoInput = document.getElementById('receipt_iso_input');
     const sentToInput = document.getElementById('sent_to_input');
 
     refInput.value = "";
     paidInput.value = "";
     dtInput.value = "";
+    if (isoInput) isoInput.value = "";
     sentToInput.value = "";
+
+    ocrValidationState = {
+        scanning: true,
+        passed: false,
+        reasonTitle: 'Receipt Verification In Progress',
+        reasonMessage: 'Please wait while we finish verifying your payment receipt.'
+    };
 
     statusBox.classList.remove('d-none', 'alert-success', 'alert-danger', 'alert-warning');
     statusBox.classList.add('alert-info');
@@ -1303,17 +1668,37 @@ async function processReceiptOCR(fileInput) {
         return h;
     };
 
+    const failValidation = (alertClass, iconClass, title, message, detailsHtml) => {
+        ocrValidationState = {
+            scanning: false,
+            passed: false,
+            reasonTitle: title,
+            reasonMessage: message
+        };
+        statusBox.classList.remove('alert-info', 'alert-success', 'alert-danger', 'alert-warning');
+        statusBox.classList.add(alertClass);
+        statusText.innerHTML = `
+            <div class="fw-bold fs-6 mb-1 ${alertClass === 'alert-danger' ? 'text-danger' : 'text-dark'}">
+                <i class="bi ${iconClass} me-1"></i>${escapeOcrHtml(title)}
+            </div>
+            <div>${escapeOcrHtml(message)}</div>
+            ${detailsHtml || ''}
+        `;
+    };
+
     try {
-        const officialNumbers = ['09073595023', '09682770376'];
+        const { method: selectedMethod, expectedNumber: expectedRecipient } = getExpectedRecipientInfo();
         const requiredAmount = getRequiredPaymentAmount();
 
         let text = '';
         let detectedRef = '';
         let detectedAmount = '';
         let detectedDateTime = '';
+        let detectedReceiptIso = '';
         let detectedSentTo = '';
-        let isOfficialRecipient = false;
+        let isExpectedRecipient = false;
         let isReceipt = true;
+        let isDuplicateRef = false;
 
         try {
             const geminiRes = await callGeminiReceiptOCR(file, 'payment');
@@ -1321,28 +1706,25 @@ async function processReceiptOCR(fileInput) {
             text = (gData.raw_text || '').trim();
             isReceipt = gData.is_receipt !== false;
 
-            const parsedFromText = parseReceiptTextFields(text, requiredAmount);
+            const parsedFromText = parseReceiptTextFields(text, requiredAmount, expectedRecipient);
             detectedRef = (gData.ref_no || '').trim() || parsedFromText.detectedRef;
             detectedAmount = (gData.amount || '').trim() || parsedFromText.detectedAmount;
             detectedDateTime = (gData.receipt_dt || '').trim() || parsedFromText.detectedDateTime;
+            detectedReceiptIso = (gData.receipt_iso || '').trim();
 
-            let gSentDigits = String(gData.sent_to || '').replace(/\D/g, '');
-            if (gSentDigits.startsWith('63') && gSentDigits.length === 12) {
-                gSentDigits = '0' + gSentDigits.substring(2);
-            } else if (gSentDigits.length === 10 && gSentDigits.startsWith('9')) {
-                gSentDigits = '0' + gSentDigits;
+            if (gData.ref_no) {
+                isDuplicateRef = Boolean(gData.is_duplicate_ref);
+            } else if (detectedRef) {
+                isDuplicateRef = await checkDuplicateRefClient(detectedRef);
             }
 
-            if (officialNumbers.includes(gSentDigits)) {
+            const gSentDigits = normalizePhMobileClient(gData.sent_to || '');
+            if (gSentDigits) {
                 detectedSentTo = gSentDigits;
-                isOfficialRecipient = true;
-            } else if (parsedFromText.isOfficialRecipient) {
-                detectedSentTo = parsedFromText.detectedSentTo;
-                isOfficialRecipient = true;
+                isExpectedRecipient = Boolean(expectedRecipient && gSentDigits === expectedRecipient);
             } else {
-                detectedSentTo = (gSentDigits.length === 11 && gSentDigits.startsWith('09'))
-                    ? gSentDigits
-                    : ((gData.sent_to || '').trim() || parsedFromText.detectedSentTo);
+                detectedSentTo = parsedFromText.detectedSentTo || (gData.sent_to || '').trim();
+                isExpectedRecipient = parsedFromText.isExpectedRecipient;
             }
 
             console.log("Gemini OCR Extracted (" + (geminiRes.model || 'gemini') + "):", gData);
@@ -1366,92 +1748,124 @@ async function processReceiptOCR(fileInput) {
             text = result.data.text || '';
             console.log("Tesseract Fallback OCR Raw Text:\n", text);
 
-            const parsedFromText = parseReceiptTextFields(text, requiredAmount);
+            const parsedFromText = parseReceiptTextFields(text, requiredAmount, expectedRecipient);
             detectedRef = parsedFromText.detectedRef;
             detectedAmount = parsedFromText.detectedAmount;
             detectedDateTime = parsedFromText.detectedDateTime;
             detectedSentTo = parsedFromText.detectedSentTo;
-            isOfficialRecipient = parsedFromText.isOfficialRecipient;
+            isExpectedRecipient = parsedFromText.isExpectedRecipient;
+
+            if (detectedRef) {
+                isDuplicateRef = await checkDuplicateRefClient(detectedRef);
+            }
+        }
+
+        const dateCheck = validateReceiptDateManila(detectedReceiptIso, detectedDateTime, text);
+        if (!detectedDateTime && dateCheck.iso) {
+            detectedDateTime = dateCheck.iso;
         }
 
         // Populate hidden inputs with detected values so backend receives them
         if (detectedRef) refInput.value = detectedRef;
         if (detectedAmount) paidInput.value = detectedAmount;
         if (detectedDateTime) dtInput.value = detectedDateTime;
+        if (isoInput && dateCheck.iso) isoInput.value = dateCheck.iso;
         if (detectedSentTo) sentToInput.value = detectedSentTo;
 
-        // Evaluate Recipient Number & Receipt Readability
-        let isIncorrectRecipient = !isOfficialRecipient;
-        let hasReadableReceiptContent = (text.trim().length >= 15) || Boolean(detectedRef || detectedAmount || detectedSentTo);
+        const detailsHtml = renderDetailsSummary(detectedRef, detectedAmount, requiredAmount, detectedSentTo, detectedDateTime);
+        const hasReadableReceiptContent = (text.trim().length >= 15) || Boolean(detectedRef || detectedAmount || detectedSentTo);
 
-        // Evaluate the 4 Validation States
-        statusBox.classList.remove('alert-info', 'alert-success', 'alert-danger', 'alert-warning');
-
+        // Strict Blocking Validation Checks
         if (!isReceipt || (!hasReadableReceiptContent && !detectedSentTo)) {
-            // STATE 3: Unable to Read Receipt
-            statusBox.classList.add('alert-warning');
-            statusText.innerHTML = `
-                <div class="fw-bold fs-6 mb-1 text-dark">
-                    <i class="bi bi-question-circle-fill text-warning me-1"></i>Unable to Read Receipt
-                </div>
-                <div>We couldn't accurately read your receipt. Please make sure the uploaded image is clear and readable. Your payment will require manual verification. Our staff will also check whether the payment was sent to the correct account number displayed in our official QR code.</div>
-                ${renderDetailsSummary(detectedRef, detectedAmount, requiredAmount, detectedSentTo, detectedDateTime)}
-            `;
-        } else if (isIncorrectRecipient) {
-            // STATE 4: Incorrect Recipient Number
-            statusBox.classList.add('alert-warning');
-            statusText.innerHTML = `
-                <div class="fw-bold fs-6 mb-1 text-dark">
-                    <i class="bi bi-exclamation-diamond-fill text-warning me-1"></i>Incorrect Recipient Number
-                </div>
-                <div>Your payment appears to have been sent to a different account number instead of the official account number displayed in our QR code. Payments sent to unauthorized account numbers cannot be automatically verified and will require manual review by our staff before your order can be approved.</div>
-                ${renderDetailsSummary(detectedRef, detectedAmount, requiredAmount, detectedSentTo, detectedDateTime)}
-            `;
+            failValidation(
+                'alert-danger',
+                'bi-question-circle-fill text-danger',
+                'Unable to Read Receipt',
+                'We could not verify a valid payment receipt from this image. Please upload a clear screenshot before placing your order.',
+                detailsHtml
+            );
+        } else if (!expectedRecipient || !isExpectedRecipient) {
+            const methodLabel = selectedMethod || 'selected payment method';
+            const expectedText = expectedRecipient ? `our official ${methodLabel} number (${expectedRecipient})` : 'our official account number';
+            failValidation(
+                'alert-danger',
+                'bi-exclamation-diamond-fill text-danger',
+                'Incorrect Recipient Number',
+                `You selected ${methodLabel}, so the receipt must show payment sent strictly to ${expectedText}. Please upload the correct receipt to continue.`,
+                detailsHtml
+            );
+        } else if (!detectedRef) {
+            failValidation(
+                'alert-danger',
+                'bi-file-earmark-x-fill text-danger',
+                'Missing Reference Number',
+                'No valid transaction reference number was detected on the receipt. Please upload a clearer receipt screenshot that shows the reference number.',
+                detailsHtml
+            );
+        } else if (isDuplicateRef) {
+            failValidation(
+                'alert-danger',
+                'bi-shield-exclamation text-danger',
+                'Duplicate Reference Number',
+                'This reference number has already been used for a previous order. Reusing receipts or reference numbers is not allowed.',
+                detailsHtml
+            );
+        } else if (!dateCheck.valid) {
+            failValidation(
+                'alert-danger',
+                'bi-calendar-x-fill text-danger',
+                'Invalid Receipt Date & Time',
+                dateCheck.reason,
+                detailsHtml
+            );
         } else if (!detectedAmount || parseFloat(detectedAmount) <= 0) {
-            // STATE 3: Unable to Read Receipt
-            statusBox.classList.add('alert-warning');
-            statusText.innerHTML = `
-                <div class="fw-bold fs-6 mb-1 text-dark">
-                    <i class="bi bi-question-circle-fill text-warning me-1"></i>Unable to Read Receipt
-                </div>
-                <div>We couldn't accurately read your receipt. Please make sure the uploaded image is clear and readable. Your payment will require manual verification. Our staff will also check whether the payment was sent to the correct account number displayed in our official QR code.</div>
-                ${renderDetailsSummary(detectedRef, detectedAmount, requiredAmount, detectedSentTo, detectedDateTime)}
-            `;
+            failValidation(
+                'alert-danger',
+                'bi-exclamation-circle-fill text-danger',
+                'Unable to Read Payment Amount',
+                'We could not read the payment amount from your receipt. Please upload a clearer screenshot to continue.',
+                detailsHtml
+            );
         } else {
             const parsedAmount = parseFloat(detectedAmount);
-            if (Math.abs(parsedAmount - requiredAmount) <= 0.05) {
-                // STATE 1: Exact Amount Detected
+            if (Math.abs(parsedAmount - requiredAmount) > 0.05) {
+                const reqFormatted = requiredAmount.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                failValidation(
+                    'alert-danger',
+                    'bi-exclamation-triangle-fill text-danger',
+                    'Amount Mismatch Detected',
+                    `The detected payment amount does not match the required amount of ₱${reqFormatted}. Both underpayments and overpayments cannot proceed.`,
+                    detailsHtml
+                );
+            } else {
+                // ALL CHECKS PASSED
+                ocrValidationState = {
+                    scanning: false,
+                    passed: true,
+                    reasonTitle: '',
+                    reasonMessage: ''
+                };
+                statusBox.classList.remove('alert-info', 'alert-warning', 'alert-danger');
                 statusBox.classList.add('alert-success');
                 statusText.innerHTML = `
                     <div class="fw-bold fs-6 mb-1 text-success">
-                        <i class="bi bi-check-circle-fill me-1"></i>Exact Amount Detected
+                        <i class="bi bi-check-circle-fill me-1"></i>Payment Receipt Verified
                     </div>
-                    <div>Your payment amount matches the expected amount. Please ensure that your payment was sent to the correct account number displayed in our official QR code. Our staff will verify your payment before approving your order.</div>
-                    ${renderDetailsSummary(detectedRef, detectedAmount, requiredAmount, detectedSentTo, detectedDateTime)}
-                `;
-            } else {
-                // STATE 2: Amount Mismatch Detected
-                statusBox.classList.add('alert-warning');
-                statusText.innerHTML = `
-                    <div class="fw-bold fs-6 mb-1 text-dark">
-                        <i class="bi bi-exclamation-triangle-fill text-warning me-1"></i>Amount Mismatch Detected
-                    </div>
-                    <div>The detected payment amount does not match the expected amount. You may still submit your order, but our staff will manually review your payment before approval. Please also ensure that the payment was sent to the correct account number displayed in our official QR code.</div>
-                    ${renderDetailsSummary(detectedRef, detectedAmount, requiredAmount, detectedSentTo, detectedDateTime)}
+                    <div>Your receipt matches the required amount, recipient (${escapeOcrHtml(selectedMethod)}), today's date, and a unique reference number. You may now confirm and place your order.</div>
+                    ${detailsHtml}
                 `;
             }
         }
 
     } catch (error) {
         console.error("OCR Reading Error:", error);
-        statusBox.classList.remove('alert-info', 'alert-success', 'alert-danger');
-        statusBox.classList.add('alert-warning');
-        statusText.innerHTML = `
-            <div class="fw-bold fs-6 mb-1 text-dark">
-                <i class="bi bi-question-circle-fill text-warning me-1"></i>Unable to Read Receipt
-            </div>
-            <div>We couldn't accurately read your receipt. Please make sure the uploaded image is clear and readable. Your payment will require manual verification. Our staff will also check whether the payment was sent to the correct account number displayed in our official QR code.</div>
-        `;
+        failValidation(
+            'alert-danger',
+            'bi-question-circle-fill text-danger',
+            'Unable to Read Receipt',
+            'An error occurred while reading your receipt. Please upload a clearer screenshot before placing your order.',
+            ''
+        );
     }
 }
 
@@ -1517,8 +1931,35 @@ document.querySelector('form').addEventListener('submit', function(e) {
             e.preventDefault();
             showAppAlert("Please upload your proof of payment receipt before submitting your order.", {
                 title: 'Payment Proof Required',
-                type: 'warning'
+                type: 'warning',
+                onClose: function () {
+                    proofInput?.focus();
+                }
             });
+            return false;
+        }
+
+        if (ocrValidationState.scanning) {
+            e.preventDefault();
+            showAppAlert("Your payment receipt is still being verified. Please wait a moment before confirming your order.", {
+                title: 'Verification In Progress',
+                type: 'info'
+            });
+            return false;
+        }
+
+        if (!ocrValidationState.passed) {
+            e.preventDefault();
+            showAppAlert(
+                ocrValidationState.reasonMessage || "Your payment receipt did not pass verification. Please upload a valid receipt screenshot.",
+                {
+                    title: ocrValidationState.reasonTitle || 'Receipt Verification Failed',
+                    type: 'danger',
+                    onClose: function () {
+                        proofInput?.focus();
+                    }
+                }
+            );
             return false;
         }
     }
