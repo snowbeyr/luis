@@ -678,7 +678,7 @@ document.getElementById('btnVerify').addEventListener('click', function() {
     const formBodyWrapper = document.getElementById('formBodyWrapper');
 
     if(!orderId || !email) {
-        alert("Please enter both Order ID and Email address.");
+        showAppAlert("Please enter both Order ID and Email address.", { title: 'Missing Information', type: 'warning' });
         return;
     }
 
@@ -743,7 +743,7 @@ document.getElementById('btnVerify').addEventListener('click', function() {
     })
     .catch(err => {
         console.error(err);
-        alert("An error occurred during verification lookup.");
+        showAppAlert("An error occurred during verification lookup. Please try again.", { title: 'Verification Error', type: 'danger' });
     });
 });
 
@@ -1258,7 +1258,7 @@ function addExchangeItemRow(isFirstRow = false) {
         const remainingQty = getRemainingQty(selectedItem, rowDiv);
 
         if (remainingQty <= 0) {
-            alert("You have already reached the maximum quantity for this item.");
+            showAppAlert("You have already reached the maximum quantity for this item.", { title: 'Maximum Quantity Reached', type: 'warning' });
             this.value = "";
             this.selectedIndex = 0;
             qtyInput.disabled = true;
@@ -1410,5 +1410,6 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 </script>
+<?php require_once __DIR__ . '/../includes/app_modal.php'; ?>
 </body>
 </html>

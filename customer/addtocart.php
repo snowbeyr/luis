@@ -54,7 +54,12 @@ if (!empty($variant_id) && $variant_id !== 'MAIN_PRODUCT') {
 
 // 1. I-check kung may stock
 if ($final_stock <= 0) {
-    echo "<script>alert('Out of Stock!'); window.location.href='dashboard.php';</script>";
+    $_SESSION['app_modal'] = [
+        'title' => 'Out of Stock',
+        'message' => 'This item is currently out of stock.',
+        'type' => 'warning'
+    ];
+    header("Location: dashboard.php");
     exit();
 }
 

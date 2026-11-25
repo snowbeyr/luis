@@ -558,7 +558,7 @@ try {
                             <i class="bi bi-bag-check fs-5"></i>
                             <span>My Purchase</span>
                         </a>
-                        <a href="../logout.php" class="sidebar-menu-link text-danger mt-2" onclick="return confirm('Are you sure you want to logout?');">
+                        <a href="../logout.php" class="sidebar-menu-link text-danger mt-2" onclick="return appConfirmLink(event, this, 'Are you sure you want to log out?', { title: 'Log Out', confirmText: 'Yes, Log Out', variant: 'danger' });">
                             <i class="bi bi-box-arrow-right fs-5"></i>
                             <span>Logout</span>
                         </a>
@@ -633,7 +633,7 @@ try {
                                                     <i class="bi bi-pencil me-1"></i>Edit
                                                 </button>
 
-                                                <form method="POST" class="d-inline" onsubmit="return confirm('Are you sure you want to delete this address?');">
+                                                <form method="POST" class="d-inline" onsubmit="return appConfirmForm(event, this, 'Are you sure you want to delete this address?', { title: 'Delete Address', confirmText: 'Yes, Delete', variant: 'danger' });">
                                                     <input type="hidden" name="address_action" value="delete_address">
                                                     <input type="hidden" name="address_id" value="<?php echo (int) $addr['id']; ?>">
                                                     <button type="submit" class="btn btn-sm btn-outline-danger py-1 px-2 small">
@@ -1019,5 +1019,6 @@ try {
             getAddressModal().show();
         }
     </script>
+<?php require_once __DIR__ . '/../includes/app_modal.php'; ?>
 </body>
 </html>

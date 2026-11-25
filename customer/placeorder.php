@@ -86,7 +86,13 @@ if (isset($_POST['place_order'])) {
     $payment_scheme = trim($_POST['payment_scheme'] ?? 'full_payment');
 
     if ($grand_total >= 5000 && $payment_method === 'Cash on Delivery (COD)') {
-        die("<script>alert('Error: COD is unavailable for orders ₱5,000 and above.'); history.back();</script>");
+        $_SESSION['app_modal'] = [
+            'title' => 'Payment Method Unavailable',
+            'message' => 'Cash on Delivery (COD) is unavailable for orders ₱5,000.00 and above. Please choose GCash or Maya.',
+            'type' => 'warning'
+        ];
+        header("Location: placeorder.php" . ($checkout_source === 'buynow' ? '?from=buynow' : ''));
+        exit();
     }
 
     $fullname = trim($_POST['fullname']);
@@ -124,7 +130,13 @@ if (isset($_POST['place_order'])) {
     if (in_array($payment_method, ['GCash', 'Maya'])) {
         // Ensure customer uploaded a proof of payment screenshot
         if (empty($_FILES['proof_of_payment']['name'])) {
-            die("<script>alert('Order Failed: Please upload your proof of payment receipt screenshot before submitting.'); history.back();</script>");
+            $_SESSION['app_modal'] = [
+                'title' => 'Order Failed',
+                'message' => 'Please upload your proof of payment receipt screenshot before submitting.',
+                'type' => 'danger'
+            ];
+            header("Location: placeorder.php" . ($checkout_source === 'buynow' ? '?from=buynow' : ''));
+            exit();
         }
         $paid_amount = $detected_paid_amount;
     } else {
@@ -1419,19 +1431,29 @@ document.querySelector('form').addEventListener('submit', function(e) {
     if (selectedRadio && (selectedRadio.value === 'GCash' || selectedRadio.value === 'Maya')) {
         const proofInput = document.getElementById('proof_of_payment_input');
         if (!proofInput || !proofInput.files || proofInput.files.length === 0) {
-            alert("Please upload your proof of payment receipt before submitting your order.");
             e.preventDefault();
+            showAppAlert("Please upload your proof of payment receipt before submitting your order.", {
+                title: 'Payment Proof Required',
+                type: 'warning'
+            });
             return false;
         }
     }
 
     const contact = document.querySelector('input[name="contact_number"]').value;
     if (!contact.startsWith('09') || contact.length !== 11) {
-        alert("Contact number must start with '09' with 11 digits total");
         e.preventDefault();
+        showAppAlert("Contact number must start with '09' and contain 11 digits total.", {
+            title: 'Invalid Contact Number',
+            type: 'warning',
+            onClose: function () {
+                document.querySelector('input[name="contact_number"]')?.focus();
+            }
+        });
         return false;
     }
 });
 </script>
+<?php require_once __DIR__ . '/../includes/app_modal.php'; ?>
 </body>
 </html>

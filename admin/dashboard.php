@@ -215,7 +215,7 @@ if (!empty($user['profile_image'])) {
         <a href="profile.php" class="sidebar-link"><i class="bi bi-person-badge"></i> My Profile</a>
 
         <div class="logout-section">
-            <a href="../logout.php" class="text-danger" onclick="return confirm('Are you sure you want to logout?')">
+            <a href="../logout.php" class="text-danger" onclick="return appConfirmLink(event, this, 'Are you sure you want to log out?', { title: 'Log Out', confirmText: 'Yes, Log Out', variant: 'danger' })">
                 <i class="bi bi-box-arrow-right"></i> Logout
             </a>
         </div>
@@ -475,6 +475,7 @@ if (!empty($user['profile_image'])) {
             }
         });
     </script>
+<?php require_once __DIR__ . '/../includes/app_modal.php'; ?>
 </body>
 
 </html>

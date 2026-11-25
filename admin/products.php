@@ -1443,7 +1443,7 @@ if (!function_exists('getQueryUrl')) {
         <a href="damageItems.php"><i class="bi bi-exclamation-triangle"></i> Damaged Items</a>
         <a href="profile.php" class="sidebar-link"><i class="bi bi-person-badge"></i> My Profile</a>
         <div class="logout-section">
-            <a href="../logout.php" class="text-danger" onclick="return confirm('Are you sure you want to logout?')">
+            <a href="../logout.php" class="text-danger" onclick="return appConfirmLink(event, this, 'Are you sure you want to log out?', { title: 'Log Out', confirmText: 'Yes, Log Out', variant: 'danger' })">
                 <i class="bi bi-box-arrow-right"></i> Logout
             </a>
         </div>
@@ -1704,7 +1704,7 @@ if (!function_exists('getQueryUrl')) {
                                                             <small class="text-muted d-block">Deducted from physical stock per sale</small>
                                                         </td>
                                                         <td class="text-center">
-                                                            <form method="POST" action="products.php?view=shared_stock" onsubmit="return confirm('Are you sure you want to disconnect this item? It will revert to independent stock management.');" style="display:inline;">
+                                                            <form method="POST" action="products.php?view=shared_stock" onsubmit="return appConfirmForm(event, this, 'Are you sure you want to disconnect this item? It will revert to independent stock management.', { title: 'Disconnect Shared Stock', confirmText: 'Yes, Disconnect', variant: 'danger' });" style="display:inline;">
                                                                 <input type="hidden" name="action" value="disconnect_variant">
                                                                 <input type="hidden" name="link_id" value="<?= $v['id']; ?>">
                                                                 <button type="submit" class="btn btn-outline-danger btn-sm rounded-pill px-2.5" title="Disconnect from Shared Stock">
@@ -2627,11 +2627,16 @@ if (!function_exists('getQueryUrl')) {
         function validateAddVariantForm() {
             const idInput = document.getElementById('addVar_productId');
             if (!idInput || !idInput.value || parseInt(idInput.value, 10) <= 0) {
-                alert('Please select a Main Product first.');
-                const dropdownBtn = document.getElementById('addVar_dropdownBtn');
-                if (dropdownBtn) {
-                    bootstrap.Dropdown.getOrCreateInstance(dropdownBtn).show();
-                }
+                showAppAlert('Please select a Main Product first.', {
+                    title: 'Product Required',
+                    type: 'warning',
+                    onClose: function () {
+                        const dropdownBtn = document.getElementById('addVar_dropdownBtn');
+                        if (dropdownBtn) {
+                            bootstrap.Dropdown.getOrCreateInstance(dropdownBtn).show();
+                        }
+                    }
+                });
                 return false;
             }
             return true;
@@ -2819,6 +2824,7 @@ if (!function_exists('getQueryUrl')) {
             }
         });
     </script>
+<?php require_once __DIR__ . '/../includes/app_modal.php'; ?>
 </body>
 
 </html>

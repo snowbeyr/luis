@@ -226,7 +226,7 @@ try {
                             </li>
                             <li><hr class="dropdown-divider my-1"></li>
                             <li>
-                                <a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="../logout.php" onclick="return confirm('Are you sure you want to logout?');">
+                                <a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="../logout.php" onclick="return appConfirmLink(event, this, 'Are you sure you want to log out?', { title: 'Log Out', confirmText: 'Yes, Log Out', variant: 'danger' });">
                                     <i class="bi bi-box-arrow-right"></i>
                                     <span>Logout</span>
                                 </a>
@@ -357,7 +357,7 @@ try {
                                     </li>
                                     <li><hr class="dropdown-divider my-1"></li>
                                     <li>
-                                        <a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="../logout.php" onclick="return confirm('Are you sure you want to logout?');">
+                                        <a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="../logout.php" onclick="return appConfirmLink(event, this, 'Are you sure you want to log out?', { title: 'Log Out', confirmText: 'Yes, Log Out', variant: 'danger' });">
                                             <i class="bi bi-box-arrow-right fs-6"></i>
                                             <span>Logout</span>
                                         </a>
@@ -687,8 +687,8 @@ if (searchInputField) {
                 .then(response => response.json())
                 .then(data => {
                     if (data.error) {
-                        alert(data.error);
                         myModal.hide();
+                        showAppAlert(data.error, { title: 'Product Unavailable', type: 'warning' });
                         return;
                     }
 
@@ -761,8 +761,8 @@ if (searchInputField) {
                 })
                 .catch(err => {
                     console.error(err);
-                    alert("Error loading product data.");
                     myModal.hide();
+                    showAppAlert("Error loading product data.", { title: 'Load Error', type: 'danger' });
                 });
         }
 
@@ -933,6 +933,7 @@ if (searchInputField) {
             <div class="text-center small">© 2026 R. Taipan Hardware Store. All Rights Reserved.</div>
         </div>
     </footer>
+<?php require_once __DIR__ . '/../includes/app_modal.php'; ?>
 </body>
 
 </html>

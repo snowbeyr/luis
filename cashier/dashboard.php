@@ -301,7 +301,7 @@ max-height:45vh
 </li>
 <li><hr class="dropdown-divider my-1"></li>
 <li>
-<a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="../logout.php" onclick="return confirm('Are you sure you want to log out?');">
+<a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="../logout.php" onclick="return appConfirmLink(event, this, 'Are you sure you want to log out?', { title: 'Log Out', confirmText: 'Yes, Log Out', variant: 'danger' });">
 <i class="bi bi-box-arrow-right"></i>
 <span>Logout</span>
 </a>
@@ -536,7 +536,7 @@ stock=parseInt(stock)||0;
 price=parseFloat(price)||0;
 
 if(stock<=0){
-alert("Out of stock!");
+showAppAlert("This item is currently out of stock.", { title: 'Out of Stock', type: 'warning' });
 return;
 }
 
@@ -544,7 +544,7 @@ let item=cart.find(i=>i.id===id);
 
 if(item){
 if(item.qty>=stock){
-alert("Maximum available stock reached.");
+showAppAlert("Maximum available stock reached for this item.", { title: 'Stock Limit Reached', type: 'warning' });
 return;
 }
 item.qty++;
@@ -564,14 +564,14 @@ renderCart();
 function clearCart(){
 if(!cart.length)return;
 
-if(!confirm("Are you sure you want to clear the cart?"))return;
-
+showAppConfirm("Are you sure you want to clear all items from the current order?", function(){
 cart=[];
 document.getElementById("customerName").value="";
 document.getElementById("amountPaid").value="";
 document.getElementById("change").innerText="0.00";
 
 renderCart();
+}, { title: 'Clear Cart', confirmText: 'Yes, Clear Cart', variant: 'danger' });
 }
 
 function renderCart(){
@@ -650,7 +650,7 @@ item.qty+=delta;
 
 if(item.qty>item.stock_limit){
 item.qty=item.stock_limit;
-alert("Maximum available stock reached.");
+showAppAlert("Maximum available stock reached for this item.", { title: 'Stock Limit Reached', type: 'warning' });
 }
 
 if(item.qty<=0){
@@ -836,25 +836,30 @@ let rawPaid=document.getElementById("amountPaid").value.trim();
 let paid=parseFloat(rawPaid);
 
 if(cart.length===0){
-alert("Cart is empty.");
+showAppAlert("Your cart is currently empty.", { title: 'Empty Cart', type: 'warning' });
 return null;
 }
 
 for(let i=0;i<cart.length;i++){
 let item=cart[i];
 if(!item.qty||item.qty<=0){
-alert("Invalid quantity for "+item.name+".");
+showAppAlert("Invalid quantity for "+item.name+".", { title: 'Invalid Quantity', type: 'warning' });
 return null;
 }
 if(item.qty>item.stock_limit){
-alert("Quantity for "+item.name+" exceeds available stock ("+item.stock_limit+").");
+showAppAlert("Quantity for "+item.name+" exceeds available stock ("+item.stock_limit+").", { title: 'Stock Exceeded', type: 'warning' });
 return null;
 }
 }
 
 if(rawPaid===""||isNaN(paid)||paid<total){
-alert("Invalid payment amount. Payment must be equal to or greater than the total.");
+showAppAlert("Invalid payment amount. Payment must be equal to or greater than the total amount.", {
+title: 'Invalid Payment',
+type: 'warning',
+onClose: function(){
 document.getElementById("amountPaid").focus();
+}
+});
 return null;
 }
 
@@ -974,13 +979,13 @@ setTimeout(()=>{
 location.reload();
 },1000);
 }else{
-alert(data.message||"Checkout failed.");
+showAppAlert(data.message||"Checkout failed.", { title: 'Checkout Failed', type: 'danger' });
 resetConfirmCheckoutBtn();
 }
 })
 .catch(error=>{
 console.error(error);
-alert("Checkout failed. Please try again.");
+showAppAlert("Checkout failed. Please try again.", { title: 'Checkout Error', type: 'danger' });
 resetConfirmCheckoutBtn();
 });
 }
@@ -1020,5 +1025,6 @@ return div.innerHTML;
 renderCart();
 </script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<?php require_once __DIR__ . '/../includes/app_modal.php'; ?>
 </body>
 </html>

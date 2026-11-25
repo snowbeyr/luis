@@ -76,7 +76,12 @@ if (isset($_POST['send_email_update'])) {
     $order = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$order) {
-        echo "<script>alert('Order not found!'); window.location.href='orders.php';</script>";
+        $_SESSION['app_modal'] = [
+            'title' => 'Order Not Found',
+            'message' => 'The selected order could not be found.',
+            'type' => 'danger'
+        ];
+        header("Location: orders.php");
         exit();
     }
 
@@ -341,10 +346,20 @@ if (isset($_POST['send_email_update'])) {
         $stmt_up = $pdo->prepare("UPDATE orders SET email_status = ? WHERE id = ?");
         $stmt_up->execute([$current_status, $order_id]);
 
-        echo "<script>alert('Email notification sent!'); window.location.href='orders.php';</script>";
+        $_SESSION['app_modal'] = [
+            'title' => 'Email Sent',
+            'message' => 'Email notification sent successfully!',
+            'type' => 'success'
+        ];
+        header("Location: orders.php");
         exit();
     } else {
-        echo "<script>alert('Email failed: " . addslashes($sendResult['error']) . "'); window.location.href='orders.php';</script>";
+        $_SESSION['app_modal'] = [
+            'title' => 'Email Failed',
+            'message' => 'Email failed: ' . (string) ($sendResult['error'] ?? 'Unknown error'),
+            'type' => 'danger'
+        ];
+        header("Location: orders.php");
         exit();
     }
 }
@@ -368,11 +383,12 @@ if (isset($_POST['update_status'])) {
     $pending_cancel = $chk_cancel->fetch(PDO::FETCH_ASSOC);
 
     if ($pending_cancel) {
-        $cancel_reason = addslashes($pending_cancel['reason'] ?? 'Customer requested cancellation.');
-        echo "<script>
-            alert('Action Blocked: Order #$order_id currently has an active pending Cancellation Request.\\n\\nYou must Approve or Decline the cancellation request in Items Request / Customer Service before updating the order status.'); 
-            window.location.href = 'orders.php';
-        </script>";
+        $_SESSION['app_modal'] = [
+            'title' => 'Action Blocked',
+            'message' => "Order #$order_id currently has an active pending Cancellation Request.\n\nYou must Approve or Decline the cancellation request in Customer Service Request before updating the order status.",
+            'type' => 'warning'
+        ];
+        header("Location: orders.php");
         exit();
     }
 
@@ -510,7 +526,12 @@ if (isset($_POST['send_to_cashier'])) {
     ");
     $chk_cancel->execute([(string)$order_id]);
     if ($chk_cancel->fetch()) {
-        echo "<script>alert('Action Blocked: Order #$order_id has an active pending Cancellation Request. Please approve or decline the cancellation request first.'); window.location.href='orders.php';</script>";
+        $_SESSION['app_modal'] = [
+            'title' => 'Action Blocked',
+            'message' => "Order #$order_id has an active pending Cancellation Request. Please approve or decline the cancellation request first.",
+            'type' => 'warning'
+        ];
+        header("Location: orders.php");
         exit();
     }
 
@@ -519,10 +540,20 @@ if (isset($_POST['send_to_cashier'])) {
     $order_data = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if ($order_data['sent_to_cashier'] == 1) {
-        echo "<script>alert('Receipt already sent to cashier!'); window.location.href='orders.php';</script>";
+        $_SESSION['app_modal'] = [
+            'title' => 'Already Sent',
+            'message' => 'This receipt has already been sent to the cashier.',
+            'type' => 'info'
+        ];
+        header("Location: orders.php");
         exit();
     } elseif ($order_data['status'] == 'pending') {
-        echo "<script>alert('Please approve the order first before sending to cashier.'); window.location.href='orders.php';</script>";
+        $_SESSION['app_modal'] = [
+            'title' => 'Approval Required',
+            'message' => 'Please approve the order first before sending it to the cashier.',
+            'type' => 'warning'
+        ];
+        header("Location: orders.php");
         exit();
     } else {
         $stmtUpdate = $pdo->prepare("UPDATE orders SET sent_to_cashier = 1 WHERE id = ?");
@@ -530,7 +561,12 @@ if (isset($_POST['send_to_cashier'])) {
             // I-log sa Audit Trail
             logAdminAction($pdo, $admin_id, $admin_name, 'admin', 'Sent to Cashier', "Sent Order #$order_id receipt to cashier");
 
-            echo "<script>alert('Receipt successfully sent to cashier!'); window.location.href='orders.php';</script>";
+            $_SESSION['app_modal'] = [
+                'title' => 'Sent to Cashier',
+                'message' => 'Receipt successfully sent to the cashier!',
+                'type' => 'success'
+            ];
+            header("Location: orders.php");
             exit();
         }
     }
@@ -705,7 +741,7 @@ body{
     <a href="profile.php" class="sidebar-link"><i class="bi bi-person-badge"></i> My Profile</a>
 
     <div class="logout-section">
-        <a href="../logout.php" class="text-danger" onclick="return confirm('Are you sure you want to logout?')">
+        <a href="../logout.php" class="text-danger" onclick="return appConfirmLink(event, this, 'Are you sure you want to log out?', { title: 'Log Out', confirmText: 'Yes, Log Out', variant: 'danger' })">
             <i class="bi bi-box-arrow-right"></i> Logout
         </a>
     </div>
@@ -1459,7 +1495,7 @@ function interceptPendingCancel(event, orderId) {
     if (titleEl) titleEl.textContent = `Order #${orderId} - Pending Cancellation Request`;
     if (reasonEl) reasonEl.textContent = reason;
     if (textEl) {
-        textEl.innerHTML = `May kasalukuyang cancellation request ang <strong>Order #${orderId}</strong> mula kay customer sa Customer Service Request.<br><br>Kailangan mo munang <strong>i-approve o i-decline</strong> ang cancellation request sa Customer Service Request bago ka makapag-update ng order status sa Orders.`;
+        textEl.innerHTML = `<strong>Order #${orderId}</strong> currently has a pending cancellation request in Customer Service Request.<br><br>You must <strong>approve or decline</strong> the cancellation request in Customer Service Request before updating the order status here.`;
     }
     
     const modalEl = document.getElementById('cancelWarningModal');
@@ -1467,8 +1503,13 @@ function interceptPendingCancel(event, orderId) {
         const modal = new bootstrap.Modal(modalEl);
         modal.show();
     } else {
-        alert(`Notice: Ang Order #${orderId} ay may pending cancellation request sa Customer Service Request.\n\nKailangan mo munang i-approve o i-decline ang cancellation request sa Customer Service Request bago makapag-update ng order status.`);
-        window.location.href = 'ItemsRequest.php';
+        showAppAlert(`Notice: Order #${orderId} has a pending cancellation request in Customer Service Request.\n\nYou must approve or decline the cancellation request before updating the order status.`, {
+            title: 'Action Blocked',
+            type: 'warning',
+            onClose: function() {
+                window.location.href = 'ItemsRequest.php';
+            }
+        });
     }
     
     return false;
@@ -1493,5 +1534,6 @@ document.addEventListener("DOMContentLoaded", function() {
 });
 </script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<?php require_once __DIR__ . '/../includes/app_modal.php'; ?>
 </body>
 </html>

@@ -892,7 +892,7 @@ foreach ($allOrders as $o) {
                         <li><a class="dropdown-item py-2 small d-flex align-items-center gap-2" href="profile.php"><i class="bi bi-person text-secondary"></i>My Account</a></li>
                         <li><a class="dropdown-item py-2 small d-flex align-items-center gap-2 active bg-light text-dark fw-bold" href="my_purchases.php"><i class="bi bi-bag-check text-primary"></i>My Purchase</a></li>
                         <li><hr class="dropdown-divider my-1"></li>
-                        <li><a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="../logout.php" onclick="return confirm('Are you sure you want to logout?');"><i class="bi bi-box-arrow-right"></i>Logout</a></li>
+                        <li><a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="../logout.php" onclick="return appConfirmLink(event, this, 'Are you sure you want to log out?', { title: 'Log Out', confirmText: 'Yes, Log Out', variant: 'danger' });"><i class="bi bi-box-arrow-right"></i>Logout</a></li>
                     </ul>
                 </div>
             </div>
@@ -943,7 +943,7 @@ foreach ($allOrders as $o) {
                             <i class="bi bi-bag-check fs-5"></i>
                             <span>My Purchase</span>
                         </a>
-                        <a href="../logout.php" class="sidebar-menu-link text-danger mt-2" onclick="return confirm('Are you sure you want to logout?');">
+                        <a href="../logout.php" class="sidebar-menu-link text-danger mt-2" onclick="return appConfirmLink(event, this, 'Are you sure you want to log out?', { title: 'Log Out', confirmText: 'Yes, Log Out', variant: 'danger' });">
                             <i class="bi bi-box-arrow-right fs-5"></i>
                             <span>Logout</span>
                         </a>
@@ -1763,8 +1763,13 @@ foreach ($allOrders as $o) {
                 console.error("Receipt download failed:", err);
                 downloadBtn.innerHTML = originalContent;
                 downloadBtn.disabled = false;
-                alert("Generating image failed. Opening print/save dialog instead.");
-                printThermalReceipt();
+                showAppAlert("Generating image failed. Opening print/save dialog instead.", {
+                    title: 'Receipt Download',
+                    type: 'warning',
+                    onClose: function () {
+                        printThermalReceipt();
+                    }
+                });
             });
         }
 
@@ -1815,5 +1820,6 @@ foreach ($allOrders as $o) {
             printWindow.document.close();
         }
     </script>
+<?php require_once __DIR__ . '/../includes/app_modal.php'; ?>
 </body>
 </html>

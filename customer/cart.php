@@ -130,7 +130,7 @@ foreach ($cart as $item) {
                            class="form-control form-control-sm mx-1 text-center" 
                            style="width: 55px;" 
                            min="1" max="<?php echo $max_stock; ?>" 
-                           onchange="if(parseInt(this.value) > <?php echo $max_stock; ?>) { alert('Exceeds available stock! Max: <?php echo $max_stock; ?>'); this.value = <?php echo $max_stock; ?>; } this.form.submit()">
+                           onchange="handleCartQtyChange(this, <?php echo $max_stock; ?>)">
                     
                     <a href="updateCart.php?id=<?php echo $key; ?>&action=plus" class="btn btn-sm btn-outline-secondary px-2">+</a>
                 </form>
@@ -174,5 +174,23 @@ foreach ($cart as $item) {
     </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+function handleCartQtyChange(inputEl, maxStock) {
+    const val = parseInt(inputEl.value, 10) || 1;
+    if (val > maxStock) {
+        inputEl.value = maxStock;
+        showAppAlert('Exceeds available stock! Maximum available: ' + maxStock + '.', {
+            title: 'Stock Limit Reached',
+            type: 'warning',
+            onClose: function () {
+                if (inputEl.form) inputEl.form.submit();
+            }
+        });
+        return;
+    }
+    if (inputEl.form) inputEl.form.submit();
+}
+</script>
+<?php require_once __DIR__ . '/../includes/app_modal.php'; ?>
 </body>
 </html>

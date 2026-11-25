@@ -706,7 +706,7 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
     <a href="damageItems.php"><i class="bi bi-exclamation-triangle"></i> Damaged Items</a>
     <a href="profile.php"><i class="bi bi-person-badge"></i> My Profile</a>
     <div class="logout-section">
-        <a href="../logout.php" class="text-danger" onclick="return confirm('Are you sure you want to log out?')">
+        <a href="../logout.php" class="text-danger" onclick="return appConfirmLink(event, this, 'Are you sure you want to log out?', { title: 'Log Out', confirmText: 'Yes, Log Out', variant: 'danger' })">
             <i class="bi bi-box-arrow-right"></i> Logout
         </a>
     </div>
@@ -843,7 +843,7 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
                                             <span class="text-muted small"><i class="bi bi-check-circle"></i> Handled</span>
                                         <?php elseif($req_status == 'Pending'): ?>
                                             <div class="d-flex flex-column gap-1">
-                                                <a href="ItemsRequest.php?id=<?php echo $row['id']; ?>&status=Approved" class="btn btn-sm btn-success px-2 py-1" onclick="return confirm('Approve this cancellation request?')">Approve</a>
+                                                <a href="ItemsRequest.php?id=<?php echo $row['id']; ?>&status=Approved" class="btn btn-sm btn-success px-2 py-1" onclick="return appConfirmLink(event, this, 'Are you sure you want to approve this cancellation request?', { title: 'Approve Request', confirmText: 'Yes, Approve', variant: 'success' })">Approve</a>
                                                 <button type="button" class="btn btn-sm btn-danger px-2 py-1" data-bs-toggle="modal" data-bs-target="#declineModal<?php echo $row['id']; ?>">Decline</button>
                                             </div>
                                         <?php elseif($req_status == 'Approved'): ?>
@@ -852,7 +852,7 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
                                                     <i class="bi bi-cash-coin"></i> Refund Payment
                                                 </button>
                                             <?php else: ?>
-                                                <a href="ItemsRequest.php?id=<?php echo $row['id']; ?>&status=Completed" class="btn btn-sm btn-primary px-2 py-1 w-100" onclick="return confirm('Mark as Completed?')">Mark Completed</a>
+                                                <a href="ItemsRequest.php?id=<?php echo $row['id']; ?>&status=Completed" class="btn btn-sm btn-primary px-2 py-1 w-100" onclick="return appConfirmLink(event, this, 'Mark this request as Completed?', { title: 'Complete Request', confirmText: 'Yes, Complete', variant: 'success' })">Mark Completed</a>
                                             <?php endif; ?>
                                         <?php else: ?>
                                             <span class="text-muted small"><i class="bi bi-check-circle"></i> Handled</span>
@@ -1066,11 +1066,11 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
                                         if ($req_status === 'Pending'): 
                                         ?>
                                             <div class="d-flex flex-column gap-1">
-                                                <a href="ItemsRequest.php?id=<?php echo $row['id']; ?>&status=Approved" class="btn btn-sm btn-success px-2 py-1" onclick="return confirm('Approve this request?')">Approve</a>
+                                                <a href="ItemsRequest.php?id=<?php echo $row['id']; ?>&status=Approved" class="btn btn-sm btn-success px-2 py-1" onclick="return appConfirmLink(event, this, 'Are you sure you want to approve this request?', { title: 'Approve Request', confirmText: 'Yes, Approve', variant: 'success' })">Approve</a>
                                                 <button type="button" class="btn btn-sm btn-danger px-2 py-1" data-bs-toggle="modal" data-bs-target="#declineModalEx<?php echo $row['id']; ?>">Decline</button>
                                             </div>
                                         <?php elseif ($req_status === 'Approved'): ?>
-                                            <a href="ItemsRequest.php?id=<?php echo $row['id']; ?>&status=Completed" class="btn btn-sm btn-primary px-2 py-1 w-100" onclick="return confirm('Mark as Completed?')">Mark Completed</a>
+                                            <a href="ItemsRequest.php?id=<?php echo $row['id']; ?>&status=Completed" class="btn btn-sm btn-primary px-2 py-1 w-100" onclick="return appConfirmLink(event, this, 'Mark this request as Completed?', { title: 'Complete Request', confirmText: 'Yes, Complete', variant: 'success' })">Mark Completed</a>
                                         <?php else: ?>
                                             <span class="text-muted small"><i class="bi bi-check-circle-fill text-primary"></i> Handled</span>
                                         <?php endif; ?>
@@ -1452,5 +1452,6 @@ function viewReceipt(data) {
     document.activeElement.blur();
 }
 </script>
+<?php require_once __DIR__ . '/../includes/app_modal.php'; ?>
 </body> 
 </html>

@@ -92,11 +92,21 @@ if (isset($_POST['send_email_update'])) {
         $mail->send();
         
         mysqli_query($conn, "UPDATE orders SET email_status = '$current_status' WHERE id = '$order_id'");
-        echo "<script>alert('Email notification sent!'); window.location.href='orders.php';</script>";
+        $_SESSION['app_modal'] = [
+            'title' => 'Email Sent',
+            'message' => 'Email notification sent successfully!',
+            'type' => 'success'
+        ];
+        header("Location: orders.php");
         exit();
 
     } catch (Exception $e) {
-        echo "<script>alert('Email failed: {$mail->ErrorInfo}'); window.location.href='orders.php';</script>";
+        $_SESSION['app_modal'] = [
+            'title' => 'Email Failed',
+            'message' => "Email failed: {$mail->ErrorInfo}",
+            'type' => 'danger'
+        ];
+        header("Location: orders.php");
         exit();
     }
 }
@@ -160,15 +170,30 @@ if (isset($_POST['send_to_cashier'])) {
     $order_data = mysqli_fetch_assoc($check_query);
 
     if ($order_data['sent_to_cashier'] == 1) {
-        echo "<script>alert('Receipt already sent to cashier!'); window.location.href='orders.php';</script>";
+        $_SESSION['app_modal'] = [
+            'title' => 'Already Sent',
+            'message' => 'This receipt has already been sent to the cashier.',
+            'type' => 'info'
+        ];
+        header("Location: orders.php");
         exit();
     } elseif ($order_data['status'] == 'pending') {
-        echo "<script>alert('Please approve the order first before sending to cashier.'); window.location.href='orders.php';</script>";
+        $_SESSION['app_modal'] = [
+            'title' => 'Approval Required',
+            'message' => 'Please approve the order first before sending it to the cashier.',
+            'type' => 'warning'
+        ];
+        header("Location: orders.php");
         exit();
     } else {
         $query = "UPDATE orders SET sent_to_cashier = 1 WHERE id = '$order_id'";
         if(mysqli_query($conn, $query)) {
-            echo "<script>alert('Receipt successfully sent to cashier!'); window.location.href='orders.php';</script>";
+            $_SESSION['app_modal'] = [
+                'title' => 'Sent to Cashier',
+                'message' => 'Receipt successfully sent to the cashier!',
+                'type' => 'success'
+            ];
+            header("Location: orders.php");
             exit();
         }
     }
@@ -253,7 +278,7 @@ $orders = mysqli_query($conn, "SELECT * FROM orders ORDER BY id DESC");
                             
                             <?php if($row['status'] == 'pending'): ?>
                                 <button type="submit" name="status" value="approved" class="btn btn-success btn-sm">Approve</button>
-                                <button type="submit" name="status" value="declined" class="btn btn-sm btn-danger" onclick="return confirm('Are you sure you want to decline this order?')">Decline</button>
+                                <button type="submit" name="status" value="declined" class="btn btn-sm btn-danger" onclick="return appConfirmButtonSubmit(event, this, 'Are you sure you want to decline this order?', { title: 'Decline Order', confirmText: 'Yes, Decline', variant: 'danger' })">Decline</button>
                             
                             <?php elseif($row['status'] == 'approved'): ?>
                                 <button type="submit" name="status" value="preparing" class="btn btn-info btn-sm text-white">Preparing</button>
@@ -525,5 +550,6 @@ function viewReceipt(data) {
     receiptModal.show();
 }
 </script>
+<?php require_once __DIR__ . '/app_modal.php'; ?>
 </body>
 </html> 

@@ -546,7 +546,7 @@ $countArchived = (int)($pdo->query("SELECT COUNT(*) AS total FROM users WHERE st
     </a>
 
     <div class="logout-section">
-        <a href="../logout.php" class="sidebar-link text-danger" onclick="return confirm('Are you sure you want to log out?')">
+        <a href="../logout.php" class="sidebar-link text-danger" onclick="return appConfirmLink(event, this, 'Are you sure you want to log out?', { title: 'Log Out', confirmText: 'Yes, Log Out', variant: 'danger' })">
             <i class="bi bi-box-arrow-right"></i> Logout
         </a>
     </div>
@@ -921,5 +921,6 @@ if (togglePasswordBtn && passwordField && togglePasswordIcon) {
     });
 }
 </script>
+<?php require_once __DIR__ . '/../includes/app_modal.php'; ?>
 </body>
 </html>

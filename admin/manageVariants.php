@@ -575,7 +575,7 @@ $variants_res = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
                                                     <a href="manageVariants.php?product_id=<?php echo (int) $product_id; ?>&delete_id=<?php echo (int) $v['id']; ?>"
                                                         class="btn btn-danger btn-sm px-2 py-1"
-                                                        onclick="return confirm('Are you sure you want to delete this variant?')">
+                                                        onclick="return appConfirmLink(event, this, 'Are you sure you want to delete this variant?', { title: 'Delete Variant', confirmText: 'Yes, Delete', variant: 'danger' })">
                                                         <i class="bi bi-trash"></i>
                                                     </a>
                                                 </div>
@@ -672,6 +672,7 @@ $variants_res = $stmt->fetchAll(PDO::FETCH_ASSOC);
             });
         });
     </script>
+<?php require_once __DIR__ . '/../includes/app_modal.php'; ?>
 </body>
 
 </html>

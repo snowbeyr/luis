@@ -186,7 +186,7 @@ body{
     <a href="auditTrail.php" class="sidebar-link active"><i class="bi bi-shield-lock"></i> Audit Trail</a>
     <a href="accountManagement.php" class="sidebar-link"><i class="bi bi-person-gear"></i> Account Management</a>
     <div class="logout-section">
-        <a href="../logout.php" class="sidebar-link text-danger" onclick="return confirm('Are you sure you want to log out?')">
+        <a href="../logout.php" class="sidebar-link text-danger" onclick="return appConfirmLink(event, this, 'Are you sure you want to log out?', { title: 'Log Out', confirmText: 'Yes, Log Out', variant: 'danger' })">
             <i class="bi bi-box-arrow-right"></i> Logout
         </a>
     </div>
@@ -303,5 +303,6 @@ function filterLogs() {
 </script>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<?php require_once __DIR__ . '/../includes/app_modal.php'; ?>
 </body>
 </html>

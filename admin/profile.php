@@ -408,7 +408,7 @@ $display_name = !empty($user['fullname']) ? $user['fullname'] : $user['username'
         <a href="damageItems.php"><i class="bi bi-exclamation-triangle"></i> Damaged Items</a>
         <a href="profile.php" class="active"><i class="bi bi-person-badge"></i> My Profile</a>
         <div class="logout-section">
-            <a href="../logout.php" class="text-danger" onclick="return confirm('Are you sure you want to logout?')">
+            <a href="../logout.php" class="text-danger" onclick="return appConfirmLink(event, this, 'Are you sure you want to log out?', { title: 'Log Out', confirmText: 'Yes, Log Out', variant: 'danger' })">
                 <i class="bi bi-box-arrow-right"></i> Logout
             </a>
         </div>
@@ -684,5 +684,6 @@ $display_name = !empty($user['fullname']) ? $user['fullname'] : $user['username'
         });
     </script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<?php require_once __DIR__ . '/../includes/app_modal.php'; ?>
 </body>
 </html>

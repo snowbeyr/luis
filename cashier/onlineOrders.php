@@ -74,7 +74,7 @@ $online_orders = $online_orders_stmt->fetchAll(PDO::FETCH_ASSOC);
                                 </button>
 
                                 <?php if (in_array($row['status'], ['preparing', 'out_for_delivery', 'delivered', 'completed'])): ?>
-                                    <form method="POST" onsubmit="return confirm('Remove this order from the cashier list?')">
+                                    <form method="POST" onsubmit="return appConfirmForm(event, this, 'Are you sure you want to remove this order from the cashier list?', { title: 'Remove Order', confirmText: 'Yes, Remove', variant: 'danger' });">
                                         <input type="hidden" name="order_id" value="<?php echo $row['id']; ?>">
                                         <button type="submit" name="remove_order" class="btn btn-outline-danger w-100">
                                             <i class="bi bi-trash me-2"></i>Remove
@@ -316,5 +316,6 @@ ${receiptHTML}
 }
 </script>
 
+<?php require_once __DIR__ . '/../includes/app_modal.php'; ?>
 </body>
 </html>

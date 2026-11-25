@@ -792,7 +792,7 @@ try {
                             </li>
                             <li><hr class="dropdown-divider my-1"></li>
                             <li>
-                                <a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="logout.php" onclick="return confirm('Are you sure you want to logout?');">
+                                <a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="logout.php" onclick="return appConfirmLink(event, this, 'Are you sure you want to log out?', { title: 'Log Out', confirmText: 'Yes, Log Out', variant: 'danger' });">
                                     <i class="bi bi-box-arrow-right"></i>
                                     <span>Logout</span>
                                 </a>
@@ -910,7 +910,7 @@ try {
                                     </li>
                                     <li><hr class="dropdown-divider my-1"></li>
                                     <li>
-                                        <a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="logout.php" onclick="return confirm('Are you sure you want to logout?');">
+                                        <a class="dropdown-item py-2 small d-flex align-items-center gap-2 text-danger" href="logout.php" onclick="return appConfirmLink(event, this, 'Are you sure you want to log out?', { title: 'Log Out', confirmText: 'Yes, Log Out', variant: 'danger' });">
                                             <i class="bi bi-box-arrow-right fs-6"></i>
                                             <span>Logout</span>
                                         </a>
@@ -1504,15 +1504,25 @@ try {
 
                 if (pwd.length < 8 || !/[A-Z]/.test(pwd) || !/[a-z]/.test(pwd) || !/[0-9]/.test(pwd) || !/[\W_]/.test(pwd) || /\s/.test(pwd)) {
                     e.preventDefault();
-                    alert('Please make sure your password satisfies all the requirements.');
-                    document.getElementById('reg_password')?.focus();
+                    showAppAlert('Please make sure your password satisfies all the requirements.', {
+                        title: 'Invalid Password',
+                        type: 'warning',
+                        onClose: function () {
+                            document.getElementById('reg_password')?.focus();
+                        }
+                    });
                     return false;
                 }
 
                 if (pwd !== confirmPwd) {
                     e.preventDefault();
-                    alert('Passwords do not match.');
-                    document.getElementById('confirm_password')?.focus();
+                    showAppAlert('Passwords do not match.', {
+                        title: 'Password Mismatch',
+                        type: 'warning',
+                        onClose: function () {
+                            document.getElementById('confirm_password')?.focus();
+                        }
+                    });
                     return false;
                 }
             });
@@ -1622,8 +1632,8 @@ try {
                 .then(response => response.json())
                 .then(data => {
                     if (data.error) {
-                        alert(data.error);
                         myModal.hide();
+                        showAppAlert(data.error, { title: 'Product Unavailable', type: 'warning' });
                         return;
                     }
 
@@ -1695,8 +1705,8 @@ try {
                 })
                 .catch(err => {
                     console.error(err);
-                    alert("Error loading product data.");
                     myModal.hide();
+                    showAppAlert("Error loading product data.", { title: 'Load Error', type: 'danger' });
                 });
         }
 
@@ -1851,6 +1861,7 @@ try {
             <div class="text-center small">© 2026 R. Taipan Hardware Store. All Rights Reserved.</div>
         </div>
     </footer>
+<?php require_once __DIR__ . '/includes/app_modal.php'; ?>
 </body>
 
 </html>
