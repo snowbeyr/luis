@@ -509,7 +509,7 @@ onclick="clearCart()">
 </div>
 <hr class="my-2">
 <div class="d-flex justify-content-between align-items-center">
-<span class="fw-bold text-danger">Change (Sukli)</span>
+<span class="fw-bold text-danger">Change</span>
 <strong class="fs-5 text-danger">₱<span id="reviewChangeAmount">0.00</span></strong>
 </div>
 </div>
@@ -879,14 +879,14 @@ document.getElementById("reviewSoldTo").innerText="Walk-in Customer";
 noticeEl.innerHTML=`
 <div class="alert alert-warning py-2 px-3 small mb-0 d-flex align-items-center gap-2">
 <i class="bi bi-exclamation-triangle-fill"></i>
-<span><strong>Paalala:</strong> Walang nakalagay sa <em>Sold To</em> (ilalagay bilang <strong>Walk-in Customer</strong>). Pindutin ang <em>Back / Edit Order</em> kung kailangan ng pangalan.</span>
+<span><strong>Reminder:</strong> No customer name was entered in <em>Sold To</em> (it will appear as <strong>Walk-in Customer</strong>). Click <em>Back / Edit Order</em> if you need to add one.</span>
 </div>`;
 }else{
 document.getElementById("reviewSoldTo").innerText=summary.soldTo;
 noticeEl.innerHTML=`
 <div class="alert alert-success py-2 px-3 small mb-0 d-flex align-items-center gap-2">
 <i class="bi bi-check-circle-fill"></i>
-<span>Pakisuri ang listahan ng items at bayad bago i-confirm ang transaksyon.</span>
+<span>Please review all items, quantities, and payment details before confirming the transaction.</span>
 </div>`;
 }
 
