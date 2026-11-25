@@ -15,10 +15,7 @@ if (isset($_POST['submit'])) {
     $cost_price = $_POST['cost_price'];
     $price = $_POST['price'];
     $category = $_POST['category'];
-    $unit = trim($_POST['unit'] ?? 'pcs');
-    if ($unit === '') {
-        $unit = 'pcs';
-    }
+    $unit = 'pcs';
     $stock = $_POST['stock'];
     $description = trim($_POST['product_description']);
 
@@ -174,23 +171,17 @@ if (isset($_POST['submit'])) {
                             </div>
                         </div>
 
-                        <div class="row g-3 mb-3">
-                            <div class="col-12 col-md-6">
-                                <label class="form-label fw-semibold">Category</label>
-                                <select name="category" class="form-select" required>
-                                    <option value="" disabled selected>Select Category</option>
-                                    <option value="Tools">Tools</option>
-                                    <option value="Electrical">Electrical</option>
-                                    <option value="Construction">Construction</option>
-                                    <option value="Plumbing">Plumbing</option>
-                                    <option value="Paint and Supplies">Paint and Supplies</option>
-                                    <option value="Chemicals">Chemicals</option>
-                                </select>
-                            </div>
-                            <div class="col-12 col-md-6">
-                                <label class="form-label fw-semibold">Unit of Measure</label>
-                                <input type="text" name="unit" class="form-control" placeholder="e.g. pcs, bag, kg" value="pcs" required>
-                            </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Category</label>
+                            <select name="category" class="form-select" required>
+                                <option value="" disabled selected>Select Category</option>
+                                <option value="Tools">Tools</option>
+                                <option value="Electrical">Electrical</option>
+                                <option value="Construction">Construction</option>
+                                <option value="Plumbing">Plumbing</option>
+                                <option value="Paint and Supplies">Paint and Supplies</option>
+                                <option value="Chemicals">Chemicals</option>
+                            </select>
                         </div>
 
                         <div class="mb-3">

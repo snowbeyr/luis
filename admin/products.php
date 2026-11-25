@@ -50,6 +50,65 @@ if (!function_exists('logInventoryAction')) {
     }
 }
 
+// Helpers for deduplicated product & variant display naming
+if (!function_exists('collapseDuplicateVariantPrefix')) {
+    function collapseDuplicateVariantPrefix(string $name): string
+    {
+        $name = trim(preg_replace('/\s+/', ' ', $name));
+        // Collapse repeated "X - X - Y" -> "X - Y"
+        while (preg_match('/^(.+?)\s*-\s*\1(\s*-\s*.*)?$/i', $name, $m)) {
+            $rest = isset($m[2]) ? trim($m[2]) : '';
+            $name = trim($m[1]) . ($rest !== '' ? ' ' . $rest : '');
+        }
+        return trim($name);
+    }
+}
+
+if (!function_exists('formatUnifiedVariantDisplayName')) {
+    function formatUnifiedVariantDisplayName(string $parentName, string $variantName): string
+    {
+        $parentClean = trim(preg_replace('/\s+/', ' ', $parentName));
+        $variantClean = collapseDuplicateVariantPrefix($variantName);
+
+        if ($variantClean === '') {
+            return $parentClean;
+        }
+        if ($parentClean === '') {
+            return $variantClean;
+        }
+
+        // 1. If full parent name is already present inside variant name, return variant name as-is
+        if (stripos($variantClean, $parentClean) !== false) {
+            return $variantClean;
+        }
+
+        // 2. Strip trailing sizes, parentheticals, spaced dashes, and unit suffixes from parent to get its core product name
+        $parentCore = preg_replace('/\s*\([^)]*\)/', '', $parentClean);
+        $parentCore = preg_replace('/\s+[—\-]\s+.*$/u', '', $parentCore);
+        $parentCore = preg_replace('/\s+\b\d+(?:\.\d+)?\s*(?:inch|mm|cm|m|ft|w|cc|g|kg|kilo|ml|l|liter|liters|sack|sacks|gallon|pail|pc|pcs)\b.*$/i', '', $parentCore);
+        $parentCore = trim($parentCore);
+
+        if ($parentCore !== '' && mb_strlen($parentCore) >= 3 && stripos($variantClean, $parentCore) !== false) {
+            return $variantClean;
+        }
+
+        // 3. Check if any significant non-unit product keyword (len >= 4) from parentCore already appears in variantClean
+        $ignoreWords = ['heavy', 'duty', 'with', 'pack', 'size', 'type', 'kilo', 'sack', 'liter', 'gallon', 'pail'];
+        $words = preg_split('/[\s\-\/]+/', strtolower($parentCore), -1, PREG_SPLIT_NO_EMPTY);
+        $variantLower = strtolower($variantClean);
+        foreach ($words as $w) {
+            $wClean = preg_replace('/[^a-z0-9]/', '', $w);
+            if (strlen($wClean) >= 4 && !in_array($wClean, $ignoreWords, true)) {
+                if (preg_match('/\b' . preg_quote($wClean, '/') . '\b/i', $variantLower)) {
+                    return $variantClean;
+                }
+            }
+        }
+
+        return $parentClean . ' - ' . $variantClean;
+    }
+}
+
 // Helper for image upload
 if (!function_exists('handleInventoryImageUpload')) {
     function handleInventoryImageUpload($fileArray, $prefix = 'item_')
@@ -124,16 +183,11 @@ if (!function_exists('handleInventoryImageUpload')) {
 // 1. ADD VARIANT (POST)
 if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) && $_POST['action'] === 'add_variant') {
     $parent_id = filter_input(INPUT_POST, 'product_id', FILTER_VALIDATE_INT) ?: 0;
-    $v_name = trim($_POST['variant_name'] ?? '');
+    $v_name = collapseDuplicateVariantPrefix((string) ($_POST['variant_name'] ?? ''));
     $v_desc = trim($_POST['variant_description'] ?? '');
-    $v_unit = trim($_POST['unit'] ?? 'pcs');
     $v_cost = (float) ($_POST['cost_price'] ?? 0);
     $v_price = (float) ($_POST['price'] ?? 0);
     $v_stock = (int) ($_POST['stock'] ?? 0);
-
-    if ($v_unit === '') {
-        $v_unit = 'pcs';
-    }
 
     if ($parent_id <= 0 || $v_name === '') {
         $_SESSION['error_message'] = "Parent product and variant name are required.";
@@ -154,7 +208,7 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
     }
 
     try {
-        $p_check = $pdo->prepare("SELECT product_name, is_archived FROM products WHERE id = :id");
+        $p_check = $pdo->prepare("SELECT product_name, unit, is_archived FROM products WHERE id = :id");
         $p_check->execute([':id' => $parent_id]);
         $parent = $p_check->fetch(PDO::FETCH_ASSOC);
         if (!$parent) {
@@ -167,6 +221,8 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
             header("Location: products.php");
             exit();
         }
+
+        $v_unit = trim((string)($parent['unit'] ?? '')) ?: 'pcs';
 
         $dup_check = $pdo->prepare("SELECT id FROM product_variants WHERE product_id = :pid AND LOWER(variant_name) = LOWER(:name)");
         $dup_check->execute([':pid' => $parent_id, ':name' => $v_name]);
@@ -220,16 +276,11 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
 // 2. EDIT VARIANT (POST)
 if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) && $_POST['action'] === 'edit_variant') {
     $v_id = filter_input(INPUT_POST, 'variant_id', FILTER_VALIDATE_INT) ?: 0;
-    $v_name = trim($_POST['variant_name'] ?? '');
+    $v_name = collapseDuplicateVariantPrefix((string) ($_POST['variant_name'] ?? ''));
     $v_desc = trim($_POST['variant_description'] ?? '');
-    $v_unit = trim($_POST['unit'] ?? 'pcs');
     $v_cost = (float) ($_POST['cost_price'] ?? 0);
     $v_price = (float) ($_POST['price'] ?? 0);
     $v_stock = (int) ($_POST['stock'] ?? 0);
-
-    if ($v_unit === '') {
-        $v_unit = 'pcs';
-    }
 
     if ($v_id <= 0 || $v_name === '') {
         $_SESSION['error_message'] = "Valid variant ID and name are required.";
@@ -275,7 +326,6 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
             ':id' => $v_id,
             ':name' => $v_name,
             ':desc' => $v_desc,
-            ':unit' => $v_unit,
             ':cost' => $v_cost,
             ':price' => $v_price,
             ':stock' => $v_stock
@@ -291,7 +341,7 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
 
         $upd = $pdo->prepare("
             UPDATE product_variants
-            SET variant_name = :name, variant_description = :desc, unit = :unit, cost_price = :cost, price = :price, stock = :stock $img_sql
+            SET variant_name = :name, variant_description = :desc, cost_price = :cost, price = :price, stock = :stock $img_sql
             WHERE id = :id
         ");
         $upd->execute($params);
@@ -322,15 +372,10 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
     $p_id = filter_input(INPUT_POST, 'product_id', FILTER_VALIDATE_INT) ?: 0;
     $p_name = trim($_POST['product_name'] ?? '');
     $category = trim($_POST['category'] ?? '');
-    $p_unit = trim($_POST['unit'] ?? 'pcs');
     $cost_price = (float) ($_POST['cost_price'] ?? 0);
     $price = (float) ($_POST['price'] ?? 0);
     $stock = (int) ($_POST['stock'] ?? 0);
     $desc = trim($_POST['product_description'] ?? '');
-
-    if ($p_unit === '') {
-        $p_unit = 'pcs';
-    }
 
     if ($p_id <= 0 || $p_name === '') {
         $_SESSION['error_message'] = "Valid product ID and name are required.";
@@ -364,7 +409,6 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
             ':id' => $p_id,
             ':name' => $p_name,
             ':cat' => $category,
-            ':unit' => $p_unit,
             ':cost' => $cost_price,
             ':price' => $price,
             ':stock' => $stock,
@@ -381,7 +425,7 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
 
         $upd = $pdo->prepare("
             UPDATE products
-            SET product_name = :name, category = :cat, unit = :unit, cost_price = :cost, price = :price, stock = :stock, product_description = :desc $img_sql
+            SET product_name = :name, category = :cat, cost_price = :cost, price = :price, stock = :stock, product_description = :desc $img_sql
             WHERE id = :id
         ");
         $upd->execute($params);
@@ -773,27 +817,28 @@ if ($current_view === 'shared_stock') {
         JOIN products p ON pv.product_id = p.id
         WHERE pv.id NOT IN (
             SELECT variant_id FROM shared_inventory_variants WHERE variant_id IS NOT NULL AND variant_id > 0
-        ) AND p.is_archived = 0
-        ORDER BY p.product_name ASC, pv.variant_name ASC
+        ) AND p.is_archived = 0 AND pv.is_archived = 0
+        ORDER BY pv.variant_name ASC
     ");
     $unlinked_vars = $stmt_unlinked_var->fetchAll(PDO::FETCH_ASSOC);
     foreach ($unlinked_vars as $v) {
         $unlinked_items[] = [
             'type' => 'variant',
             'value' => 'v_' . $v['id'],
-            'label' => "[Variant] " . $v['variant_name'] . " (Parent: " . $v['product_name'] . ") - ₱" . number_format($v['price'], 2) . " (Stock: {$v['stock']})"
+            'label' => "[Variant] " . collapseDuplicateVariantPrefix($v['variant_name']) . " - ₱" . number_format($v['price'], 2) . " (Stock: {$v['stock']})"
         ];
     }
 
 } else {
-    // --- LOAD PRODUCTS & VARIANTS DATA ---
+    // --- LOAD UNIFIED PRODUCTS & VARIANTS DATA ---
     $low_stock_threshold = 10;
     $search = trim($_GET['search'] ?? '');
     $category_filter = trim($_GET['category'] ?? '');
+    $type_filter = trim($_GET['type'] ?? '');
     $status_filter = trim($_GET['status'] ?? ($_GET['filter'] ?? ''));
     $sort = trim($_GET['sort'] ?? 'newest');
     $page = filter_input(INPUT_GET, 'page', FILTER_VALIDATE_INT) ?: 1;
-    $per_page = 15;
+    $per_page = 20;
 
     try {
         $cat_stmt = $pdo->query("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND TRIM(category) != '' ORDER BY category ASC");
@@ -802,202 +847,154 @@ if ($current_view === 'shared_stock') {
         $categories_list = [];
     }
 
-    // Active main products for the Add Variant searchable dropdown
+    // Active main products ONLY for Add Variant searchable dropdown (unique, no variants)
     try {
         $active_mp_stmt = $pdo->query("
-            SELECT id, product_name, category, unit
+            SELECT DISTINCT ON (LOWER(TRIM(product_name))) id, product_name
             FROM products
             WHERE is_archived = 0
-            ORDER BY product_name ASC
+            ORDER BY LOWER(TRIM(product_name)) ASC, id ASC
         ");
         $active_main_products = $active_mp_stmt->fetchAll(PDO::FETCH_ASSOC);
     } catch (Exception $e) {
         $active_main_products = [];
     }
 
+    $base_union_sql = "
+        SELECT
+            p.id AS id,
+            p.id AS product_id,
+            NULL::integer AS variant_id,
+            p.product_name AS item_name,
+            ''::varchar AS parent_name,
+            p.category AS category,
+            p.cost_price AS cost_price,
+            p.price AS price,
+            p.stock AS stock,
+            p.product_description AS description,
+            p.image AS image,
+            p.is_archived AS is_archived,
+            0 AS parent_is_archived,
+            'Main' AS item_type,
+            p.id AS parent_sort_id,
+            0 AS is_variant_order,
+            (SELECT COUNT(*) FROM product_variants pv WHERE pv.product_id = p.id AND pv.is_archived = 0) AS active_variants_count,
+            (SELECT COUNT(*) FROM product_variants pv WHERE pv.product_id = p.id AND pv.is_archived = 1) AS archived_variants_count
+        FROM products p
+
+        UNION ALL
+
+        SELECT
+            v.id AS id,
+            v.product_id AS product_id,
+            v.id AS variant_id,
+            v.variant_name AS item_name,
+            p.product_name AS parent_name,
+            p.category AS category,
+            v.cost_price AS cost_price,
+            v.price AS price,
+            v.stock AS stock,
+            v.variant_description AS description,
+            COALESCE(NULLIF(v.variant_image, ''), p.image) AS image,
+            CASE WHEN p.is_archived = 1 OR v.is_archived = 1 THEN 1 ELSE 0 END AS is_archived,
+            p.is_archived AS parent_is_archived,
+            'Variant' AS item_type,
+            p.id AS parent_sort_id,
+            1 AS is_variant_order,
+            0 AS active_variants_count,
+            0 AS archived_variants_count
+        FROM product_variants v
+        JOIN products p ON v.product_id = p.id
+    ";
+
     $where_clauses = [];
     $params = [];
 
-    // Variant stock status subcondition matching the active filter
-    $v_status_sql = "v.is_archived = 0";
-    if ($status_filter === 'in_stock') {
-        $v_status_sql = "v.is_archived = 0 AND v.stock > {$low_stock_threshold}";
-    } elseif ($status_filter === 'low_stock') {
-        $v_status_sql = "v.is_archived = 0 AND v.stock > 0 AND v.stock <= {$low_stock_threshold}";
-    } elseif ($status_filter === 'out_of_stock') {
-        $v_status_sql = "v.is_archived = 0 AND v.stock <= 0";
-    } elseif ($status_filter === 'archived') {
-        $v_status_sql = "v.is_archived = 1";
-    }
-
     if ($status_filter === 'archived') {
-        $where_clauses[] = "(p.is_archived = 1 OR EXISTS (SELECT 1 FROM product_variants v WHERE v.product_id = p.id AND v.is_archived = 1))";
+        $where_clauses[] = "inv.is_archived = 1";
     } else {
-        $where_clauses[] = "p.is_archived = 0";
+        $where_clauses[] = "inv.is_archived = 0";
 
         if ($status_filter === 'in_stock') {
-            $where_clauses[] = "(
-                (NOT EXISTS (SELECT 1 FROM product_variants v0 WHERE v0.product_id = p.id AND v0.is_archived = 0) AND p.stock > {$low_stock_threshold})
-                OR EXISTS (SELECT 1 FROM product_variants v WHERE v.product_id = p.id AND v.is_archived = 0 AND v.stock > {$low_stock_threshold})
-            )";
+            $where_clauses[] = "inv.stock > {$low_stock_threshold}";
         } elseif ($status_filter === 'low_stock') {
-            $where_clauses[] = "(
-                (NOT EXISTS (SELECT 1 FROM product_variants v0 WHERE v0.product_id = p.id AND v0.is_archived = 0) AND p.stock > 0 AND p.stock <= {$low_stock_threshold})
-                OR EXISTS (SELECT 1 FROM product_variants v WHERE v.product_id = p.id AND v.is_archived = 0 AND v.stock > 0 AND v.stock <= {$low_stock_threshold})
-            )";
+            $where_clauses[] = "(inv.stock > 0 AND inv.stock <= {$low_stock_threshold})";
         } elseif ($status_filter === 'out_of_stock') {
-            $where_clauses[] = "(
-                (NOT EXISTS (SELECT 1 FROM product_variants v0 WHERE v0.product_id = p.id AND v0.is_archived = 0) AND p.stock <= 0)
-                OR EXISTS (SELECT 1 FROM product_variants v WHERE v.product_id = p.id AND v.is_archived = 0 AND v.stock <= 0)
-            )";
+            $where_clauses[] = "(inv.stock <= 0 AND NOT (inv.item_type = 'Main' AND inv.active_variants_count > 0))";
         }
     }
 
+    if ($type_filter === 'main') {
+        $where_clauses[] = "inv.item_type = 'Main'";
+    } elseif ($type_filter === 'variant') {
+        $where_clauses[] = "inv.item_type = 'Variant'";
+    }
+
     if ($category_filter !== '') {
-        $where_clauses[] = "p.category = :category";
+        $where_clauses[] = "inv.category = :category";
         $params[':category'] = $category_filter;
     }
 
     if ($search !== '') {
-        $vs_cond = str_replace('v.', 'vs.', $v_status_sql);
         $where_clauses[] = "(
-            p.product_name ILIKE :search_pname
-            OR p.category ILIKE :search_cat
-            OR CAST(p.id AS TEXT) = :search_exact_p
-            OR EXISTS (
-                SELECT 1 FROM product_variants vs 
-                WHERE vs.product_id = p.id 
-                  AND $vs_cond
-                  AND (vs.variant_name ILIKE :search_vname OR CAST(vs.id AS TEXT) = :search_exact_v)
-            )
+            inv.item_name ILIKE :search_name
+            OR inv.parent_name ILIKE :search_parent
+            OR inv.category ILIKE :search_cat
+            OR CAST(inv.id AS TEXT) = :search_exact
         )";
         $search_param = '%' . $search . '%';
-        $params[':search_pname'] = $search_param;
+        $params[':search_name'] = $search_param;
+        $params[':search_parent'] = $search_param;
         $params[':search_cat'] = $search_param;
-        $params[':search_exact_p'] = $search;
-        $params[':search_vname'] = $search_param;
-        $params[':search_exact_v'] = $search;
+        $params[':search_exact'] = $search;
     }
 
     $where_sql = implode(' AND ', $where_clauses);
 
-    $order_sql = "ORDER BY p.id DESC";
-    $var_order_sql = "ORDER BY v.id ASC";
+    $order_sql = "ORDER BY inv.parent_sort_id DESC, inv.is_variant_order ASC, inv.id ASC";
     if ($sort === 'oldest') {
-        $order_sql = "ORDER BY p.id ASC";
-        $var_order_sql = "ORDER BY v.id ASC";
+        $order_sql = "ORDER BY inv.parent_sort_id ASC, inv.is_variant_order ASC, inv.id ASC";
     } elseif ($sort === 'az') {
-        $order_sql = "ORDER BY p.product_name ASC";
-        $var_order_sql = "ORDER BY v.variant_name ASC, v.id ASC";
+        $order_sql = "ORDER BY inv.item_name ASC, inv.is_variant_order ASC";
     } elseif ($sort === 'za') {
-        $order_sql = "ORDER BY p.product_name DESC";
-        $var_order_sql = "ORDER BY v.variant_name DESC, v.id ASC";
+        $order_sql = "ORDER BY inv.item_name DESC, inv.is_variant_order ASC";
     } elseif ($sort === 'stock_asc') {
-        $order_sql = "ORDER BY effective_stock ASC, p.id ASC";
-        $var_order_sql = "ORDER BY v.stock ASC, v.id ASC";
+        $order_sql = "ORDER BY inv.stock ASC, inv.id ASC";
     } elseif ($sort === 'stock_desc') {
-        $order_sql = "ORDER BY effective_stock DESC, p.id DESC";
-        $var_order_sql = "ORDER BY v.stock DESC, v.id ASC";
+        $order_sql = "ORDER BY inv.stock DESC, inv.id DESC";
     }
 
     try {
-        $count_sql = "SELECT COUNT(DISTINCT p.id) FROM products p WHERE $where_sql";
+        $count_sql = "SELECT COUNT(*) FROM ($base_union_sql) AS inv WHERE $where_sql";
         $count_stmt = $pdo->prepare($count_sql);
         $count_stmt->execute($params);
-        $total_products = (int) $count_stmt->fetchColumn();
+        $total_items = (int) $count_stmt->fetchColumn();
 
-        $total_pages = max(1, (int) ceil($total_products / $per_page));
+        $total_pages = max(1, (int) ceil($total_items / $per_page));
         $page = max(1, min($page, $total_pages));
         $offset = ($page - 1) * $per_page;
 
-        $products_sql = "
-            SELECT 
-                p.*,
-                COUNT(v.id) FILTER (WHERE v.is_archived = 0) AS active_variants_count,
-                COUNT(v.id) FILTER (WHERE v.is_archived = 1) AS archived_variants_count,
-                COALESCE(SUM(v.stock) FILTER (WHERE v.is_archived = 0), 0) AS total_var_stock,
-                MIN(v.price) FILTER (WHERE v.is_archived = 0) AS min_var_price,
-                MAX(v.price) FILTER (WHERE v.is_archived = 0) AS max_var_price,
-                CASE 
-                    WHEN COUNT(v.id) FILTER (WHERE v.is_archived = 0) > 0 
-                    THEN COALESCE(SUM(v.stock) FILTER (WHERE v.is_archived = 0), 0) 
-                    ELSE p.stock 
-                END AS effective_stock
-            FROM products p
-            LEFT JOIN product_variants v ON p.id = v.product_id
+        $items_sql = "
+            SELECT inv.*
+            FROM ($base_union_sql) AS inv
             WHERE $where_sql
-            GROUP BY p.id
             $order_sql
             LIMIT :limit OFFSET :offset
         ";
 
-        $stmt = $pdo->prepare($products_sql);
+        $stmt = $pdo->prepare($items_sql);
         foreach ($params as $k => $v) {
             $stmt->bindValue($k, $v);
         }
         $stmt->bindValue(':limit', $per_page, PDO::PARAM_INT);
         $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
         $stmt->execute();
-        $products = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        $variants_by_product = [];
-        if (!empty($products)) {
-            $p_ids = array_column($products, 'id');
-            $in_clause = implode(',', array_map('intval', $p_ids));
-            $products_by_id = [];
-            foreach ($products as $p_item) {
-                $products_by_id[(int)$p_item['id']] = $p_item;
-            }
-
-            if ($status_filter === 'archived') {
-                // In archived view: show all variants if parent is archived (so orphans are visible too), or only archived variants if parent is active
-                $var_where = "v.product_id IN ($in_clause)";
-            } else {
-                $var_where = "v.product_id IN ($in_clause) AND $v_status_sql";
-            }
-
-            $variants_sql = "
-                SELECT v.* 
-                FROM product_variants v
-                WHERE $var_where
-                $var_order_sql
-            ";
-            $v_stmt = $pdo->query($variants_sql);
-            while ($v_row = $v_stmt->fetch(PDO::FETCH_ASSOC)) {
-                $pid = (int) $v_row['product_id'];
-                $p_ref = $products_by_id[$pid] ?? null;
-
-                // In archived view with active parent, keep only archived variants
-                if ($status_filter === 'archived' && $p_ref && (int)($p_ref['is_archived'] ?? 0) === 0 && (int)($v_row['is_archived'] ?? 0) === 0) {
-                    continue;
-                }
-
-                // If search is active and parent product itself did NOT match search, filter variants to only matching ones
-                if ($search !== '' && $p_ref) {
-                    $parent_matched = (
-                        stripos($p_ref['product_name'] ?? '', $search) !== false ||
-                        stripos($p_ref['category'] ?? '', $search) !== false ||
-                        (string)$pid === $search
-                    );
-                    if (!$parent_matched) {
-                        $var_matched = (
-                            stripos($v_row['variant_name'] ?? '', $search) !== false ||
-                            (string)$v_row['id'] === $search
-                        );
-                        if (!$var_matched) {
-                            continue;
-                        }
-                    }
-                }
-
-                $variants_by_product[$pid][] = $v_row;
-            }
-        }
+        $inventory_items = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     } catch (PDOException $e) {
-        error_log("Products query error: " . $e->getMessage());
-        $products = [];
-        $total_products = 0;
+        error_log("Unified inventory query error: " . $e->getMessage());
+        $inventory_items = [];
+        $total_items = 0;
         $total_pages = 1;
     }
 }
@@ -1158,26 +1155,27 @@ if (!function_exists('getQueryUrl')) {
             box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
         }
 
-        /* Table Styling */
+        /* Table Styling (Matched to Reference Layout) */
         .inventory-table {
             border-collapse: separate;
             border-spacing: 0;
             width: 100%;
             border: 1px solid var(--border-color);
-            border-radius: 10px;
+            border-radius: 12px;
             overflow: hidden;
+            background: #ffffff;
         }
 
         .inventory-table thead th {
-            background-color: var(--navy-header) !important;
-            color: #ffffff !important;
-            font-weight: 600;
-            font-size: 0.88rem;
+            background-color: #f8fafc !important;
+            color: #475569 !important;
+            font-weight: 700;
+            font-size: 0.78rem;
             text-transform: uppercase;
             letter-spacing: 0.5px;
             padding: 13px 14px;
             vertical-align: middle;
-            border: none;
+            border-bottom: 1px solid var(--border-color);
             white-space: nowrap;
         }
 
@@ -1186,37 +1184,33 @@ if (!function_exists('getQueryUrl')) {
             transition: background-color 0.15s ease;
         }
 
-        .inventory-table tbody tr.main-row:nth-child(even of .main-row) {
-            background-color: #fbfcfd;
-        }
-
         .inventory-table tbody tr.main-row:hover {
-            background-color: #f1f5f9;
+            background-color: #f8fafc;
         }
 
         .inventory-table tbody tr.variant-row {
-            background-color: #f8fafc;
-            border-left: 3px solid #0d6efd;
+            background-color: #fcfdff;
+            border-left: 3px solid #8b5cf6;
             transition: background-color 0.15s ease;
         }
 
         .inventory-table tbody tr.variant-row:hover {
-            background-color: #edf2f7;
+            background-color: #f3f6ff;
         }
 
         .inventory-table td {
             padding: 11px 14px;
             vertical-align: middle;
-            border-bottom: 1px solid var(--border-color);
-            font-size: 0.92rem;
+            border-bottom: 1px solid #f1f5f9;
+            font-size: 0.9rem;
         }
 
-        /* Product Image Thumbnail */
-        .prod-thumb {
+        /* Item Image Thumbnail */
+        .item-img {
             width: 44px;
             height: 44px;
             object-fit: cover;
-            border-radius: 6px;
+            border-radius: 8px;
             border: 1px solid #e2e8f0;
             background: #fff;
             cursor: zoom-in;
@@ -1224,42 +1218,25 @@ if (!function_exists('getQueryUrl')) {
             flex-shrink: 0;
         }
 
-        .prod-thumb:hover {
-            transform: scale(1.08);
+        .item-img:hover {
+            transform: scale(1.1);
         }
 
-        /* Variant Image Thumbnail */
-        .variant-thumb {
-            width: 32px;
-            height: 32px;
-            object-fit: cover;
-            border-radius: 5px;
-            border: 1px solid #e2e8f0;
-            background: #fff;
-            cursor: zoom-in;
-            transition: transform 0.2s ease;
-            flex-shrink: 0;
+        /* Searchable Main Product Dropdown inside Add Variant Modal */
+        .searchable-select-menu {
+            max-height: 260px;
+            overflow-y: auto;
         }
-
-        .variant-thumb:hover {
-            transform: scale(1.15);
-        }
-
-        /* Accordion Toggle Chevron */
-        .accordion-chevron-btn {
-            background: transparent;
-            border: none;
-            padding: 2px 5px;
-            color: #0d6efd;
-            font-size: 1.1rem;
+        .searchable-select-option {
             cursor: pointer;
-            border-radius: 4px;
-            transition: all 0.2s ease;
-            line-height: 1;
+            font-size: 0.9rem;
+            padding: 7px 12px;
         }
-
-        .accordion-chevron-btn:hover {
-            background: rgba(13, 110, 253, 0.1);
+        .searchable-select-option:hover,
+        .searchable-select-option.active {
+            background-color: #eff6ff;
+            color: #1d4ed8;
+            font-weight: 600;
         }
 
         /* Badges */
@@ -1754,16 +1731,24 @@ if (!function_exists('getQueryUrl')) {
                 <!-- Search and Filters Form -->
                 <div class="filter-card">
                     <form method="GET" action="products.php" id="filterForm" class="row g-2 align-items-center">
-                        <div class="col-12 col-md-4">
+                        <div class="col-12 col-md-3">
                             <div class="input-group">
                                 <span class="input-group-text bg-white border-end-0"><i class="bi bi-search text-muted"></i></span>
                                 <input type="text" name="search" class="form-control border-start-0" 
-                                    placeholder="Search by product, variant name, or ID..." 
+                                    placeholder="Search product, variant, or ID..." 
                                     value="<?= htmlspecialchars($search); ?>">
                             </div>
                         </div>
 
-                        <div class="col-6 col-md-3">
+                        <div class="col-6 col-md-2">
+                            <select name="type" class="form-select" onchange="this.form.submit()">
+                                <option value="" <?= ($type_filter === '') ? 'selected' : ''; ?>>All Types</option>
+                                <option value="main" <?= ($type_filter === 'main') ? 'selected' : ''; ?>>Main Only</option>
+                                <option value="variant" <?= ($type_filter === 'variant') ? 'selected' : ''; ?>>Variant Only</option>
+                            </select>
+                        </div>
+
+                        <div class="col-6 col-md-2">
                             <select name="category" class="form-select" onchange="this.form.submit()">
                                 <option value="">All Categories</option>
                                 <?php foreach ($categories_list as $cat): ?>
@@ -1777,7 +1762,7 @@ if (!function_exists('getQueryUrl')) {
                         <div class="col-6 col-md-2">
                             <select name="status" class="form-select" onchange="this.form.submit()">
                                 <option value="" <?= ($status_filter === '') ? 'selected' : ''; ?>>All Status</option>
-                                <option value="in_stock" <?= ($status_filter === 'in_stock') ? 'selected' : ''; ?>>In Stock</option>
+                                <option value="in_stock" <?= ($status_filter === 'in_stock') ? 'selected' : ''; ?>>Good Stock</option>
                                 <option value="low_stock" <?= ($status_filter === 'low_stock') ? 'selected' : ''; ?>>Low Stock</option>
                                 <option value="out_of_stock" <?= ($status_filter === 'out_of_stock') ? 'selected' : ''; ?>>Out of Stock</option>
                                 <option value="archived" <?= ($status_filter === 'archived') ? 'selected' : ''; ?>>Archived</option>
@@ -1795,11 +1780,11 @@ if (!function_exists('getQueryUrl')) {
                             </select>
                         </div>
 
-                        <div class="col-6 col-md-1 d-flex gap-1">
+                        <div class="col-12 col-md-1 d-flex gap-1">
                             <button type="submit" class="btn btn-primary w-100 btn-sm py-2" title="Apply Filter">
                                 <i class="bi bi-funnel-fill"></i>
                             </button>
-                            <?php if ($search !== '' || $category_filter !== '' || $status_filter !== '' || $sort !== 'newest'): ?>
+                            <?php if ($search !== '' || $category_filter !== '' || $type_filter !== '' || $status_filter !== '' || $sort !== 'newest'): ?>
                                 <a href="products.php" class="btn btn-outline-secondary btn-sm py-2" title="Reset Filters">
                                     <i class="bi bi-x-lg"></i>
                                 </a>
@@ -1808,95 +1793,118 @@ if (!function_exists('getQueryUrl')) {
                     </form>
                 </div>
 
-                <!-- Unified Inventory Table (All Main Products & Variants Visible) -->
+                <!-- Unified Inventory Table -->
                 <div class="table-responsive">
                     <table class="inventory-table align-middle">
                         <thead>
                             <tr>
-                                <th class="text-center" style="width: 65px;">#</th>
+                                <th style="width: 85px;">Item ID</th>
+                                <th class="text-center" style="width: 75px;">Image</th>
                                 <th style="min-width: 240px;">Product Name</th>
-                                <th class="text-center" style="width: 130px;">Type</th>
-                                <th style="width: 135px;">Category</th>
-                                <th class="text-end" style="width: 145px;">Price</th>
-                                <th class="text-center" style="width: 95px;">Stock</th>
-                                <th class="text-center" style="width: 155px;">Stock Status</th>
-                                <th class="text-center" style="width: 195px;">Actions</th>
+                                <th style="width: 110px;">Type</th>
+                                <th style="width: 140px;">Category</th>
+                                <th class="text-end" style="width: 120px;">Price</th>
+                                <th class="text-center" style="width: 90px;">Stock</th>
+                                <th class="text-center" style="width: 150px;">Status</th>
+                                <th class="text-center" style="width: 120px;">Actions</th>
                             </tr>
                         </thead>
                         <tbody id="inventoryTableBody">
-                            <?php if (!empty($products)): ?>
-                                <?php foreach ($products as $idx => $p): 
-                                    $p_id = (int) $p['id'];
-                                    $p_variants = $variants_by_product[$p_id] ?? [];
-                                    $total_active_vars = (int) ($p['active_variants_count'] ?? 0);
-                                    $archived_var_count = (int) ($p['archived_variants_count'] ?? 0);
-                                    $has_variants_overall = ($total_active_vars > 0 || !empty($p_variants));
-                                    $is_archived = (int) ($p['is_archived'] ?? 0);
+                            <?php if (!empty($inventory_items)): ?>
+                                <?php foreach ($inventory_items as $row): 
+                                    $is_variant = ($row['item_type'] === 'Variant');
+                                    $item_id = (int) $row['id'];
+                                    $prod_id = (int) $row['product_id'];
+                                    $item_stock = (int) $row['stock'];
+                                    $is_archived = (int) ($row['is_archived'] ?? 0);
+                                    $parent_is_archived = (int) ($row['parent_is_archived'] ?? 0);
+                                    $active_vars_cnt = (int) ($row['active_variants_count'] ?? 0);
+                                    $archived_vars_cnt = (int) ($row['archived_variants_count'] ?? 0);
+                                    $has_active_variants = (!$is_variant && $active_vars_cnt > 0);
 
-                                    if ($total_active_vars > 0) {
-                                        $min_p = (float) ($p['min_var_price'] ?? $p['price']);
-                                        $max_p = (float) ($p['max_var_price'] ?? $p['price']);
-                                        if ($min_p != $max_p) {
-                                            $price_text = "₱" . number_format($min_p, 2) . " - ₱" . number_format($max_p, 2);
-                                        } else {
-                                            $price_text = "₱" . number_format($min_p, 2);
-                                        }
-                                    } else {
-                                        $price_text = "₱" . number_format((float) $p['price'], 2);
-                                    }
+                                    $img_src = getProductImageSrc($row['image']);
+                                    $display_name = $is_variant
+                                        ? formatUnifiedVariantDisplayName((string)$row['parent_name'], (string)$row['item_name'])
+                                        : trim((string)$row['item_name']);
 
-                                    $p_stock = (int) $p['stock'];
+                                    // Stock & Status display
                                     if ($is_archived === 1) {
-                                        $status_badge = '<span class="badge-status badge-archived"><i class="bi bi-archive-fill"></i> Archived</span>';
-                                        $stock_cell = $has_variants_overall
+                                        if ($is_variant && $parent_is_archived === 1) {
+                                            $status_badge = '<span class="badge-status badge-archived" title="Parent main product is archived"><i class="bi bi-archive-fill"></i> Archived (Parent)</span>';
+                                        } else {
+                                            $status_badge = '<span class="badge-status badge-archived"><i class="bi bi-archive-fill"></i> Archived</span>';
+                                        }
+                                        $stock_display = $has_active_variants
                                             ? '<span class="text-muted fw-semibold">—</span>'
-                                            : '<span class="fw-bold text-muted">' . $p_stock . '</span>';
-                                    } elseif ($has_variants_overall) {
-                                        $total_var_stock = (int) ($p['total_var_stock'] ?? 0);
-                                        $stock_cell = '<span class="text-muted fw-bold" title="Stock tracked per variant (Combined variant stock: ' . $total_var_stock . ')">—</span>'
-                                            . '<small class="text-muted d-block" style="font-size: 0.72rem;">' . $total_active_vars . ' variant' . ($total_active_vars === 1 ? '' : 's') . '</small>';
+                                            : '<span class="fw-bold text-muted">' . $item_stock . '</span>';
+                                    } elseif ($has_active_variants && $item_stock <= 0) {
+                                        // Main product acting purely as variant container (stock = 0)
+                                        $stock_display = '<span class="text-muted fw-bold" title="Stock tracked per variant">—</span>';
                                         $status_badge = '<span class="badge-status badge-has-variants"><i class="bi bi-layers-fill"></i> Has Variants</span>';
                                     } else {
-                                        $stock_cell = '<span class="fw-bold text-dark">' . $p_stock . '</span>';
-                                        if ($p_stock <= 0) {
+                                        $stock_display = '<span class="fw-bold text-dark">' . $item_stock . '</span>';
+                                        if ($item_stock <= 0) {
                                             $status_badge = '<span class="badge-status badge-out-of-stock"><i class="bi bi-x-circle-fill"></i> Out of Stock</span>';
-                                        } elseif ($p_stock <= $low_stock_threshold) {
+                                        } elseif ($item_stock <= $low_stock_threshold) {
                                             $status_badge = '<span class="badge-status badge-low-stock"><i class="bi bi-exclamation-triangle-fill"></i> Low Stock</span>';
                                         } else {
-                                            $status_badge = '<span class="badge-status badge-in-stock"><i class="bi bi-check-circle-fill"></i> In Stock</span>';
+                                            $status_badge = '<span class="badge-status badge-in-stock"><i class="bi bi-check-circle-fill"></i> Good Stock</span>';
+                                        }
+                                        if ($has_active_variants) {
+                                            $status_badge .= '<div class="mt-1"><span class="badge bg-primary-subtle text-primary border border-primary-subtle" style="font-size: 0.7rem;">Has ' . $active_vars_cnt . ' Variant' . ($active_vars_cnt === 1 ? '' : 's') . '</span></div>';
                                         }
                                     }
-
-                                    $img_src = getProductImageSrc($p['image']);
                                 ?>
-                                    <!-- ================= MAIN PRODUCT ROW ================= -->
-                                    <tr class="main-row" id="product-row-<?= $p_id; ?>">
+                                    <tr class="<?= $is_variant ? 'variant-row' : 'main-row'; ?>" id="<?= $is_variant ? 'variant-row-' . $item_id : 'product-row-' . $item_id; ?>">
+                                        <td class="text-muted font-monospace fw-semibold">
+                                            #<?= $item_id; ?>
+                                        </td>
+
                                         <td class="text-center">
-                                            <span class="fw-bold text-dark"><?= $p_id; ?></span>
+                                            <img src="<?= htmlspecialchars($img_src, ENT_QUOTES, 'UTF-8'); ?>"
+                                                 alt="<?= htmlspecialchars($display_name); ?>"
+                                                 class="item-img"
+                                                 loading="lazy"
+                                                 onclick="openProductImageZoom(this.src)"
+                                                 title="Click to view large image"
+                                                 onerror="this.onerror=null; this.src='../assets/images/no-image.png';">
                                         </td>
 
                                         <td>
-                                            <span class="fw-bold text-dark d-block"><?= htmlspecialchars($p['product_name']); ?></span>
+                                            <?php if ($is_variant): ?>
+                                                <div class="d-flex align-items-center ps-3">
+                                                    <i class="bi bi-arrow-return-right text-secondary me-2 flex-shrink-0"></i>
+                                                    <span class="fw-semibold text-dark"><?= htmlspecialchars($display_name); ?></span>
+                                                </div>
+                                            <?php else: ?>
+                                                <span class="fw-bold text-dark"><?= htmlspecialchars($display_name); ?></span>
+                                            <?php endif; ?>
                                         </td>
 
-                                        <td class="text-center">
-                                            <span class="badge-type badge-type-main">
-                                                <i class="bi bi-box-seam-fill"></i> Main Product
-                                            </span>
+                                        <td>
+                                            <?php if ($is_variant): ?>
+                                                <span class="badge fw-semibold px-2 py-1" style="background:#f3e8ff; color:#6b21a8; border:1px solid #e9d5ff;">
+                                                    <i class="bi bi-layers-half me-1"></i>Variant
+                                                </span>
+                                            <?php else: ?>
+                                                <span class="badge bg-primary-subtle text-primary border border-primary-subtle fw-semibold px-2 py-1">
+                                                    <i class="bi bi-box me-1"></i>Main
+                                                </span>
+                                            <?php endif; ?>
                                         </td>
 
                                         <td>
                                             <span class="badge bg-light text-dark border px-2 py-1">
-                                                <?= htmlspecialchars($p['category'] ?: 'Uncategorized'); ?>
+                                                <?= htmlspecialchars($row['category'] ?: 'Uncategorized'); ?>
                                             </span>
                                         </td>
 
-                                        <td class="text-end fw-bold text-success">
-                                            <?= $price_text; ?>
+                                        <td class="text-end fw-semibold text-dark">
+                                            ₱<?= number_format((float) $row['price'], 2); ?>
                                         </td>
 
                                         <td class="text-center">
-                                            <?= $stock_cell; ?>
+                                            <?= $stock_display; ?>
                                         </td>
 
                                         <td class="text-center">
@@ -1906,145 +1914,64 @@ if (!function_exists('getQueryUrl')) {
                                         <td class="text-center">
                                             <div class="d-flex align-items-center justify-content-center gap-1">
                                                 <?php if ($is_archived === 0): ?>
-                                                    <button type="button" class="btn-action-add" 
-                                                        onclick="openAddVariantModal(<?= htmlspecialchars(json_encode([
-                                                            'id' => $p['id'],
-                                                            'name' => $p['product_name'],
-                                                            'unit' => $p['unit'] ?: 'pcs'
-                                                        ])); ?>)" 
-                                                        title="Add Variant for this product">
-                                                        <i class="bi bi-plus-lg"></i> Add Variant
-                                                    </button>
+                                                    <?php if ($is_variant): ?>
+                                                        <button type="button" class="btn-icon-edit" 
+                                                            onclick="openEditVariantModal(<?= htmlspecialchars(json_encode([
+                                                                'id' => $item_id,
+                                                                'product_id' => $prod_id,
+                                                                'parent_name' => $row['parent_name'],
+                                                                'name' => $row['item_name'],
+                                                                'cost_price' => (float)$row['cost_price'],
+                                                                'price' => (float)$row['price'],
+                                                                'stock' => $item_stock,
+                                                                'description' => $row['description'] ?? '',
+                                                                'image_url' => $img_src
+                                                            ])); ?>)" 
+                                                            title="Edit Variant">
+                                                            <i class="bi bi-pencil-fill"></i>
+                                                        </button>
 
-                                                    <button type="button" class="btn-icon-edit" 
-                                                        onclick="openEditProductModal(<?= htmlspecialchars(json_encode([
-                                                            'id' => $p['id'],
-                                                            'name' => $p['product_name'],
-                                                            'category' => $p['category'],
-                                                            'unit' => $p['unit'] ?: 'pcs',
-                                                            'cost_price' => (float)$p['cost_price'],
-                                                            'price' => (float)$p['price'],
-                                                            'stock' => (int)$p['stock'],
-                                                            'description' => $p['product_description'] ?? '',
-                                                            'image_url' => $img_src
-                                                        ])); ?>)" 
-                                                        title="Edit Product">
-                                                        <i class="bi bi-pencil-fill"></i>
-                                                    </button>
+                                                        <button type="button" class="btn-icon-archive" 
+                                                            onclick="openArchiveModal('variant', <?= $item_id; ?>, '<?= addslashes(htmlspecialchars($display_name)); ?>', 0)" 
+                                                            title="Archive Variant">
+                                                            <i class="bi bi-archive-fill"></i>
+                                                        </button>
+                                                    <?php else: ?>
+                                                        <button type="button" class="btn-icon-edit" 
+                                                            onclick="openEditProductModal(<?= htmlspecialchars(json_encode([
+                                                                'id' => $item_id,
+                                                                'name' => $row['item_name'],
+                                                                'category' => $row['category'],
+                                                                'cost_price' => (float)$row['cost_price'],
+                                                                'price' => (float)$row['price'],
+                                                                'stock' => $item_stock,
+                                                                'description' => $row['description'] ?? '',
+                                                                'image_url' => $img_src
+                                                            ])); ?>)" 
+                                                            title="Edit Main Product">
+                                                            <i class="bi bi-pencil-fill"></i>
+                                                        </button>
 
-                                                    <button type="button" class="btn-icon-archive" 
-                                                        onclick="openArchiveModal('product', <?= $p['id']; ?>, '<?= addslashes(htmlspecialchars($p['product_name'])); ?>', <?= $total_active_vars; ?>)" 
-                                                        title="Archive Product">
-                                                        <i class="bi bi-archive-fill"></i>
-                                                    </button>
+                                                        <button type="button" class="btn-icon-archive" 
+                                                            onclick="openArchiveModal('product', <?= $item_id; ?>, '<?= addslashes(htmlspecialchars($display_name)); ?>', <?= $active_vars_cnt; ?>)" 
+                                                            title="Archive Main Product">
+                                                            <i class="bi bi-archive-fill"></i>
+                                                        </button>
+                                                    <?php endif; ?>
                                                 <?php else: ?>
                                                     <button type="button" class="btn-icon-restore" 
-                                                        onclick="openUnarchiveModal('product', <?= $p['id']; ?>, '<?= addslashes(htmlspecialchars($p['product_name'])); ?>', <?= $archived_var_count; ?>)" 
-                                                        title="Restore Product">
+                                                        onclick="openUnarchiveModal('<?= $is_variant ? 'variant' : 'product'; ?>', <?= $item_id; ?>, '<?= addslashes(htmlspecialchars($display_name)); ?>', <?= $is_variant ? 0 : $archived_vars_cnt; ?>)" 
+                                                        title="Restore <?= $is_variant ? 'Variant' : 'Main Product'; ?>">
                                                         <i class="bi bi-arrow-counterclockwise"></i>
                                                     </button>
                                                 <?php endif; ?>
                                             </div>
                                         </td>
                                     </tr>
-
-                                    <!-- ================= VARIANT ROWS (ALWAYS VISIBLE) ================= -->
-                                    <?php if (!empty($p_variants)): ?>
-                                        <?php foreach ($p_variants as $v_idx => $v): 
-                                            $v_id = (int) $v['id'];
-                                            $v_stock = (int) $v['stock'];
-                                            $v_is_archived = (int) ($v['is_archived'] ?? 0);
-
-                                            if ($v_is_archived === 1) {
-                                                $v_status = '<span class="badge-status badge-archived"><i class="bi bi-archive-fill"></i> Archived</span>';
-                                            } elseif ($is_archived === 1 && $v_is_archived === 0) {
-                                                $v_status = '<span class="badge-status badge-out-of-stock" title="Parent main product is archived"><i class="bi bi-exclamation-circle-fill"></i> Orphaned Active</span>';
-                                            } elseif ($v_stock <= 0) {
-                                                $v_status = '<span class="badge-status badge-out-of-stock"><i class="bi bi-x-circle-fill"></i> Out of Stock</span>';
-                                            } elseif ($v_stock <= $low_stock_threshold) {
-                                                $v_status = '<span class="badge-status badge-low-stock"><i class="bi bi-exclamation-triangle-fill"></i> Low Stock</span>';
-                                            } else {
-                                                $v_status = '<span class="badge-status badge-in-stock"><i class="bi bi-check-circle-fill"></i> In Stock</span>';
-                                            }
-
-                                            $v_img = !empty($v['variant_image']) ? getProductImageSrc($v['variant_image']) : $img_src;
-                                        ?>
-                                            <tr class="variant-row variant-row-<?= $p_id; ?>" id="variant-row-<?= $v_id; ?>">
-                                                <td class="text-center">
-                                                    <span class="text-muted fw-semibold" style="font-size: 0.85rem;"><?= $v_id; ?></span>
-                                                </td>
-
-                                                <td>
-                                                    <div class="d-flex align-items-center ps-4">
-                                                        <i class="bi bi-arrow-return-right text-primary me-2 flex-shrink-0"></i>
-                                                        <span class="fw-semibold text-dark"><?= htmlspecialchars($v['variant_name']); ?></span>
-                                                    </div>
-                                                </td>
-
-                                                <td class="text-center">
-                                                    <span class="badge-type badge-type-variant">
-                                                        <i class="bi bi-diagram-2-fill"></i> Variant
-                                                    </span>
-                                                </td>
-
-                                                <td>
-                                                    <span class="text-muted small"><?= htmlspecialchars($p['category'] ?: 'Uncategorized'); ?></span>
-                                                </td>
-
-                                                <td class="text-end fw-semibold text-success">
-                                                    ₱<?= number_format((float) $v['price'], 2); ?>
-                                                </td>
-
-                                                <td class="text-center fw-semibold text-dark">
-                                                    <?= $v_stock; ?>
-                                                </td>
-
-                                                <td class="text-center">
-                                                    <?= $v_status; ?>
-                                                </td>
-
-                                                <td class="text-center">
-                                                    <div class="d-flex align-items-center justify-content-center gap-1">
-                                                        <?php if ($v_is_archived === 0): ?>
-                                                            <button type="button" class="btn-icon-edit" 
-                                                                onclick="openEditVariantModal(<?= htmlspecialchars(json_encode([
-                                                                    'id' => $v['id'],
-                                                                    'product_id' => $p['id'],
-                                                                    'parent_name' => $p['product_name'],
-                                                                    'name' => $v['variant_name'],
-                                                                    'unit' => $v['unit'] ?: ($p['unit'] ?: 'pcs'),
-                                                                    'cost_price' => (float)$v['cost_price'],
-                                                                    'price' => (float)$v['price'],
-                                                                    'stock' => (int)$v['stock'],
-                                                                    'description' => $v['variant_description'] ?? '',
-                                                                    'image_url' => $v_img
-                                                                ])); ?>)" 
-                                                                title="Edit Variant">
-                                                                <i class="bi bi-pencil-fill"></i>
-                                                            </button>
-
-                                                            <button type="button" class="btn-icon-archive" 
-                                                                onclick="openArchiveModal('variant', <?= $v['id']; ?>, '<?= addslashes(htmlspecialchars($v['variant_name'])); ?>', 0)" 
-                                                                title="Archive Variant">
-                                                                <i class="bi bi-archive-fill"></i>
-                                                            </button>
-                                                        <?php else: ?>
-                                                            <button type="button" class="btn-icon-restore" 
-                                                                onclick="openUnarchiveModal('variant', <?= $v['id']; ?>, '<?= addslashes(htmlspecialchars($v['variant_name'])); ?>', 0)" 
-                                                                title="Restore Variant">
-                                                                <i class="bi bi-arrow-counterclockwise"></i>
-                                                            </button>
-                                                        <?php endif; ?>
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        <?php endforeach; ?>
-                                    <?php endif; ?>
-
                                 <?php endforeach; ?>
                             <?php else: ?>
                                 <tr>
-                                    <td colspan="8" class="text-center py-5 text-muted">
+                                    <td colspan="9" class="text-center py-5 text-muted">
                                         <i class="bi bi-box-seam display-4 d-block mb-2 text-secondary opacity-50"></i>
                                         <h5 class="fw-semibold">No products found</h5>
                                         <p class="small text-muted mb-0">Try adjusting your search or filter options to find what you are looking for.</p>
@@ -2058,12 +1985,12 @@ if (!function_exists('getQueryUrl')) {
                 <!-- Pagination Footer -->
                 <div class="d-flex justify-content-between align-items-center mt-4 flex-wrap gap-3">
                     <div class="text-muted small">
-                        <?php if ($total_products > 0): ?>
+                        <?php if ($total_items > 0): ?>
                             Showing <span class="fw-semibold text-dark"><?= $offset + 1; ?></span> to 
-                            <span class="fw-semibold text-dark"><?= min($offset + $per_page, $total_products); ?></span> of 
-                            <span class="fw-semibold text-dark"><?= $total_products; ?></span> products
+                            <span class="fw-semibold text-dark"><?= min($offset + $per_page, $total_items); ?></span> of 
+                            <span class="fw-semibold text-dark"><?= $total_items; ?></span> items
                         <?php else: ?>
-                            Showing 0 to 0 of 0 products
+                            Showing 0 to 0 of 0 items
                         <?php endif; ?>
                     </div>
 
@@ -2297,8 +2224,9 @@ if (!function_exists('getQueryUrl')) {
         <div class="modal fade" id="addVariantModal" tabindex="-1" aria-labelledby="addVariantModalLabel" aria-hidden="true">
             <div class="modal-dialog modal-dialog-centered">
                 <div class="modal-content border-0 shadow">
-                    <form method="POST" action="products.php" enctype="multipart/form-data">
+                    <form method="POST" action="products.php" enctype="multipart/form-data" onsubmit="return validateAddVariantForm()">
                         <input type="hidden" name="action" value="add_variant">
+                        <input type="hidden" name="product_id" id="addVar_productId">
 
                         <div class="modal-header bg-primary text-white">
                             <h5 class="modal-title fw-bold" id="addVariantModalLabel">
@@ -2310,37 +2238,40 @@ if (!function_exists('getQueryUrl')) {
                         <div class="modal-body p-4">
                             <div class="mb-3">
                                 <label class="form-label fw-semibold">Main Product Selection <span class="text-danger">*</span></label>
-                                <div class="input-group input-group-sm mb-2">
-                                    <span class="input-group-text bg-white"><i class="bi bi-search text-muted"></i></span>
-                                    <input type="text" id="addVar_productSearch" class="form-control" placeholder="Search main product by name or category..." oninput="filterAddVarParents()">
+                                <div class="dropdown w-100" id="addVar_dropdownWrapper">
+                                    <button class="form-select text-start d-flex justify-content-between align-items-center" type="button" id="addVar_dropdownBtn" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
+                                        <span id="addVar_selectedLabel" class="text-muted">-- Select Main Product --</span>
+                                    </button>
+                                    <div class="dropdown-menu w-100 p-2 shadow-sm border" aria-labelledby="addVar_dropdownBtn">
+                                        <div class="input-group input-group-sm mb-2">
+                                            <span class="input-group-text bg-white"><i class="bi bi-search text-muted"></i></span>
+                                            <input type="text" id="addVar_productSearch" class="form-control" placeholder="Search main product..." oninput="filterAddVarParents()" autocomplete="off">
+                                        </div>
+                                        <div class="searchable-select-menu list-group list-group-flush" id="addVar_optionsList">
+                                            <?php foreach ($active_main_products as $mp): ?>
+                                                <button type="button" class="list-group-item list-group-item-action border-0 rounded searchable-select-option"
+                                                    data-id="<?= (int)$mp['id']; ?>"
+                                                    data-name="<?= htmlspecialchars($mp['product_name'], ENT_QUOTES, 'UTF-8'); ?>"
+                                                    data-search="<?= htmlspecialchars(strtolower(trim($mp['product_name'])), ENT_QUOTES, 'UTF-8'); ?>"
+                                                    onclick="selectAddVarParent(<?= (int)$mp['id']; ?>, this.getAttribute('data-name'))">
+                                                    <?= htmlspecialchars($mp['product_name']); ?>
+                                                </button>
+                                            <?php endforeach; ?>
+                                        </div>
+                                        <div id="addVar_noMatches" class="text-center text-muted small py-2 d-none">No matching active main products found.</div>
+                                    </div>
                                 </div>
-                                <select name="product_id" id="addVar_productId" class="form-select" required onchange="onAddVarParentChange()">
-                                    <option value="" disabled selected>-- Select Main Product --</option>
-                                    <?php foreach ($active_main_products as $mp): ?>
-                                        <option value="<?= (int)$mp['id']; ?>"
-                                            data-unit="<?= htmlspecialchars($mp['unit'] ?: 'pcs'); ?>"
-                                            data-search="<?= htmlspecialchars(strtolower($mp['product_name'] . ' ' . ($mp['category'] ?? ''))); ?>">
-                                            <?= htmlspecialchars($mp['product_name']); ?><?= !empty($mp['category']) ? ' (' . htmlspecialchars($mp['category']) . ')' : ''; ?>
-                                        </option>
-                                    <?php endforeach; ?>
-                                </select>
-                                <small class="text-muted d-block mt-1" id="addVar_parentCountNotice">Showing <?= count($active_main_products); ?> active main product(s).</small>
+                                <small class="text-muted d-block mt-1">Only active main products are listed (variants excluded).</small>
                             </div>
 
                             <div class="mb-3">
                                 <label class="form-label fw-semibold">Variant Name <span class="text-danger">*</span></label>
-                                <input type="text" name="variant_name" id="addVar_name" class="form-control" placeholder="e.g. Gravel - 1 Elf, 1 Sack, 200cc" required>
+                                <input type="text" name="variant_name" id="addVar_name" class="form-control" placeholder="e.g. 1 Elf, 1/2 Sack, 200cc" required>
                             </div>
 
-                            <div class="row g-2 mb-3">
-                                <div class="col-6">
-                                    <label class="form-label fw-semibold">Unit of Measure</label>
-                                    <input type="text" name="unit" id="addVar_unit" class="form-control" placeholder="pcs, kg, sack, elf" required>
-                                </div>
-                                <div class="col-6">
-                                    <label class="form-label fw-semibold">Initial Stock <span class="text-danger">*</span></label>
-                                    <input type="number" name="stock" class="form-control" min="0" value="0" required>
-                                </div>
+                            <div class="mb-3">
+                                <label class="form-label fw-semibold">Initial Stock <span class="text-danger">*</span></label>
+                                <input type="number" name="stock" class="form-control" min="0" value="0" required>
                             </div>
 
                             <div class="row g-2 mb-3">
@@ -2398,20 +2329,14 @@ if (!function_exists('getQueryUrl')) {
                                 <input type="text" name="product_name" id="editProd_name" class="form-control" required>
                             </div>
 
-                            <div class="row g-2 mb-3">
-                                <div class="col-6">
-                                    <label class="form-label fw-semibold">Category</label>
-                                    <input type="text" name="category" id="editProd_category" class="form-control" list="categoryOptions">
-                                    <datalist id="categoryOptions">
-                                        <?php foreach ($categories_list as $cat): ?>
-                                            <option value="<?= htmlspecialchars($cat); ?>">
-                                        <?php endforeach; ?>
-                                    </datalist>
-                                </div>
-                                <div class="col-6">
-                                    <label class="form-label fw-semibold">Unit of Measure</label>
-                                    <input type="text" name="unit" id="editProd_unit" class="form-control" placeholder="pcs, bag, kg" required>
-                                </div>
+                            <div class="mb-3">
+                                <label class="form-label fw-semibold">Category</label>
+                                <input type="text" name="category" id="editProd_category" class="form-control" list="categoryOptions">
+                                <datalist id="categoryOptions">
+                                    <?php foreach ($categories_list as $cat): ?>
+                                        <option value="<?= htmlspecialchars($cat); ?>">
+                                    <?php endforeach; ?>
+                                </datalist>
                             </div>
 
                             <div class="row g-2 mb-3">
@@ -2480,15 +2405,9 @@ if (!function_exists('getQueryUrl')) {
                                 <input type="text" name="variant_name" id="editVar_name" class="form-control" required>
                             </div>
 
-                            <div class="row g-2 mb-3">
-                                <div class="col-6">
-                                    <label class="form-label fw-semibold">Unit of Measure</label>
-                                    <input type="text" name="unit" id="editVar_unit" class="form-control" required>
-                                </div>
-                                <div class="col-6">
-                                    <label class="form-label fw-semibold">Available Stock <span class="text-danger">*</span></label>
-                                    <input type="number" name="stock" id="editVar_stock" min="0" class="form-control" required>
-                                </div>
+                            <div class="mb-3">
+                                <label class="form-label fw-semibold">Available Stock <span class="text-danger">*</span></label>
+                                <input type="number" name="stock" id="editVar_stock" min="0" class="form-control" required>
                             </div>
 
                             <div class="row g-2 mb-3">
@@ -2646,68 +2565,100 @@ if (!function_exists('getQueryUrl')) {
     <!-- JavaScript Handlers -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        // Filter Main Products inside Add Variant Modal
+        // Image Zoom
+        function openProductImageZoom(imgSrc) {
+            document.getElementById('zoomImage').src = imgSrc;
+            const modal = new bootstrap.Modal(document.getElementById('imageZoomModal'));
+            modal.show();
+        }
+
+        // Filter Main Products inside Add Variant Searchable Dropdown
         function filterAddVarParents() {
             const searchInput = document.getElementById('addVar_productSearch');
-            const select = document.getElementById('addVar_productId');
-            const notice = document.getElementById('addVar_parentCountNotice');
-            if (!searchInput || !select) return;
+            const optionsList = document.getElementById('addVar_optionsList');
+            const noMatches = document.getElementById('addVar_noMatches');
+            if (!searchInput || !optionsList) return;
 
             const query = searchInput.value.toLowerCase().trim();
             let visibleCount = 0;
 
-            Array.from(select.options).forEach(opt => {
-                if (opt.value === '') return;
-                const searchStr = opt.getAttribute('data-search') || opt.textContent.toLowerCase();
+            optionsList.querySelectorAll('.searchable-select-option').forEach(btn => {
+                const searchStr = btn.getAttribute('data-search') || btn.textContent.toLowerCase();
                 if (query === '' || searchStr.includes(query)) {
-                    opt.hidden = false;
-                    opt.style.display = '';
+                    btn.classList.remove('d-none');
                     visibleCount++;
                 } else {
-                    opt.hidden = true;
-                    opt.style.display = 'none';
+                    btn.classList.add('d-none');
                 }
             });
 
-            if (notice) {
-                notice.textContent = query === ''
-                    ? `Showing ${visibleCount} active main product(s).`
-                    : `Found ${visibleCount} matching main product(s).`;
+            if (noMatches) {
+                if (visibleCount === 0) {
+                    noMatches.classList.remove('d-none');
+                } else {
+                    noMatches.classList.add('d-none');
+                }
             }
         }
 
-        function onAddVarParentChange() {
-            const select = document.getElementById('addVar_productId');
-            const unitInput = document.getElementById('addVar_unit');
-            if (!select || !unitInput) return;
-            const selectedOpt = select.options[select.selectedIndex];
-            if (selectedOpt && selectedOpt.value !== '') {
-                unitInput.value = selectedOpt.getAttribute('data-unit') || 'pcs';
+        function selectAddVarParent(prodId, prodName) {
+            const idInput = document.getElementById('addVar_productId');
+            const labelSpan = document.getElementById('addVar_selectedLabel');
+            const optionsList = document.getElementById('addVar_optionsList');
+            const dropdownBtn = document.getElementById('addVar_dropdownBtn');
+
+            if (idInput) idInput.value = String(prodId);
+            if (labelSpan) {
+                labelSpan.textContent = prodName;
+                labelSpan.classList.remove('text-muted');
+                labelSpan.classList.add('text-dark', 'fw-semibold');
+            }
+            if (optionsList) {
+                optionsList.querySelectorAll('.searchable-select-option').forEach(btn => {
+                    btn.classList.toggle('active', btn.getAttribute('data-id') === String(prodId));
+                });
+            }
+            if (dropdownBtn) {
+                const dd = bootstrap.Dropdown.getOrCreateInstance(dropdownBtn);
+                dd.hide();
             }
         }
 
-        // Open Add Variant Modal (supports both header button without preselection and row button with preselection)
-        function openAddVariantModal(prodData = null) {
+        function validateAddVariantForm() {
+            const idInput = document.getElementById('addVar_productId');
+            if (!idInput || !idInput.value || parseInt(idInput.value, 10) <= 0) {
+                alert('Please select a Main Product first.');
+                const dropdownBtn = document.getElementById('addVar_dropdownBtn');
+                if (dropdownBtn) {
+                    bootstrap.Dropdown.getOrCreateInstance(dropdownBtn).show();
+                }
+                return false;
+            }
+            return true;
+        }
+
+        // Open Add Variant Modal
+        function openAddVariantModal() {
             const searchInput = document.getElementById('addVar_productSearch');
-            const select = document.getElementById('addVar_productId');
-            const unitInput = document.getElementById('addVar_unit');
+            const idInput = document.getElementById('addVar_productId');
+            const labelSpan = document.getElementById('addVar_selectedLabel');
+            const optionsList = document.getElementById('addVar_optionsList');
             const nameInput = document.getElementById('addVar_name');
 
             if (searchInput) {
                 searchInput.value = '';
                 filterAddVarParents();
             }
-            if (nameInput) {
-                nameInput.value = '';
+            if (idInput) idInput.value = '';
+            if (labelSpan) {
+                labelSpan.textContent = '-- Select Main Product --';
+                labelSpan.classList.add('text-muted');
+                labelSpan.classList.remove('text-dark', 'fw-semibold');
             }
-
-            if (prodData && prodData.id) {
-                if (select) select.value = String(prodData.id);
-                if (unitInput) unitInput.value = prodData.unit || 'pcs';
-            } else {
-                if (select) select.value = '';
-                if (unitInput) unitInput.value = 'pcs';
+            if (optionsList) {
+                optionsList.querySelectorAll('.searchable-select-option').forEach(btn => btn.classList.remove('active'));
             }
+            if (nameInput) nameInput.value = '';
 
             const modal = new bootstrap.Modal(document.getElementById('addVariantModal'));
             modal.show();
@@ -2718,7 +2669,6 @@ if (!function_exists('getQueryUrl')) {
             document.getElementById('editProd_id').value = prodData.id;
             document.getElementById('editProd_name').value = prodData.name;
             document.getElementById('editProd_category').value = prodData.category || '';
-            document.getElementById('editProd_unit').value = prodData.unit || 'pcs';
             document.getElementById('editProd_costPrice').value = parseFloat(prodData.cost_price || 0).toFixed(2);
             document.getElementById('editProd_price').value = parseFloat(prodData.price || 0).toFixed(2);
             document.getElementById('editProd_stock').value = parseInt(prodData.stock || 0);
@@ -2733,7 +2683,6 @@ if (!function_exists('getQueryUrl')) {
             document.getElementById('editVar_productId').value = varData.product_id;
             document.getElementById('editVar_parentName').value = parentName || varData.parent_name || '';
             document.getElementById('editVar_name').value = varData.name;
-            document.getElementById('editVar_unit').value = varData.unit || 'pcs';
             document.getElementById('editVar_costPrice').value = parseFloat(varData.cost_price || 0).toFixed(2);
             document.getElementById('editVar_price').value = parseFloat(varData.price || 0).toFixed(2);
             document.getElementById('editVar_stock').value = parseInt(varData.stock || 0);
