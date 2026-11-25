@@ -1285,6 +1285,11 @@ function extractReferenceNumber(text) {
         const line = lines[i];
         if (refLabelRegex.test(line)) {
             let afterLabel = line.replace(refLabelRegex, '').trim();
+            afterLabel = afterLabel
+                .replace(/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\s,\.]*\d{1,2}[\s,\.]*\d{2,4}.*$/i, '')
+                .replace(/\b\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4}.*$/i, '')
+                .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?.*$/i, '')
+                .trim();
             let cleanedCandidate = afterLabel.replace(/[^A-Za-z0-9]/g, '');
             if (cleanedCandidate.length >= 8 && cleanedCandidate.length <= 30 && !isPhone(afterLabel)) {
                 return cleanedCandidate;
@@ -1292,9 +1297,13 @@ function extractReferenceNumber(text) {
 
             for (let j = 1; j <= 2 && (i + j) < lines.length; j++) {
                 let nextLine = lines[i + j].trim();
-                let nextClean = nextLine.replace(/[^A-Za-z0-9]/g, '');
+                let cleanNext = nextLine
+                    .replace(/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\s,\.]*\d{1,2}[\s,\.]*\d{2,4}.*$/i, '')
+                    .replace(/\b\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4}.*$/i, '')
+                    .trim();
+                let nextClean = cleanNext.replace(/[^A-Za-z0-9]/g, '');
                 if (/^(?:Amount|PHP|₱|Date|Time|Sent|To|From|Fee)/i.test(nextLine)) break;
-                if (nextClean.length >= 8 && nextClean.length <= 30 && !isPhone(nextLine)) {
+                if (nextClean.length >= 8 && nextClean.length <= 30 && !isPhone(cleanNext)) {
                     return nextClean;
                 }
             }
@@ -1340,7 +1349,7 @@ function escapeOcrHtml(str) {
 
 async function callGeminiReceiptOCR(file, mode) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 28000);
+    const timer = setTimeout(() => controller.abort(), 42000);
     try {
         const formData = new FormData();
         formData.append('receipt', file);
@@ -1457,7 +1466,10 @@ function parseManilaDateCandidate(rawStr) {
 
     const parseTimePart = (tStr) => {
         if (!tStr) return { hasTime: false, hour: 0, minute: 0 };
-        const tm = tStr.match(/(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)?/i);
+        let tm = tStr.match(/(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)?/i);
+        if (!tm) {
+            tm = tStr.match(/\b(\d{1,2})(\d{2})\s*(AM|PM)\b/i);
+        }
         if (!tm) return { hasTime: false, hour: 0, minute: 0 };
         let h = parseInt(tm[1], 10);
         const min = parseInt(tm[2], 10);
@@ -1475,12 +1487,15 @@ function parseManilaDateCandidate(rawStr) {
         if (res) return res;
     }
 
-    // 2. Month DD, YYYY [HH:MM AM/PM]
-    m = str.match(/\b([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})(?:[\s,]+(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?))?/i);
-    if (m && months[m[1].toLowerCase()]) {
-        const tp = parseTimePart(m[4]);
-        const res = makeManila(parseInt(m[3], 10), months[m[1].toLowerCase()], parseInt(m[2], 10), tp.hour, tp.minute, tp.hasTime);
-        if (res) return res;
+    // 2. Month DD, YYYY [HH:MM AM/PM] (supports glued OCR spacing like Nov19,2026)
+    m = str.match(/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s*\d{1,2}\s*,?\s*\d{4}(?:[\s,]*(?:\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:AM|PM))?|\d{3,4}\s*(?:AM|PM)))?/i);
+    if (m) {
+        const mp = m[0].match(/([A-Za-z]+)\s*(\d{1,2})\s*,?\s*(\d{4})(?:[\s,]*(.+))?/i);
+        if (mp && months[mp[1].toLowerCase()]) {
+            const tp = parseTimePart(mp[4]);
+            const res = makeManila(parseInt(mp[3], 10), months[mp[1].toLowerCase()], parseInt(mp[2], 10), tp.hour, tp.minute, tp.hasTime);
+            if (res) return res;
+        }
     }
 
     // 3. DD Month YYYY [HH:MM AM/PM]
@@ -1608,9 +1623,9 @@ function parseReceiptTextFields(text, requiredAmount, expectedRecipient) {
     let detectedAmount = extractExactPaymentAmount(text, requiredAmount);
 
     let detectedDateTime = '';
-    let dateTimeMatch = (text || '').match(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}(?:\s*,?\s*\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?)?\b/i);
+    let dateTimeMatch = (text || '').match(/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s*\d{1,2}\s*,?\s*\d{4}(?:[\s,]*(?:\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:AM|PM))?|\d{3,4}\s*(?:AM|PM)))?/i);
     if (!dateTimeMatch) {
-        dateTimeMatch = (text || '').match(/\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*,?\s+\d{4}(?:\s*,?\s*\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?)?\b/i);
+        dateTimeMatch = (text || '').match(/\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*,?\s+\d{4}(?:[\s,]*(?:\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:AM|PM))?|\d{3,4}\s*(?:AM|PM)))?/i);
     }
     if (!dateTimeMatch) {
         dateTimeMatch = (text || '').match(/(?:\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4})\s*(?:\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?)?/i);

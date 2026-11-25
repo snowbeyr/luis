@@ -47,7 +47,8 @@ function ocrNormalizePhone(string $raw): string
  */
 function ocrNormalizeRefNo(string $raw): string
 {
-    $cleaned = preg_replace('/[^A-Za-z0-9]/', '', trim($raw));
+    $withoutDate = preg_replace('/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\s,\.]*\d{0,2}[\s,\.]*\d{2,4}.*$/i', '', trim($raw));
+    $cleaned = preg_replace('/[^A-Za-z0-9]/', '', (string) $withoutDate);
     if ($cleaned === null || strlen($cleaned) < 6 || strlen($cleaned) > 35) {
         return '';
     }
@@ -184,8 +185,8 @@ function callGeminiReceiptModel(string $model, string $apiKey, string $mimeType,
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
         CURLOPT_POSTFIELDS => $requestBody,
-        CURLOPT_CONNECTTIMEOUT => 6,
-        CURLOPT_TIMEOUT => 18,
+        CURLOPT_CONNECTTIMEOUT => 5,
+        CURLOPT_TIMEOUT => 12,
     ]);
 
     $responseBody = curl_exec($ch);
@@ -318,10 +319,10 @@ Rules:
 PROMPT;
 
 $models = [
-    'gemini-3.7-flash',
     'gemini-3.5-flash',
-    'gemini-3.8-flash',
     'gemini-3-flash-preview',
+    'gemini-3.7-flash',
+    'gemini-3.8-flash',
 ];
 
 $lastError = 'Gemini OCR request failed.';

@@ -1135,6 +1135,11 @@ function extractReferenceNumber(text) {
         const line = lines[i];
         if (refLabelRegex.test(line)) {
             let afterLabel = line.replace(refLabelRegex, '').trim();
+            afterLabel = afterLabel
+                .replace(/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\s,\.]*\d{1,2}[\s,\.]*\d{2,4}.*$/i, '')
+                .replace(/\b\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4}.*$/i, '')
+                .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?.*$/i, '')
+                .trim();
             let cleanedCandidate = afterLabel.replace(/[^A-Za-z0-9]/g, '');
             if (cleanedCandidate.length >= 8 && cleanedCandidate.length <= 30 && !isPhone(afterLabel)) {
                 return cleanedCandidate;
@@ -1142,9 +1147,13 @@ function extractReferenceNumber(text) {
 
             for (let j = 1; j <= 2 && (i + j) < lines.length; j++) {
                 let nextLine = lines[i + j].trim();
-                let nextClean = nextLine.replace(/[^A-Za-z0-9]/g, '');
+                let cleanNext = nextLine
+                    .replace(/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\s,\.]*\d{1,2}[\s,\.]*\d{2,4}.*$/i, '')
+                    .replace(/\b\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4}.*$/i, '')
+                    .trim();
+                let nextClean = cleanNext.replace(/[^A-Za-z0-9]/g, '');
                 if (/^(?:Amount|PHP|₱|Date|Time|Sent|To|From|Fee)/i.test(nextLine)) break;
-                if (nextClean.length >= 8 && nextClean.length <= 30 && !isPhone(nextLine)) {
+                if (nextClean.length >= 8 && nextClean.length <= 30 && !isPhone(cleanNext)) {
                     return nextClean;
                 }
             }
@@ -1207,7 +1216,7 @@ async function processRefundOCR(fileInput) {
 
         try {
             const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 28000);
+            const timer = setTimeout(() => controller.abort(), 42000);
             try {
                 const formData = new FormData();
                 formData.append('receipt', file);
