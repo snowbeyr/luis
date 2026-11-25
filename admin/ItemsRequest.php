@@ -1265,6 +1265,12 @@ function extractReferenceNumber(text) {
     return '';
 }
 
+function escapeRefundOcrHtml(str) {
+    return String(str || '').replace(/[&<>"']/g, function(ch) {
+        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch];
+    });
+}
+
 async function processRefundOCR(fileInput, rowId) {
     const file = fileInput.files[0];
     if (!file) return;
@@ -1277,27 +1283,58 @@ async function processRefundOCR(fileInput, rowId) {
 
     statusBox.classList.remove('d-none', 'alert-success', 'alert-danger', 'alert-warning');
     statusBox.classList.add('alert-info');
-    statusText.innerHTML = '<div class="spinner-border spinner-border-sm me-1" role="status"></div> Scanning refund receipt via OCR...';
+    statusText.innerHTML = '<div class="spinner-border spinner-border-sm me-1" role="status"></div> Scanning refund receipt with AI OCR...';
 
     try {
-        const result = await Tesseract.recognize(file, 'eng', {
-            logger: m => {
-                if (m.status === 'recognizing text') {
-                    let progress = Math.round(m.progress * 100);
-                    statusText.innerHTML = `<div class="spinner-border spinner-border-sm me-1" role="status"></div> Reading receipt text: ${progress}%`;
-                }
-            }
-        });
+        let detectedRef = '';
 
-        const text = result.data.text || '';
-        console.log("Refund OCR Extracted Text:\n", text);
-        let detectedRef = extractReferenceNumber(text);
+        try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 28000);
+            try {
+                const formData = new FormData();
+                formData.append('receipt', file);
+                formData.append('mode', 'refund');
+
+                const response = await fetch('../ocr-receipt.php', {
+                    method: 'POST',
+                    body: formData,
+                    signal: controller.signal
+                });
+                const payload = await response.json().catch(() => null);
+                if (!response.ok || !payload || !payload.success || !payload.data) {
+                    throw new Error((payload && payload.error) ? payload.error : ('HTTP ' + response.status));
+                }
+
+                const gData = payload.data;
+                detectedRef = (gData.ref_no || '').trim() || extractReferenceNumber(gData.raw_text || '');
+                console.log("Refund Gemini OCR (" + (payload.model || 'gemini') + "):", gData);
+            } finally {
+                clearTimeout(timer);
+            }
+        } catch (geminiErr) {
+            console.warn("Refund Gemini OCR unavailable, falling back to Tesseract.js:", geminiErr);
+            statusText.innerHTML = '<div class="spinner-border spinner-border-sm me-1" role="status"></div> Scanning refund receipt via fallback OCR...';
+
+            const result = await Tesseract.recognize(file, 'eng', {
+                logger: m => {
+                    if (m.status === 'recognizing text') {
+                        let progress = Math.round(m.progress * 100);
+                        statusText.innerHTML = `<div class="spinner-border spinner-border-sm me-1" role="status"></div> Reading receipt text: ${progress}%`;
+                    }
+                }
+            });
+
+            const text = result.data.text || '';
+            console.log("Refund OCR Fallback Extracted Text:\n", text);
+            detectedRef = extractReferenceNumber(text);
+        }
 
         if (detectedRef) {
             refInput.value = detectedRef;
             statusBox.classList.remove('alert-info', 'alert-danger', 'alert-warning');
             statusBox.classList.add('alert-success');
-            statusText.innerHTML = `✓ Reference Number successfully detected: <b>${detectedRef}</b>`;
+            statusText.innerHTML = `✓ Reference Number successfully detected: <b>${escapeRefundOcrHtml(detectedRef)}</b>`;
         } else {
             statusBox.classList.remove('alert-info', 'alert-success', 'alert-danger');
             statusBox.classList.add('alert-warning');
