@@ -261,9 +261,6 @@ max-height:45vh
 </h2>
 <div class="navbar-tools">
 <input type="text" id="liveSearch" class="form-control form-control-sm search-box" placeholder="Search products..." onkeyup="filterProducts()">
-<a href="salesHistory.php" class="btn btn-outline-light btn-sm">
-<i class="bi bi-clock-history"></i> <span>Sales & Corrections</span>
-</a>
 <a href="onlineOrders.php" class="btn btn-outline-light btn-sm position-relative">
 <i class="bi bi-globe"></i> <span>Online Orders</span>
 <?php if($order_count>0): ?>
@@ -430,9 +427,9 @@ oninput="calcChange()">
 <button
 id="checkout-btn"
 class="btn btn-success w-100 checkout-btn"
-onclick="checkout()"
+onclick="openCheckoutReview()"
 disabled>
-<i class="bi bi-printer"></i> CHECKOUT & PRINT
+<i class="bi bi-clipboard-check"></i> REVIEW & CHECKOUT
 </button>
 
 <button
@@ -445,8 +442,94 @@ onclick="clearCart()">
 </div>
 </div>
 
+<div class="modal fade" id="checkoutReviewModal" tabindex="-1" aria-labelledby="checkoutReviewModalLabel" aria-hidden="true" data-bs-backdrop="static">
+<div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+<div class="modal-content border-0 shadow-lg" style="border-radius:14px;overflow:hidden;">
+<div class="modal-header text-white" style="background:#051c3c;">
+<div>
+<h5 class="modal-title fw-bold mb-0" id="checkoutReviewModalLabel">
+<i class="bi bi-clipboard-check me-2 text-warning"></i>Review Order Before Checkout
+</h5>
+<small class="text-white-50">Please verify all items, quantities, customer name, and cash payment before confirming.</small>
+</div>
+<button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+</div>
+<div class="modal-body p-3 p-md-4 bg-light">
+<div id="reviewCustomerNotice" class="mb-3"></div>
+<div class="card border-0 shadow-sm mb-3">
+<div class="card-body py-2 px-3">
+<div class="row g-2 small">
+<div class="col-sm-4">
+<span class="text-muted d-block">Cashier</span>
+<strong id="reviewCashierName" class="text-dark"></strong>
+</div>
+<div class="col-sm-4">
+<span class="text-muted d-block">Sold To</span>
+<strong id="reviewSoldTo" class="text-dark"></strong>
+</div>
+<div class="col-sm-4 text-sm-end">
+<span class="text-muted d-block">Order Size</span>
+<strong id="reviewItemCount" class="text-primary"></strong>
+</div>
+</div>
+</div>
+</div>
+<div class="card border-0 shadow-sm mb-3">
+<div class="card-header bg-white fw-bold small py-2">
+<i class="bi bi-bag-check me-1 text-primary"></i> Items Breakdown
+</div>
+<div class="table-responsive">
+<table class="table table-sm table-hover align-middle mb-0">
+<thead class="table-light small">
+<tr>
+<th class="ps-3">#</th>
+<th>Product / Variant</th>
+<th class="text-end">Unit Price</th>
+<th class="text-center">Qty</th>
+<th class="text-end pe-3">Subtotal</th>
+</tr>
+</thead>
+<tbody id="reviewItemsBody" class="small"></tbody>
+</table>
+</div>
+</div>
+<div class="card border-0 shadow-sm">
+<div class="card-body py-3 px-3">
+<div class="d-flex justify-content-between align-items-center mb-1 small">
+<span class="text-muted">Payment Method</span>
+<span class="badge bg-success-subtle text-success border border-success-subtle fw-semibold">Cash (Walk-in POS)</span>
+</div>
+<div class="d-flex justify-content-between align-items-center mb-1">
+<span class="text-muted small">Total Amount</span>
+<strong class="fs-6 text-dark">₱<span id="reviewTotalAmount">0.00</span></strong>
+</div>
+<div class="d-flex justify-content-between align-items-center mb-1">
+<span class="text-muted small">Paid Amount (Cash)</span>
+<strong class="fs-6 text-primary">₱<span id="reviewPaidAmount">0.00</span></strong>
+</div>
+<hr class="my-2">
+<div class="d-flex justify-content-between align-items-center">
+<span class="fw-bold text-danger">Change (Sukli)</span>
+<strong class="fs-5 text-danger">₱<span id="reviewChangeAmount">0.00</span></strong>
+</div>
+</div>
+</div>
+</div>
+<div class="modal-footer bg-white d-flex justify-content-between">
+<button type="button" id="review-back-btn" class="btn btn-outline-secondary" data-bs-dismiss="modal">
+<i class="bi bi-arrow-left me-1"></i> Back / Edit Order
+</button>
+<button type="button" id="confirm-checkout-btn" class="btn btn-success fw-bold px-4" onclick="confirmCheckout()">
+<i class="bi bi-printer me-1"></i> CONFIRM CHECKOUT & PRINT
+</button>
+</div>
+</div>
+</div>
+</div>
+
 <script>
 let cart=[];
+let isCheckoutSubmitting=false;
 
 function addToCart(id,name,price,stock){
 stock=parseInt(stock)||0;
@@ -747,33 +830,124 @@ Please come again.</b></span>
     }, 300);
 }
 
-function checkout(){
-
-let total=
-parseFloat(document.getElementById("total").innerText)||0;
-
-let paid=
-parseFloat(document.getElementById("amountPaid").value)||0;
+function validateOrderInputs(){
+let total=parseFloat(document.getElementById("total").innerText)||0;
+let rawPaid=document.getElementById("amountPaid").value.trim();
+let paid=parseFloat(rawPaid);
 
 if(cart.length===0){
 alert("Cart is empty.");
-return;
+return null;
 }
 
-if(paid<total){
-alert(
-"Invalid payment amount. Payment must be equal to or greater than the total."
-);
-return;
+for(let i=0;i<cart.length;i++){
+let item=cart[i];
+if(!item.qty||item.qty<=0){
+alert("Invalid quantity for "+item.name+".");
+return null;
+}
+if(item.qty>item.stock_limit){
+alert("Quantity for "+item.name+" exceeds available stock ("+item.stock_limit+").");
+return null;
+}
 }
 
-const checkoutBtn=
-document.getElementById("checkout-btn");
+if(rawPaid===""||isNaN(paid)||paid<total){
+alert("Invalid payment amount. Payment must be equal to or greater than the total.");
+document.getElementById("amountPaid").focus();
+return null;
+}
 
-checkoutBtn.disabled=true;
+return{
+total:total,
+paid:paid,
+change:paid-total,
+soldTo:document.getElementById("customerName").value.trim()
+};
+}
 
-checkoutBtn.innerHTML=
-'<span class="spinner-border spinner-border-sm"></span> Processing...';
+function openCheckoutReview(){
+let summary=validateOrderInputs();
+if(!summary)return;
+
+let cashierName=<?php echo json_encode((string)($_SESSION['username'] ?? 'Cashier')); ?>;
+document.getElementById("reviewCashierName").innerText=cashierName;
+
+let noticeEl=document.getElementById("reviewCustomerNotice");
+if(summary.soldTo===""){
+document.getElementById("reviewSoldTo").innerText="Walk-in Customer";
+noticeEl.innerHTML=`
+<div class="alert alert-warning py-2 px-3 small mb-0 d-flex align-items-center gap-2">
+<i class="bi bi-exclamation-triangle-fill"></i>
+<span><strong>Paalala:</strong> Walang nakalagay sa <em>Sold To</em> (ilalagay bilang <strong>Walk-in Customer</strong>). Pindutin ang <em>Back / Edit Order</em> kung kailangan ng pangalan.</span>
+</div>`;
+}else{
+document.getElementById("reviewSoldTo").innerText=summary.soldTo;
+noticeEl.innerHTML=`
+<div class="alert alert-success py-2 px-3 small mb-0 d-flex align-items-center gap-2">
+<i class="bi bi-check-circle-fill"></i>
+<span>Pakisuri ang listahan ng items at bayad bago i-confirm ang transaksyon.</span>
+</div>`;
+}
+
+let totalPcs=0;
+let rowsHtml="";
+cart.forEach((item,idx)=>{
+let qty=parseInt(item.qty,10)||0;
+let price=parseFloat(item.price)||0;
+let subtotal=price*qty;
+totalPcs+=qty;
+
+let stockNote=qty>=item.stock_limit
+?'<span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle ms-1">Max stock</span>'
+:'';
+
+rowsHtml+=`
+<tr>
+<td class="ps-3 text-muted">${idx+1}</td>
+<td class="fw-semibold text-dark">${escapeHtml(item.name)}${stockNote}</td>
+<td class="text-end">₱${price.toFixed(2)}</td>
+<td class="text-center"><span class="badge bg-light text-dark border">${qty}</span></td>
+<td class="text-end pe-3 fw-bold">₱${subtotal.toFixed(2)}</td>
+</tr>`;
+});
+
+document.getElementById("reviewItemsBody").innerHTML=rowsHtml;
+document.getElementById("reviewItemCount").innerText=`${cart.length} item(s) • ${totalPcs} pc(s)`;
+document.getElementById("reviewTotalAmount").innerText=summary.total.toFixed(2);
+document.getElementById("reviewPaidAmount").innerText=summary.paid.toFixed(2);
+document.getElementById("reviewChangeAmount").innerText=summary.change.toFixed(2);
+
+resetConfirmCheckoutBtn();
+bootstrap.Modal.getOrCreateInstance(document.getElementById("checkoutReviewModal")).show();
+}
+
+function resetConfirmCheckoutBtn(){
+isCheckoutSubmitting=false;
+const confirmBtn=document.getElementById("confirm-checkout-btn");
+const backBtn=document.getElementById("review-back-btn");
+if(confirmBtn){
+confirmBtn.disabled=false;
+confirmBtn.innerHTML='<i class="bi bi-printer me-1"></i> CONFIRM CHECKOUT & PRINT';
+}
+if(backBtn){
+backBtn.disabled=false;
+}
+}
+
+function confirmCheckout(){
+if(isCheckoutSubmitting)return;
+
+let summary=validateOrderInputs();
+if(!summary)return;
+
+isCheckoutSubmitting=true;
+const confirmBtn=document.getElementById("confirm-checkout-btn");
+const backBtn=document.getElementById("review-back-btn");
+
+confirmBtn.disabled=true;
+if(backBtn)backBtn.disabled=true;
+confirmBtn.innerHTML='<span class="spinner-border spinner-border-sm me-1"></span> Processing...';
 
 fetch("pos_checkout.php",{
 method:"POST",
@@ -782,53 +956,33 @@ headers:{
 },
 body:JSON.stringify({
 cart:cart,
-total:total,
-paid:paid,
-change:paid-total,
+total:summary.total,
+paid:summary.paid,
+change:summary.change,
 payment_method:"Cash"
 })
 })
-
 .then(response=>response.json())
-
 .then(data=>{
-
 if(data.status==="success"){
+const reviewModal=bootstrap.Modal.getInstance(document.getElementById("checkoutReviewModal"));
+if(reviewModal)reviewModal.hide();
 
 printReceipt(data.transaction_id);
 
 setTimeout(()=>{
 location.reload();
 },1000);
-
 }else{
-
 alert(data.message||"Checkout failed.");
-
-checkoutBtn.disabled=false;
-
-checkoutBtn.innerHTML=
-'<i class="bi bi-printer"></i> CHECKOUT & PRINT';
-
+resetConfirmCheckoutBtn();
 }
-
 })
-
 .catch(error=>{
-
 console.error(error);
-
-alert(
-"Checkout failed. Please try again."
-);
-
-checkoutBtn.disabled=false;
-
-checkoutBtn.innerHTML=
-'<i class="bi bi-printer"></i> CHECKOUT & PRINT';
-
+alert("Checkout failed. Please try again.");
+resetConfirmCheckoutBtn();
 });
-
 }
 
 function filterProducts(){

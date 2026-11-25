@@ -188,31 +188,6 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_items') {
                 $pending_req_type = strtoupper($pending_row['request_type']);
             }
 
-            // CHECK FOR ACTIVE POS TRANSACTION CORRECTION REQUEST UNDER OWNER REVIEW
-            $has_pending_correction = false;
-            $pending_corr_details = null;
-            $check_num_id = is_numeric($order_id) ? (int)$order_id : 0;
-            try {
-                $stmt_corr = $pdo->prepare("
-                    SELECT id, status, correction_type, payment_difference, created_at 
-                    FROM pos_correction_requests 
-                    WHERE transaction_id = :tx_id
-                      AND status IN ('Pending Review', 'Pending Additional Payment', 'Pending Refund')
-                    ORDER BY id DESC LIMIT 1
-                ");
-                $stmt_corr->execute([':tx_id' => $check_num_id]);
-                $corr_row = $stmt_corr->fetch(PDO::FETCH_ASSOC);
-                if ($corr_row) {
-                    $has_pending_correction = true;
-                    $pending_corr_details = [
-                        'id' => $corr_row['id'],
-                        'status' => $corr_row['status'],
-                        'correction_type' => $corr_row['correction_type'],
-                        'payment_difference' => (float)$corr_row['payment_difference']
-                    ];
-                }
-            } catch (Exception $e) {}
-
             // Parse items: Check pos_transaction_items or order_items
             $items = [];
             if (!empty($order_data['is_pos'])) {
@@ -307,9 +282,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_items') {
                     'paid_amount' => $paid_amount,
                     'is_cancel_completed' => $is_cancel_completed,
                     'has_pending_request' => $has_pending_request,
-                    'pending_req_type' => $pending_req_type,
-                    'has_pending_correction' => $has_pending_correction,
-                    'pending_correction' => $pending_corr_details
+                    'pending_req_type' => $pending_req_type
                 ],
                 'items' => $items
             ]);
@@ -351,22 +324,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
             $message = "❌ Submission Blocked: Order #" . htmlspecialchars($order_id) . " already has an active PENDING " . strtoupper($existing_pending['request_type']) . " request under review by the admin.";
             $message_type = "danger";
         } else {
-            // Check if there is an active POS Transaction Correction Request under Owner review
-            $num_chk_id = is_numeric($order_id) ? (int)$order_id : 0;
-            $stmt_chk_corr = $pdo->prepare("
-                SELECT id, status, correction_type 
-                FROM pos_correction_requests 
-                WHERE transaction_id = :tx_id
-                  AND status IN ('Pending Review', 'Pending Additional Payment', 'Pending Refund')
-                LIMIT 1
-            ");
-            $stmt_chk_corr->execute([':tx_id' => $num_chk_id]);
-            $active_corr = $stmt_chk_corr->fetch(PDO::FETCH_ASSOC);
-
-            if ($active_corr) {
-                $message = "❌ Submission Blocked: Order #" . htmlspecialchars($order_id) . " currently has an active Transaction Correction Request (#" . $active_corr['id'] . " - " . htmlspecialchars($active_corr['correction_type']) . ") under Owner review. Exchange requests cannot be submitted until the correction is resolved.";
-                $message_type = "danger";
-            } else {
                 // Backend 1-Day (24 Hours) Exchange Limit Validation
                 $order_timestamp = strtotime($v_ord_date_str);
                 $time_passed = time() - $order_timestamp;
@@ -536,7 +493,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
                 }
             }
         }
-    }
 } else {
         $message = "❌ Verification error. Order connection lost.";
         $message_type = "danger";
@@ -943,20 +899,6 @@ function handleFormTypeSetup(status) {
     lblCancel.classList.add('btn-outline-dark');
     lblExchange.classList.remove('disabled', 'btn-outline-secondary');
     lblExchange.classList.add('btn-outline-primary');
-
-    // 0. STRICT PENDING CORRECTION LOCK: Check if there is an active POS correction request under Owner review
-    if (currentOrderInfo.has_pending_correction) {
-        reqCancel.disabled = true;
-        reqExchange.disabled = true;
-        btnSubmitForm.disabled = true;
-        requestActionsBox.classList.add('d-none');
-        formFieldsContainer.classList.add('d-none');
-
-        const corr = currentOrderInfo.pending_correction || {};
-        errorWrapper.classList.remove('d-none');
-        errorWrapper.innerHTML = `⚠️ <strong>Transaction Correction Under Review:</strong> Order / Transaction #${currentOrderInfo.id} has an active <strong>${corr.correction_type || 'Payment Correction'}</strong> request (#${corr.id} - Status: ${corr.status || 'Pending Review'}) currently being reviewed by the Owner. Item exchange submissions are locked until the Owner completes or resolves this correction.`;
-        return;
-    }
 
     // 1. STRICT ANTI-SPAM LOCK: Kapag may umiiral na PENDING request, I-HIDE ANG BUONG ACTION & FORM FIELDS
     if (currentOrderInfo.has_pending_request) {
