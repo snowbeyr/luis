@@ -270,6 +270,7 @@ if (!empty($user['profile_image'])) {
                 FROM product_variants pv
                 INNER JOIN products p ON pv.product_id = p.id
                 WHERE p.is_archived = 0
+                  AND pv.is_archived = 0
                   AND pv.stock > 0
                   AND pv.stock <= 10
             ");
@@ -314,6 +315,7 @@ if (!empty($user['profile_image'])) {
                             FROM product_variants pv
                             INNER JOIN products p ON pv.product_id = p.id
                             WHERE p.is_archived = 0
+                              AND pv.is_archived = 0
                               AND pv.stock <= 0
                         ");
                         $outOfStockTotal += (int) $stmt->fetchColumn();

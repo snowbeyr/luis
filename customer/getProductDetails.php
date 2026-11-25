@@ -37,6 +37,7 @@ try {
         SELECT *
         FROM public.product_variants
         WHERE product_id = :product_id
+          AND is_archived = 0
         ORDER BY id ASC
     ";
 

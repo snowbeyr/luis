@@ -71,6 +71,7 @@ $products_stmt = $pdo->query("
     FROM product_variants v
     JOIN products p ON v.product_id = p.id
     WHERE p.is_archived = 0
+      AND v.is_archived = 0
     
     ORDER BY product_name ASC
 ");

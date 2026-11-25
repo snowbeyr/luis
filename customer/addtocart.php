@@ -14,7 +14,7 @@ if ($qty < 1) $qty = 1;
 $variant_id = isset($_GET['variant_id']) ? trim($_GET['variant_id']) : '';
 
 // Kunin ang main product gamit ang PDO prepared statement
-$product_stmt = $pdo->prepare("SELECT * FROM products WHERE id = :id");
+$product_stmt = $pdo->prepare("SELECT * FROM products WHERE id = :id AND is_archived = 0");
 $product_stmt->execute([':id' => $id]);
 $product_row = $product_stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -34,7 +34,7 @@ $cart_key = $id;
 
 // Kung may Variant
 if (!empty($variant_id) && $variant_id !== 'MAIN_PRODUCT') {
-    $variant_stmt = $pdo->prepare("SELECT * FROM product_variants WHERE id = :variant_id AND product_id = :product_id");
+    $variant_stmt = $pdo->prepare("SELECT * FROM product_variants WHERE id = :variant_id AND product_id = :product_id AND is_archived = 0");
     $variant_stmt->execute([
         ':variant_id' => $variant_id,
         ':product_id' => $id

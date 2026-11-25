@@ -12,7 +12,7 @@ $query = trim($_GET['q'] ?? '');
 
 try {
     $where_main = "p.is_archived = 0";
-    $where_var = "p.is_archived = 0";
+    $where_var = "p.is_archived = 0 AND v.is_archived = 0";
     $params_main = [];
     $params_var = [];
 

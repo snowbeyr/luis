@@ -87,7 +87,8 @@ $base_sql = "
     LEFT JOIN shared_inventory_sources sis ON siv.source_id = sis.id AND sis.is_active = 1
     UNION ALL
     SELECT 
-        v.id, v.variant_name AS product_name, v.price, v.stock, COALESCE(NULLIF(v.variant_image, ''), p.image) AS image, p.is_archived, 'Variant Item' AS item_type,
+        v.id, v.variant_name AS product_name, v.price, v.stock, COALESCE(NULLIF(v.variant_image, ''), p.image) AS image,
+        CASE WHEN p.is_archived = 1 OR v.is_archived = 1 THEN 1 ELSE 0 END AS is_archived, 'Variant Item' AS item_type,
         v.id AS variant_id, p.id AS product_id,
         sis.id AS shared_source_id, sis.source_name AS shared_source_name, sis.base_unit AS shared_base_unit,
         sis.physical_stock AS shared_physical_stock, siv.conversion_qty AS shared_conversion_qty,

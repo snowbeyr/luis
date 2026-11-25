@@ -13,7 +13,7 @@ if (isset($_GET['id'])) {
     $variant_id = isset($_GET['variant_id']) ? mysqli_real_escape_string($conn, $_GET['variant_id']) : '';
 
     // Kunin muna ang detalye ng main product (gaya ng pangalan at imahe)
-    $p_res = mysqli_query($conn, "SELECT id, product_name, price, image FROM products WHERE id = '$product_id'");
+    $p_res = mysqli_query($conn, "SELECT id, product_name, price, image FROM products WHERE id = '$product_id' AND is_archived = 0");
     $p_data = mysqli_fetch_assoc($p_res);
 
     if (!$p_data) {
@@ -25,7 +25,7 @@ if (isset($_GET['id'])) {
     if (!empty($variant_id) && $variant_id !== 'MAIN_PRODUCT') {
         
         // Kunin ang presyo at pangalan ng variant mula sa product_variants table
-        $v_res = mysqli_query($conn, "SELECT variant_name, price, variant_image FROM product_variants WHERE id = '$variant_id' AND product_id = '$product_id'");
+        $v_res = mysqli_query($conn, "SELECT variant_name, price, variant_image FROM product_variants WHERE id = '$variant_id' AND product_id = '$product_id' AND is_archived = 0");
         $v_data = mysqli_fetch_assoc($v_res);
 
         if ($v_data) {
