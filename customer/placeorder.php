@@ -1178,6 +1178,97 @@ function extractReferenceNumber(text) {
     return '';
 }
 
+function escapeOcrHtml(str) {
+    return String(str || '').replace(/[&<>"']/g, function(ch) {
+        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch];
+    });
+}
+
+async function callGeminiReceiptOCR(file, mode) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 28000);
+    try {
+        const formData = new FormData();
+        formData.append('receipt', file);
+        formData.append('mode', mode || 'payment');
+
+        const response = await fetch('../ocr-receipt.php', {
+            method: 'POST',
+            body: formData,
+            signal: controller.signal
+        });
+
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload || !payload.success || !payload.data) {
+            throw new Error((payload && payload.error) ? payload.error : ('HTTP ' + response.status));
+        }
+        return payload;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function parseReceiptTextFields(text, requiredAmount) {
+    const officialNumbers = ['09073595023', '09682770376'];
+    let detectedSentTo = '';
+    let isOfficialRecipient = false;
+
+    const phoneRegex = /(?:\+?63\s*9\d{2}[\s\-]?\d{3}[\s\-]?\d{4}|09\d{2}[\s\-]?\d{3}[\s\-]?\d{4}|\b9\d{9}\b)/g;
+    let allPhoneMatches = (text || '').match(phoneRegex) || [];
+
+    let candidatePhones = [];
+    for (let rawP of allPhoneMatches) {
+        let digits = rawP.replace(/\D/g, '');
+        if (digits.startsWith('63') && digits.length === 12) {
+            digits = '0' + digits.substring(2);
+        } else if (digits.length === 10 && digits.startsWith('9')) {
+            digits = '0' + digits;
+        }
+        if (digits.length === 11 && digits.startsWith('09')) {
+            if (!candidatePhones.includes(digits)) {
+                candidatePhones.push(digits);
+            }
+        }
+    }
+
+    for (let p of candidatePhones) {
+        if (officialNumbers.includes(p)) {
+            detectedSentTo = p;
+            isOfficialRecipient = true;
+            break;
+        }
+    }
+
+    if (!isOfficialRecipient && text) {
+        const cleanDigitsOnly = text.replace(/\D/g, '');
+        if (cleanDigitsOnly.includes('09073595023') || cleanDigitsOnly.includes('639073595023')) {
+            detectedSentTo = '09073595023';
+            isOfficialRecipient = true;
+        } else if (cleanDigitsOnly.includes('09682770376') || cleanDigitsOnly.includes('639682770376')) {
+            detectedSentTo = '09682770376';
+            isOfficialRecipient = true;
+        }
+    }
+
+    if (!isOfficialRecipient && candidatePhones.length > 0) {
+        detectedSentTo = candidatePhones[0];
+    }
+
+    let detectedRef = extractReferenceNumber(text);
+    let detectedAmount = extractExactPaymentAmount(text, requiredAmount);
+
+    let detectedDateTime = '';
+    let dateTimeMatch = (text || '').match(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}(?:\s*,?\s*\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?)?\b/i);
+    if (!dateTimeMatch) {
+        dateTimeMatch = (text || '').match(/(?:\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4})\s*(?:\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?)?/i);
+    }
+    if (dateTimeMatch) {
+        detectedDateTime = dateTimeMatch[0].trim();
+    }
+
+    return { detectedRef, detectedAmount, detectedDateTime, detectedSentTo, isOfficialRecipient };
+}
+
 async function processReceiptOCR(fileInput) {
     const file = fileInput.files[0];
     if (!file) return;
@@ -1196,109 +1287,91 @@ async function processReceiptOCR(fileInput) {
 
     statusBox.classList.remove('d-none', 'alert-success', 'alert-danger', 'alert-warning');
     statusBox.classList.add('alert-info');
-    statusText.innerHTML = '<div class="spinner-border spinner-border-sm me-1" role="status"></div> Scanning receipt image via OCR...';
+    statusText.innerHTML = '<div class="spinner-border spinner-border-sm me-1" role="status"></div> Scanning receipt with AI OCR...';
 
     const renderDetailsSummary = (ref, amt, reqAmt, sentTo, dt) => {
         let h = '<hr class="my-2"><div class="small text-dark">';
-        if (ref) h += `<div>Ref No: <b>${ref}</b></div>`;
+        if (ref) h += `<div>Ref No: <b>${escapeOcrHtml(ref)}</b></div>`;
         if (amt) {
             let fAmt = parseFloat(amt).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
             let fReq = reqAmt.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
             h += `<div>Detected Payment Amount: <b>₱${fAmt}</b> (Required: ₱${fReq})</div>`;
         }
-        if (sentTo) h += `<div>Sent To Number: <b>${sentTo}</b></div>`;
-        if (dt) h += `<div>Date & Time: <b>${dt}</b></div>`;
+        if (sentTo) h += `<div>Sent To Number: <b>${escapeOcrHtml(sentTo)}</b></div>`;
+        if (dt) h += `<div>Date & Time: <b>${escapeOcrHtml(dt)}</b></div>`;
         h += '</div>';
         return h;
     };
 
     try {
-        const result = await Tesseract.recognize(
-            file,
-            'eng',
-            {
-                logger: m => {
-                    if (m.status === 'recognizing text') {
-                        let progress = Math.round(m.progress * 100);
-                        statusText.innerHTML = `<div class="spinner-border spinner-border-sm me-1" role="status"></div> Reading text: ${progress}%`;
-                    }
-                }
-            }
-        );
-
-        const text = result.data.text || '';
-        console.log("OCR Extracted Raw Text:\n", text);
-
-        const lowerText = text.toLowerCase();
+        const officialNumbers = ['09073595023', '09682770376'];
         const requiredAmount = getRequiredPaymentAmount();
 
-        // 1. Detect Phone Number (ONLY the 2 official numbers are accepted)
-        // Official GCash Number: 09073595023
-        // Official Maya Number:  09682770376
-        const officialNumbers = ['09073595023', '09682770376'];
-
+        let text = '';
+        let detectedRef = '';
+        let detectedAmount = '';
+        let detectedDateTime = '';
         let detectedSentTo = '';
         let isOfficialRecipient = false;
+        let isReceipt = true;
 
-        // Collect all potential phone numbers from lines and text
-        const phoneRegex = /(?:\+?63\s*9\d{2}[\s\-]?\d{3}[\s\-]?\d{4}|09\d{2}[\s\-]?\d{3}[\s\-]?\d{4}|\b9\d{9}\b)/g;
-        let allPhoneMatches = text.match(phoneRegex) || [];
+        try {
+            const geminiRes = await callGeminiReceiptOCR(file, 'payment');
+            const gData = geminiRes.data || {};
+            text = (gData.raw_text || '').trim();
+            isReceipt = gData.is_receipt !== false;
 
-        let candidatePhones = [];
-        for (let rawP of allPhoneMatches) {
-            let digits = rawP.replace(/\D/g, '');
-            if (digits.startsWith('63') && digits.length === 12) {
-                digits = '0' + digits.substring(2);
-            } else if (digits.length === 10 && digits.startsWith('9')) {
-                digits = '0' + digits;
+            const parsedFromText = parseReceiptTextFields(text, requiredAmount);
+            detectedRef = (gData.ref_no || '').trim() || parsedFromText.detectedRef;
+            detectedAmount = (gData.amount || '').trim() || parsedFromText.detectedAmount;
+            detectedDateTime = (gData.receipt_dt || '').trim() || parsedFromText.detectedDateTime;
+
+            let gSentDigits = String(gData.sent_to || '').replace(/\D/g, '');
+            if (gSentDigits.startsWith('63') && gSentDigits.length === 12) {
+                gSentDigits = '0' + gSentDigits.substring(2);
+            } else if (gSentDigits.length === 10 && gSentDigits.startsWith('9')) {
+                gSentDigits = '0' + gSentDigits;
             }
-            if (digits.length === 11 && digits.startsWith('09')) {
-                if (!candidatePhones.includes(digits)) {
-                    candidatePhones.push(digits);
+
+            if (officialNumbers.includes(gSentDigits)) {
+                detectedSentTo = gSentDigits;
+                isOfficialRecipient = true;
+            } else if (parsedFromText.isOfficialRecipient) {
+                detectedSentTo = parsedFromText.detectedSentTo;
+                isOfficialRecipient = true;
+            } else {
+                detectedSentTo = (gSentDigits.length === 11 && gSentDigits.startsWith('09'))
+                    ? gSentDigits
+                    : ((gData.sent_to || '').trim() || parsedFromText.detectedSentTo);
+            }
+
+            console.log("Gemini OCR Extracted (" + (geminiRes.model || 'gemini') + "):", gData);
+        } catch (geminiErr) {
+            console.warn("Gemini OCR unavailable, falling back to Tesseract.js:", geminiErr);
+            statusText.innerHTML = '<div class="spinner-border spinner-border-sm me-1" role="status"></div> Scanning receipt image via fallback OCR...';
+
+            const result = await Tesseract.recognize(
+                file,
+                'eng',
+                {
+                    logger: m => {
+                        if (m.status === 'recognizing text') {
+                            let progress = Math.round(m.progress * 100);
+                            statusText.innerHTML = `<div class="spinner-border spinner-border-sm me-1" role="status"></div> Reading text: ${progress}%`;
+                        }
+                    }
                 }
-            }
-        }
+            );
 
-        // Check if any candidate matches an official number
-        for (let p of candidatePhones) {
-            if (officialNumbers.includes(p)) {
-                detectedSentTo = p;
-                isOfficialRecipient = true;
-                break;
-            }
-        }
+            text = result.data.text || '';
+            console.log("Tesseract Fallback OCR Raw Text:\n", text);
 
-        // Also check if text literally contains the continuous digits of official numbers
-        if (!isOfficialRecipient) {
-            const cleanDigitsOnly = text.replace(/\D/g, '');
-            if (cleanDigitsOnly.includes('09073595023') || cleanDigitsOnly.includes('639073595023')) {
-                detectedSentTo = '09073595023';
-                isOfficialRecipient = true;
-            } else if (cleanDigitsOnly.includes('09682770376') || cleanDigitsOnly.includes('639682770376')) {
-                detectedSentTo = '09682770376';
-                isOfficialRecipient = true;
-            }
-        }
-
-        // If neither official number is detected, store the first non-official number found (number lang, huwag name)
-        if (!isOfficialRecipient && candidatePhones.length > 0) {
-            detectedSentTo = candidatePhones[0];
-        }
-
-        // 2. Extract Reference Number
-        let detectedRef = extractReferenceNumber(text);
-
-        // 3. Extract Exact Payment Amount
-        let detectedAmount = extractExactPaymentAmount(text, requiredAmount);
-
-        // 4. Extract Date & Time
-        let detectedDateTime = '';
-        let dateTimeMatch = text.match(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}(?:\s*,?\s*\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?)?\b/i);
-        if (!dateTimeMatch) {
-            dateTimeMatch = text.match(/(?:\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4})\s*(?:\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?)?/i);
-        }
-        if (dateTimeMatch) {
-            detectedDateTime = dateTimeMatch[0].trim();
+            const parsedFromText = parseReceiptTextFields(text, requiredAmount);
+            detectedRef = parsedFromText.detectedRef;
+            detectedAmount = parsedFromText.detectedAmount;
+            detectedDateTime = parsedFromText.detectedDateTime;
+            detectedSentTo = parsedFromText.detectedSentTo;
+            isOfficialRecipient = parsedFromText.isOfficialRecipient;
         }
 
         // Populate hidden inputs with detected values so backend receives them
@@ -1307,14 +1380,24 @@ async function processReceiptOCR(fileInput) {
         if (detectedDateTime) dtInput.value = detectedDateTime;
         if (detectedSentTo) sentToInput.value = detectedSentTo;
 
-        // 5. Evaluate Recipient Number:
-        // Kapag wala dyan sa dalawang number ang nadetect, lalabas na ang Incorrect Recipient Number note
+        // Evaluate Recipient Number & Receipt Readability
         let isIncorrectRecipient = !isOfficialRecipient;
+        let hasReadableReceiptContent = (text.trim().length >= 15) || Boolean(detectedRef || detectedAmount || detectedSentTo);
 
-        // 6. Evaluate the 4 Validation States:
+        // Evaluate the 4 Validation States
         statusBox.classList.remove('alert-info', 'alert-success', 'alert-danger', 'alert-warning');
 
-        if (isIncorrectRecipient) {
+        if (!isReceipt || (!hasReadableReceiptContent && !detectedSentTo)) {
+            // STATE 3: Unable to Read Receipt
+            statusBox.classList.add('alert-warning');
+            statusText.innerHTML = `
+                <div class="fw-bold fs-6 mb-1 text-dark">
+                    <i class="bi bi-question-circle-fill text-warning me-1"></i>Unable to Read Receipt
+                </div>
+                <div>We couldn't accurately read your receipt. Please make sure the uploaded image is clear and readable. Your payment will require manual verification. Our staff will also check whether the payment was sent to the correct account number displayed in our official QR code.</div>
+                ${renderDetailsSummary(detectedRef, detectedAmount, requiredAmount, detectedSentTo, detectedDateTime)}
+            `;
+        } else if (isIncorrectRecipient) {
             // STATE 4: Incorrect Recipient Number
             statusBox.classList.add('alert-warning');
             statusText.innerHTML = `
@@ -1324,7 +1407,7 @@ async function processReceiptOCR(fileInput) {
                 <div>Your payment appears to have been sent to a different account number instead of the official account number displayed in our QR code. Payments sent to unauthorized account numbers cannot be automatically verified and will require manual review by our staff before your order can be approved.</div>
                 ${renderDetailsSummary(detectedRef, detectedAmount, requiredAmount, detectedSentTo, detectedDateTime)}
             `;
-        } else if (!detectedAmount || parseFloat(detectedAmount) <= 0 || text.trim().length < 15) {
+        } else if (!detectedAmount || parseFloat(detectedAmount) <= 0) {
             // STATE 3: Unable to Read Receipt
             statusBox.classList.add('alert-warning');
             statusText.innerHTML = `
