@@ -1228,8 +1228,8 @@ foreach ($allOrders as $o) {
                                 <div class="stepper-label">Order Placed</div>
                             </div>
                             <div class="stepper-step" id="step-confirmed">
-                                <div class="stepper-icon"><i class="bi bi-wallet2"></i></div>
-                                <div class="stepper-label">Payment Confirmed</div>
+                                <div class="stepper-icon"><i class="bi bi-patch-check"></i></div>
+                                <div class="stepper-label">Approved</div>
                             </div>
                             <div class="stepper-step" id="step-preparing">
                                 <div class="stepper-icon"><i class="bi bi-box-seam"></i></div>
@@ -1444,10 +1444,13 @@ foreach ($allOrders as $o) {
                 if (elConfirmed) elConfirmed.classList.add('active');
                 alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-warning-subtle text-warning-emphasis border border-warning-subtle';
                 alertBox.innerHTML = '<i class="bi bi-check2 me-1"></i> Order approved! Scheduled for preparation.';
-            } else if (status === 'cancelled' || status === 'declined') {
+            } else if (status === 'cancelled' || status === 'canceled' || status === 'declined') {
                 stepperFill.style.width = '0%';
+                const elPlaced = document.getElementById('step-placed');
+                if (elPlaced) elPlaced.classList.add('active');
+                const displayStatus = (status === 'canceled') ? 'CANCELLED' : status.toUpperCase();
                 alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-danger-subtle text-danger border border-danger-subtle';
-                alertBox.innerHTML = `<i class="bi bi-x-circle-fill me-1"></i> This order was ${status.toUpperCase()}.`;
+                alertBox.innerHTML = `<i class="bi bi-x-circle-fill me-1"></i> This order was ${displayStatus}.`;
             } else {
                 // Pending
                 stepperFill.style.width = '4%';
