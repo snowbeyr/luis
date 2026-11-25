@@ -861,7 +861,7 @@ if ($current_view === 'shared_stock') {
         } elseif ($status_filter === 'low_stock') {
             $where_clauses[] = "(inv.stock > 0 AND inv.stock <= {$low_stock_threshold})";
         } elseif ($status_filter === 'out_of_stock') {
-            $where_clauses[] = "(inv.stock <= 0 AND NOT (inv.item_type = 'Main' AND inv.active_variants_count > 0))";
+            $where_clauses[] = "inv.stock <= 0";
         }
     }
 
@@ -892,13 +892,13 @@ if ($current_view === 'shared_stock') {
 
     $where_sql = implode(' AND ', $where_clauses);
 
-    $order_sql = "ORDER BY inv.parent_sort_id DESC, inv.is_variant_order ASC, inv.id ASC";
+    $order_sql = "ORDER BY inv.id DESC, inv.is_variant_order ASC";
     if ($sort === 'oldest') {
-        $order_sql = "ORDER BY inv.parent_sort_id ASC, inv.is_variant_order ASC, inv.id ASC";
+        $order_sql = "ORDER BY inv.id ASC, inv.is_variant_order ASC";
     } elseif ($sort === 'az') {
-        $order_sql = "ORDER BY inv.item_name ASC, inv.is_variant_order ASC";
+        $order_sql = "ORDER BY LOWER(inv.item_name) ASC, inv.is_variant_order ASC";
     } elseif ($sort === 'za') {
-        $order_sql = "ORDER BY inv.item_name DESC, inv.is_variant_order ASC";
+        $order_sql = "ORDER BY LOWER(inv.item_name) DESC, inv.is_variant_order ASC";
     } elseif ($sort === 'stock_asc') {
         $order_sql = "ORDER BY inv.stock ASC, inv.id ASC";
     } elseif ($sort === 'stock_desc') {
@@ -1097,50 +1097,42 @@ if (!function_exists('getQueryUrl')) {
         }
 
         /* Table Styling (Matched to Reference Layout) */
-        .inventory-table {
-            border-collapse: separate;
-            border-spacing: 0;
-            width: 100%;
-            border: 1px solid var(--border-color);
+        .table-card {
             border-radius: 12px;
-            overflow: hidden;
+            border: 1px solid var(--border-color);
+            background: #ffffff;
+        }
+
+        .inventory-table {
+            width: 100%;
+            margin-bottom: 0;
             background: #ffffff;
         }
 
         .inventory-table thead th {
-            background-color: #f8fafc !important;
-            color: #475569 !important;
+            background-color: #f8f9fa !important;
+            color: #6c757d !important;
             font-weight: 700;
             font-size: 0.78rem;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
-            padding: 13px 14px;
+            letter-spacing: 0.4px;
+            padding: 14px 16px;
             vertical-align: middle;
             border-bottom: 1px solid var(--border-color);
             white-space: nowrap;
         }
 
-        .inventory-table tbody tr.main-row {
+        .inventory-table tbody tr {
             background-color: #ffffff;
             transition: background-color 0.15s ease;
         }
 
-        .inventory-table tbody tr.main-row:hover {
+        .inventory-table tbody tr:hover {
             background-color: #f8fafc;
         }
 
-        .inventory-table tbody tr.variant-row {
-            background-color: #fcfdff;
-            border-left: 3px solid #8b5cf6;
-            transition: background-color 0.15s ease;
-        }
-
-        .inventory-table tbody tr.variant-row:hover {
-            background-color: #f3f6ff;
-        }
-
         .inventory-table td {
-            padding: 11px 14px;
+            padding: 12px 16px;
             vertical-align: middle;
             border-bottom: 1px solid #f1f5f9;
             font-size: 0.9rem;
@@ -1148,19 +1140,20 @@ if (!function_exists('getQueryUrl')) {
 
         /* Item Image Thumbnail */
         .item-img {
-            width: 44px;
-            height: 44px;
+            width: 48px;
+            height: 48px;
             object-fit: cover;
             border-radius: 8px;
-            border: 1px solid #e2e8f0;
-            background: #fff;
+            border: 1px solid #dee2e6;
+            background-color: #f1f5f9;
             cursor: zoom-in;
-            transition: transform 0.2s ease;
+            transition: transform 0.2s ease, opacity 0.2s ease;
             flex-shrink: 0;
         }
 
         .item-img:hover {
-            transform: scale(1.1);
+            transform: scale(1.05);
+            opacity: 0.9;
         }
 
         /* Searchable Main Product Dropdown inside Add Variant Modal */
@@ -1208,12 +1201,6 @@ if (!function_exists('getQueryUrl')) {
             background-color: #fee2e2;
             color: #b91c1c;
             border: 1px solid #fecaca;
-        }
-
-        .badge-has-variants {
-            background-color: #e0e7ff;
-            color: #3730a3;
-            border: 1px solid #c7d2fe;
         }
 
         .badge-archived {
@@ -1735,124 +1722,101 @@ if (!function_exists('getQueryUrl')) {
                 </div>
 
                 <!-- Unified Inventory Table -->
-                <div class="table-responsive">
-                    <table class="inventory-table align-middle">
-                        <thead>
-                            <tr>
-                                <th style="width: 85px;">Item ID</th>
-                                <th class="text-center" style="width: 75px;">Image</th>
-                                <th style="min-width: 240px;">Product Name</th>
-                                <th style="width: 110px;">Type</th>
-                                <th style="width: 140px;">Category</th>
-                                <th class="text-end" style="width: 120px;">Price</th>
-                                <th class="text-center" style="width: 90px;">Stock</th>
-                                <th class="text-center" style="width: 150px;">Status</th>
-                                <th class="text-center" style="width: 120px;">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="inventoryTableBody">
-                            <?php if (!empty($inventory_items)): ?>
-                                <?php foreach ($inventory_items as $row): 
-                                    $is_variant = ($row['item_type'] === 'Variant');
-                                    $item_id = (int) $row['id'];
-                                    $prod_id = (int) $row['product_id'];
-                                    $item_stock = (int) $row['stock'];
-                                    $is_archived = (int) ($row['is_archived'] ?? 0);
-                                    $parent_is_archived = (int) ($row['parent_is_archived'] ?? 0);
-                                    $active_vars_cnt = (int) ($row['active_variants_count'] ?? 0);
-                                    $archived_vars_cnt = (int) ($row['archived_variants_count'] ?? 0);
-                                    $has_active_variants = (!$is_variant && $active_vars_cnt > 0);
+                <div class="card table-card shadow-sm overflow-hidden">
+                    <div class="table-responsive">
+                        <table class="table table-hover inventory-table align-middle mb-0">
+                            <thead class="table-light text-secondary small text-uppercase">
+                                <tr>
+                                    <th class="ps-4" style="width: 90px;">Item ID</th>
+                                    <th style="width: 80px;">Image</th>
+                                    <th style="min-width: 240px;">Product Name</th>
+                                    <th style="width: 110px;">Type</th>
+                                    <th style="width: 140px;">Category</th>
+                                    <th style="width: 120px;">Price</th>
+                                    <th style="width: 95px;">Stock</th>
+                                    <th class="text-center" style="width: 145px;">Status</th>
+                                    <th class="pe-4 text-center" style="width: 120px;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="inventoryTableBody">
+                                <?php if (!empty($inventory_items)): ?>
+                                    <?php foreach ($inventory_items as $row): 
+                                        $is_variant = ($row['item_type'] === 'Variant');
+                                        $item_id = (int) $row['id'];
+                                        $prod_id = (int) $row['product_id'];
+                                        $item_stock = (int) $row['stock'];
+                                        $is_archived = (int) ($row['is_archived'] ?? 0);
+                                        $parent_is_archived = (int) ($row['parent_is_archived'] ?? 0);
+                                        $active_vars_cnt = (int) ($row['active_variants_count'] ?? 0);
+                                        $archived_vars_cnt = (int) ($row['archived_variants_count'] ?? 0);
 
-                                    $img_src = getProductImageSrc($row['image']);
-                                    $display_name = $is_variant
-                                        ? formatUnifiedVariantDisplayName((string)$row['parent_name'], (string)$row['item_name'])
-                                        : trim((string)$row['item_name']);
+                                        $img_src = getProductImageSrc($row['image']);
+                                        $display_name = $is_variant
+                                            ? formatUnifiedVariantDisplayName((string)$row['parent_name'], (string)$row['item_name'])
+                                            : trim((string)$row['item_name']);
 
-                                    // Stock & Status display
-                                    if ($is_archived === 1) {
-                                        if ($is_variant && $parent_is_archived === 1) {
-                                            $status_badge = '<span class="badge-status badge-archived" title="Parent main product is archived"><i class="bi bi-archive-fill"></i> Archived (Parent)</span>';
-                                        } else {
-                                            $status_badge = '<span class="badge-status badge-archived"><i class="bi bi-archive-fill"></i> Archived</span>';
-                                        }
-                                        $stock_display = $has_active_variants
-                                            ? '<span class="text-muted fw-semibold">—</span>'
-                                            : '<span class="fw-bold text-muted">' . $item_stock . '</span>';
-                                    } elseif ($has_active_variants && $item_stock <= 0) {
-                                        // Main product acting purely as variant container (stock = 0)
-                                        $stock_display = '<span class="text-muted fw-bold" title="Stock tracked per variant">—</span>';
-                                        $status_badge = '<span class="badge-status badge-has-variants"><i class="bi bi-layers-fill"></i> Has Variants</span>';
-                                    } else {
-                                        $stock_display = '<span class="fw-bold text-dark">' . $item_stock . '</span>';
-                                        if ($item_stock <= 0) {
-                                            $status_badge = '<span class="badge-status badge-out-of-stock"><i class="bi bi-x-circle-fill"></i> Out of Stock</span>';
+                                        // Stock & Status display (flat per-item stock)
+                                        $stock_display = '<span class="fw-bold ' . ($is_archived === 1 ? 'text-muted' : 'text-dark') . '">' . $item_stock . '</span>';
+                                        if ($is_archived === 1) {
+                                            if ($is_variant && $parent_is_archived === 1) {
+                                                $status_badge = '<span class="badge bg-danger text-white px-2 py-1 rounded" title="Parent main product is archived"><i class="bi bi-archive-fill me-1"></i> Archived (Parent)</span>';
+                                            } else {
+                                                $status_badge = '<span class="badge bg-danger text-white px-2 py-1 rounded"><i class="bi bi-archive-fill me-1"></i> Archived</span>';
+                                            }
+                                        } elseif ($item_stock <= 0) {
+                                            $status_badge = '<span class="badge bg-danger-subtle text-danger px-2 py-1 rounded fw-semibold">Out of Stock</span>';
                                         } elseif ($item_stock <= $low_stock_threshold) {
-                                            $status_badge = '<span class="badge-status badge-low-stock"><i class="bi bi-exclamation-triangle-fill"></i> Low Stock</span>';
+                                            $status_badge = '<span class="badge bg-warning-subtle text-warning px-2 py-1 rounded fw-semibold">Low Stock</span>';
                                         } else {
-                                            $status_badge = '<span class="badge-status badge-in-stock"><i class="bi bi-check-circle-fill"></i> Good Stock</span>';
+                                            $status_badge = '<span class="badge bg-success-subtle text-success px-2 py-1 rounded fw-semibold">Good Stock</span>';
                                         }
-                                        if ($has_active_variants) {
-                                            $status_badge .= '<div class="mt-1"><span class="badge bg-primary-subtle text-primary border border-primary-subtle" style="font-size: 0.7rem;">Has ' . $active_vars_cnt . ' Variant' . ($active_vars_cnt === 1 ? '' : 's') . '</span></div>';
-                                        }
-                                    }
-                                ?>
-                                    <tr class="<?= $is_variant ? 'variant-row' : 'main-row'; ?>" id="<?= $is_variant ? 'variant-row-' . $item_id : 'product-row-' . $item_id; ?>">
-                                        <td class="text-muted font-monospace fw-semibold">
-                                            #<?= $item_id; ?>
-                                        </td>
+                                    ?>
+                                        <tr class="inventory-row" id="<?= $is_variant ? 'variant-row-' . $item_id : 'product-row-' . $item_id; ?>">
+                                            <td class="ps-4 text-muted font-monospace">
+                                                #<?= $item_id; ?>
+                                            </td>
 
-                                        <td class="text-center">
-                                            <img src="<?= htmlspecialchars($img_src, ENT_QUOTES, 'UTF-8'); ?>"
-                                                 alt="<?= htmlspecialchars($display_name); ?>"
-                                                 class="item-img"
-                                                 loading="lazy"
-                                                 onclick="openProductImageZoom(this.src)"
-                                                 title="Click to view large image"
-                                                 onerror="this.onerror=null; this.src='../assets/images/no-image.png';">
-                                        </td>
+                                            <td>
+                                                <img src="<?= htmlspecialchars($img_src, ENT_QUOTES, 'UTF-8'); ?>"
+                                                     alt="<?= htmlspecialchars($display_name); ?>"
+                                                     class="item-img"
+                                                     loading="lazy"
+                                                     onclick="openProductImageZoom(this.src)"
+                                                     title="Click to view large image"
+                                                     onerror="this.onerror=null; this.src='../assets/images/no-image.png';">
+                                            </td>
 
-                                        <td>
-                                            <?php if ($is_variant): ?>
-                                                <div class="d-flex align-items-center ps-3">
-                                                    <i class="bi bi-arrow-return-right text-secondary me-2 flex-shrink-0"></i>
-                                                    <span class="fw-semibold text-dark"><?= htmlspecialchars($display_name); ?></span>
-                                                </div>
-                                            <?php else: ?>
+                                            <td>
                                                 <span class="fw-bold text-dark"><?= htmlspecialchars($display_name); ?></span>
-                                            <?php endif; ?>
-                                        </td>
+                                            </td>
 
-                                        <td>
-                                            <?php if ($is_variant): ?>
-                                                <span class="badge fw-semibold px-2 py-1" style="background:#f3e8ff; color:#6b21a8; border:1px solid #e9d5ff;">
-                                                    <i class="bi bi-layers-half me-1"></i>Variant
+                                            <td>
+                                                <?php if ($is_variant): ?>
+                                                    <span class="text-dark fw-semibold small"><i class="bi bi-layers-half me-1"></i>Variant</span>
+                                                <?php else: ?>
+                                                    <span class="text-primary fw-semibold small"><i class="bi bi-box me-1"></i>Main</span>
+                                                <?php endif; ?>
+                                            </td>
+
+                                            <td>
+                                                <span class="badge bg-light text-dark border px-2 py-1">
+                                                    <?= htmlspecialchars($row['category'] ?: 'Uncategorized'); ?>
                                                 </span>
-                                            <?php else: ?>
-                                                <span class="badge bg-primary-subtle text-primary border border-primary-subtle fw-semibold px-2 py-1">
-                                                    <i class="bi bi-box me-1"></i>Main
-                                                </span>
-                                            <?php endif; ?>
-                                        </td>
+                                            </td>
 
-                                        <td>
-                                            <span class="badge bg-light text-dark border px-2 py-1">
-                                                <?= htmlspecialchars($row['category'] ?: 'Uncategorized'); ?>
-                                            </span>
-                                        </td>
+                                            <td class="fw-semibold text-dark">
+                                                ₱<?= number_format((float) $row['price'], 2); ?>
+                                            </td>
 
-                                        <td class="text-end fw-semibold text-dark">
-                                            ₱<?= number_format((float) $row['price'], 2); ?>
-                                        </td>
+                                            <td>
+                                                <?= $stock_display; ?>
+                                            </td>
 
-                                        <td class="text-center">
-                                            <?= $stock_display; ?>
-                                        </td>
+                                            <td class="text-center">
+                                                <?= $status_badge; ?>
+                                            </td>
 
-                                        <td class="text-center">
-                                            <?= $status_badge; ?>
-                                        </td>
-
-                                        <td class="text-center">
+                                            <td class="pe-4 text-center">
                                             <div class="d-flex align-items-center justify-content-center gap-1">
                                                 <?php if ($is_archived === 0): ?>
                                                     <?php if ($is_variant): ?>
@@ -1921,6 +1885,7 @@ if (!function_exists('getQueryUrl')) {
                             <?php endif; ?>
                         </tbody>
                     </table>
+                    </div>
                 </div>
 
                 <!-- Pagination Footer -->
