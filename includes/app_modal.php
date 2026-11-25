@@ -17,58 +17,70 @@ if (!empty($_SESSION['app_modal']) && is_array($_SESSION['app_modal'])) {
         z-index: 2240 !important;
     }
     #appSystemModal .modal-content {
-        border: 0;
-        border-radius: 16px;
-        overflow: hidden;
-        box-shadow: 0 18px 45px rgba(5, 28, 60, 0.28);
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        background: #ffffff;
+        box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
     }
     #appSystemModal .app-modal-header {
-        background: #051c3c;
-        color: #ffffff;
-        padding: 16px 20px;
+        background: #ffffff;
+        padding: 18px 22px 8px;
         border-bottom: 0;
     }
-    #appSystemModal .app-modal-icon {
-        width: 44px;
-        height: 44px;
-        border-radius: 12px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 1.35rem;
-        flex-shrink: 0;
+    #appSystemModal .app-modal-title {
+        font-size: 1.02rem;
+        font-weight: 600;
+        color: #111827;
+        margin: 0;
+    }
+    #appSystemModal .app-modal-body {
+        padding: 6px 22px 20px;
+        background: #ffffff;
     }
     #appSystemModalBody {
-        font-size: 0.96rem;
+        font-size: 0.92rem;
         line-height: 1.55;
-        color: #1e293b;
+        color: #4b5563;
         white-space: pre-line;
         overflow-wrap: anywhere;
         word-break: break-word;
     }
+    #appSystemModal .app-modal-footer {
+        background: #ffffff;
+        border-top: 1px solid #f1f5f9;
+        padding: 12px 22px;
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+    }
+    #appSystemModal .btn-app-navy {
+        background: #051c3c;
+        border-color: #051c3c;
+        color: #ffffff;
+    }
+    #appSystemModal .btn-app-navy:hover {
+        background: #0b2d5c;
+        border-color: #0b2d5c;
+        color: #ffffff;
+    }
 </style>
 
 <div class="modal fade" id="appSystemModal" tabindex="-1" aria-labelledby="appSystemModalTitle" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="true">
-    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable" style="max-width: 460px; width: calc(100% - 1.5rem); margin: 0.75rem auto;">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable" style="max-width: 410px; width: calc(100% - 1.5rem); margin: 0.75rem auto;">
         <div class="modal-content">
             <div class="modal-header app-modal-header d-flex align-items-center justify-content-between">
                 <div class="d-flex align-items-center gap-2 overflow-hidden">
-                    <i class="bi bi-shield-check text-warning fs-5 flex-shrink-0" id="appSystemModalHeaderIcon"></i>
-                    <h6 class="modal-title fw-bold mb-0 text-truncate" id="appSystemModalTitle">Notice</h6>
+                    <i class="bi bi-info-circle text-primary fs-5 flex-shrink-0" id="appSystemModalIcon"></i>
+                    <h6 class="modal-title app-modal-title text-truncate" id="appSystemModalTitle">Notice</h6>
                 </div>
-                <button type="button" class="btn-close btn-close-white flex-shrink-0" data-bs-dismiss="modal" aria-label="Close"></button>
+                <button type="button" class="btn-close flex-shrink-0" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
-            <div class="modal-body p-4 bg-white">
-                <div class="d-flex align-items-start gap-3">
-                    <div id="appSystemModalIconWrap" class="app-modal-icon bg-primary-subtle text-primary">
-                        <i class="bi bi-info-circle-fill" id="appSystemModalBodyIcon"></i>
-                    </div>
-                    <div id="appSystemModalBody" class="flex-grow-1 pt-1"></div>
-                </div>
+            <div class="modal-body app-modal-body">
+                <div id="appSystemModalBody"></div>
             </div>
-            <div class="modal-footer bg-light border-top py-2 px-3 d-flex justify-content-end gap-2" id="appSystemModalFooter">
+            <div class="modal-footer app-modal-footer" id="appSystemModalFooter">
                 <button type="button" class="btn btn-outline-secondary btn-sm px-3 d-none" id="appSystemModalCancelBtn" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary btn-sm px-4 fw-semibold" id="appSystemModalConfirmBtn">OK</button>
+                <button type="button" class="btn btn-app-navy btn-sm px-4 fw-medium" id="appSystemModalConfirmBtn">OK</button>
             </div>
         </div>
     </div>
@@ -83,9 +95,7 @@ if (!empty($_SESSION['app_modal']) && is_array($_SESSION['app_modal'])) {
     if (!modalEl) return;
 
     const titleEl = document.getElementById('appSystemModalTitle');
-    const headerIconEl = document.getElementById('appSystemModalHeaderIcon');
-    const iconWrapEl = document.getElementById('appSystemModalIconWrap');
-    const bodyIconEl = document.getElementById('appSystemModalBodyIcon');
+    const iconEl = document.getElementById('appSystemModalIcon');
     const bodyEl = document.getElementById('appSystemModalBody');
     const cancelBtn = document.getElementById('appSystemModalCancelBtn');
     const confirmBtn = document.getElementById('appSystemModalConfirmBtn');
@@ -97,38 +107,28 @@ if (!empty($_SESSION['app_modal']) && is_array($_SESSION['app_modal'])) {
     const TYPE_THEMES = {
         info: {
             title: 'Notice',
-            headerIcon: 'bi-info-circle-fill text-info',
-            wrapClass: 'app-modal-icon bg-primary-subtle text-primary',
-            bodyIcon: 'bi-info-circle-fill',
-            btnClass: 'btn btn-primary btn-sm px-4 fw-semibold'
+            icon: 'bi-info-circle text-primary',
+            btnClass: 'btn btn-app-navy btn-sm px-4 fw-medium'
         },
         success: {
             title: 'Success',
-            headerIcon: 'bi-check-circle-fill text-success',
-            wrapClass: 'app-modal-icon bg-success-subtle text-success',
-            bodyIcon: 'bi-check-circle-fill',
-            btnClass: 'btn btn-success btn-sm px-4 fw-semibold'
+            icon: 'bi-check-circle text-success',
+            btnClass: 'btn btn-success btn-sm px-4 fw-medium'
         },
         warning: {
             title: 'Notice',
-            headerIcon: 'bi-exclamation-triangle-fill text-warning',
-            wrapClass: 'app-modal-icon bg-warning-subtle text-warning-emphasis',
-            bodyIcon: 'bi-exclamation-triangle-fill',
-            btnClass: 'btn btn-warning btn-sm px-4 fw-semibold text-dark'
+            icon: 'bi-exclamation-triangle text-warning',
+            btnClass: 'btn btn-app-navy btn-sm px-4 fw-medium'
         },
         danger: {
             title: 'Action Blocked',
-            headerIcon: 'bi-x-octagon-fill text-danger',
-            wrapClass: 'app-modal-icon bg-danger-subtle text-danger',
-            bodyIcon: 'bi-x-octagon-fill',
-            btnClass: 'btn btn-danger btn-sm px-4 fw-semibold'
+            icon: 'bi-exclamation-circle text-danger',
+            btnClass: 'btn btn-danger btn-sm px-4 fw-medium'
         },
         confirm: {
             title: 'Confirm Action',
-            headerIcon: 'bi-question-circle-fill text-warning',
-            wrapClass: 'app-modal-icon bg-primary-subtle text-primary',
-            bodyIcon: 'bi-question-circle-fill',
-            btnClass: 'btn btn-primary btn-sm px-4 fw-semibold'
+            icon: 'bi-question-circle text-secondary',
+            btnClass: 'btn btn-app-navy btn-sm px-4 fw-medium'
         }
     };
 
@@ -181,9 +181,7 @@ if (!empty($_SESSION['app_modal']) && is_array($_SESSION['app_modal'])) {
         const theme = TYPE_THEMES[typeKey] || TYPE_THEMES.info;
 
         titleEl.textContent = opts.title || theme.title;
-        headerIconEl.className = 'bi ' + theme.headerIcon + ' fs-5 flex-shrink-0';
-        iconWrapEl.className = theme.wrapClass;
-        bodyIconEl.className = 'bi ' + theme.bodyIcon;
+        iconEl.className = 'bi ' + (opts.variant === 'danger' ? 'bi-exclamation-circle text-danger' : theme.icon) + ' fs-5 flex-shrink-0';
         bodyEl.textContent = String(message == null ? '' : message);
 
         if (mode === 'confirm') {
@@ -191,9 +189,9 @@ if (!empty($_SESSION['app_modal']) && is_array($_SESSION['app_modal'])) {
             cancelBtn.textContent = opts.cancelText || 'Cancel';
             confirmBtn.textContent = opts.confirmText || 'Confirm';
             confirmBtn.className = opts.variant === 'danger'
-                ? 'btn btn-danger btn-sm px-4 fw-semibold'
+                ? 'btn btn-danger btn-sm px-4 fw-medium'
                 : (opts.variant === 'success'
-                    ? 'btn btn-success btn-sm px-4 fw-semibold'
+                    ? 'btn btn-success btn-sm px-4 fw-medium'
                     : theme.btnClass);
         } else {
             cancelBtn.classList.add('d-none');
