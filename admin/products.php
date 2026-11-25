@@ -5,6 +5,7 @@ if (session_status() === PHP_SESSION_NONE) {
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../config/image.php';
 require_once __DIR__ . '/../includes/shared_inventory_functions.php';
+require_once __DIR__ . '/../includes/inventory_helpers.php';
 
 if (file_exists(__DIR__ . '/../config/google_drive.php')) {
     require_once __DIR__ . '/../config/google_drive.php';
@@ -47,65 +48,6 @@ if (!function_exists('logInventoryAction')) {
         } catch (Exception $e) {
             error_log("Inventory audit log error: " . $e->getMessage());
         }
-    }
-}
-
-// Helpers for deduplicated product & variant display naming
-if (!function_exists('collapseDuplicateVariantPrefix')) {
-    function collapseDuplicateVariantPrefix(string $name): string
-    {
-        $name = trim(preg_replace('/\s+/', ' ', $name));
-        // Collapse repeated "X - X - Y" -> "X - Y"
-        while (preg_match('/^(.+?)\s*-\s*\1(\s*-\s*.*)?$/i', $name, $m)) {
-            $rest = isset($m[2]) ? trim($m[2]) : '';
-            $name = trim($m[1]) . ($rest !== '' ? ' ' . $rest : '');
-        }
-        return trim($name);
-    }
-}
-
-if (!function_exists('formatUnifiedVariantDisplayName')) {
-    function formatUnifiedVariantDisplayName(string $parentName, string $variantName): string
-    {
-        $parentClean = trim(preg_replace('/\s+/', ' ', $parentName));
-        $variantClean = collapseDuplicateVariantPrefix($variantName);
-
-        if ($variantClean === '') {
-            return $parentClean;
-        }
-        if ($parentClean === '') {
-            return $variantClean;
-        }
-
-        // 1. If full parent name is already present inside variant name, return variant name as-is
-        if (stripos($variantClean, $parentClean) !== false) {
-            return $variantClean;
-        }
-
-        // 2. Strip trailing sizes, parentheticals, spaced dashes, and unit suffixes from parent to get its core product name
-        $parentCore = preg_replace('/\s*\([^)]*\)/', '', $parentClean);
-        $parentCore = preg_replace('/\s+[—\-]\s+.*$/u', '', $parentCore);
-        $parentCore = preg_replace('/\s+\b\d+(?:\.\d+)?\s*(?:inch|mm|cm|m|ft|w|cc|g|kg|kilo|ml|l|liter|liters|sack|sacks|gallon|pail|pc|pcs)\b.*$/i', '', $parentCore);
-        $parentCore = trim($parentCore);
-
-        if ($parentCore !== '' && mb_strlen($parentCore) >= 3 && stripos($variantClean, $parentCore) !== false) {
-            return $variantClean;
-        }
-
-        // 3. Check if any significant non-unit product keyword (len >= 4) from parentCore already appears in variantClean
-        $ignoreWords = ['heavy', 'duty', 'with', 'pack', 'size', 'type', 'kilo', 'sack', 'liter', 'gallon', 'pail'];
-        $words = preg_split('/[\s\-\/]+/', strtolower($parentCore), -1, PREG_SPLIT_NO_EMPTY);
-        $variantLower = strtolower($variantClean);
-        foreach ($words as $w) {
-            $wClean = preg_replace('/[^a-z0-9]/', '', $w);
-            if (strlen($wClean) >= 4 && !in_array($wClean, $ignoreWords, true)) {
-                if (preg_match('/\b' . preg_quote($wClean, '/') . '\b/i', $variantLower)) {
-                    return $variantClean;
-                }
-            }
-        }
-
-        return $parentClean . ' - ' . $variantClean;
     }
 }
 
@@ -224,10 +166,10 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
 
         $v_unit = trim((string)($parent['unit'] ?? '')) ?: 'pcs';
 
-        $dup_check = $pdo->prepare("SELECT id FROM product_variants WHERE product_id = :pid AND LOWER(variant_name) = LOWER(:name)");
-        $dup_check->execute([':pid' => $parent_id, ':name' => $v_name]);
-        if ($dup_check->fetch()) {
-            $_SESSION['error_message'] = "A variant with the name '{$v_name}' already exists for this product.";
+        $v_name = collapseDuplicateVariantPrefix((string)$v_name);
+        $dup_err = checkInventoryItemNameExists($pdo, $v_name, 'variant', 0, (int)$parent_id);
+        if ($dup_err !== null) {
+            $_SESSION['error_message'] = $dup_err;
             header("Location: products.php");
             exit();
         }
@@ -313,10 +255,10 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
 
         $effective_pid = $current_var['product_id'];
 
-        $dup_check = $pdo->prepare("SELECT id FROM product_variants WHERE product_id = :pid AND LOWER(variant_name) = LOWER(:name) AND id != :id");
-        $dup_check->execute([':pid' => $effective_pid, ':name' => $v_name, ':id' => $v_id]);
-        if ($dup_check->fetch()) {
-            $_SESSION['error_message'] = "Another variant with the name '{$v_name}' already exists for this product.";
+        $v_name = collapseDuplicateVariantPrefix((string)$v_name);
+        $dup_err = checkInventoryItemNameExists($pdo, $v_name, 'variant', (int)$v_id, (int)$effective_pid);
+        if ($dup_err !== null) {
+            $_SESSION['error_message'] = $dup_err;
             header("Location: products.php");
             exit();
         }
@@ -370,7 +312,7 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
 // 3. EDIT PRODUCT (POST)
 if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) && $_POST['action'] === 'edit_product') {
     $p_id = filter_input(INPUT_POST, 'product_id', FILTER_VALIDATE_INT) ?: 0;
-    $p_name = trim($_POST['product_name'] ?? '');
+    $p_name = collapseDuplicateVariantPrefix((string)($_POST['product_name'] ?? ''));
     $category = trim($_POST['category'] ?? '');
     $cost_price = (float) ($_POST['cost_price'] ?? 0);
     $price = (float) ($_POST['price'] ?? 0);
@@ -396,10 +338,9 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
     }
 
     try {
-        $dup_check = $pdo->prepare("SELECT id FROM products WHERE LOWER(product_name) = LOWER(:name) AND id != :id");
-        $dup_check->execute([':name' => $p_name, ':id' => $p_id]);
-        if ($dup_check->fetch()) {
-            $_SESSION['error_message'] = "Another product with the name '{$p_name}' already exists.";
+        $dup_err = checkInventoryItemNameExists($pdo, $p_name, 'product', (int)$p_id);
+        if ($dup_err !== null) {
+            $_SESSION['error_message'] = $dup_err;
             header("Location: products.php");
             exit();
         }
@@ -2266,7 +2207,8 @@ if (!function_exists('getQueryUrl')) {
 
                             <div class="mb-3">
                                 <label class="form-label fw-semibold">Variant Name <span class="text-danger">*</span></label>
-                                <input type="text" name="variant_name" id="addVar_name" class="form-control" placeholder="e.g. 1 Elf, 1/2 Sack, 200cc" required>
+                                <input type="text" name="variant_name" id="addVar_name" class="form-control" oninput="checkModalDuplicateName('add_variant')" required>
+                                <div id="addVar_nameError" class="invalid-feedback"></div>
                             </div>
 
                             <div class="mb-3">
@@ -2312,7 +2254,7 @@ if (!function_exists('getQueryUrl')) {
         <div class="modal fade" id="editProductModal" tabindex="-1" aria-labelledby="editProductModalLabel" aria-hidden="true">
             <div class="modal-dialog modal-dialog-centered">
                 <div class="modal-content border-0 shadow">
-                    <form method="POST" action="products.php" enctype="multipart/form-data">
+                    <form method="POST" action="products.php" enctype="multipart/form-data" onsubmit="return validateEditProductForm()">
                         <input type="hidden" name="action" value="edit_product">
                         <input type="hidden" name="product_id" id="editProd_id">
 
@@ -2326,7 +2268,8 @@ if (!function_exists('getQueryUrl')) {
                         <div class="modal-body p-4">
                             <div class="mb-3">
                                 <label class="form-label fw-semibold">Product Name <span class="text-danger">*</span></label>
-                                <input type="text" name="product_name" id="editProd_name" class="form-control" required>
+                                <input type="text" name="product_name" id="editProd_name" class="form-control" oninput="checkModalDuplicateName('edit_product')" required>
+                                <div id="editProd_nameError" class="invalid-feedback"></div>
                             </div>
 
                             <div class="mb-3">
@@ -2382,7 +2325,7 @@ if (!function_exists('getQueryUrl')) {
         <div class="modal fade" id="editVariantModal" tabindex="-1" aria-labelledby="editVariantModalLabel" aria-hidden="true">
             <div class="modal-dialog modal-dialog-centered">
                 <div class="modal-content border-0 shadow">
-                    <form method="POST" action="products.php" enctype="multipart/form-data">
+                    <form method="POST" action="products.php" enctype="multipart/form-data" onsubmit="return validateEditVariantForm()">
                         <input type="hidden" name="action" value="edit_variant">
                         <input type="hidden" name="variant_id" id="editVar_id">
                         <input type="hidden" name="product_id" id="editVar_productId">
@@ -2402,7 +2345,8 @@ if (!function_exists('getQueryUrl')) {
 
                             <div class="mb-3">
                                 <label class="form-label fw-semibold">Variant Name <span class="text-danger">*</span></label>
-                                <input type="text" name="variant_name" id="editVar_name" class="form-control" required>
+                                <input type="text" name="variant_name" id="editVar_name" class="form-control" oninput="checkModalDuplicateName('edit_variant')" required>
+                                <div id="editVar_nameError" class="invalid-feedback"></div>
                             </div>
 
                             <div class="mb-3">
@@ -2565,6 +2509,72 @@ if (!function_exists('getQueryUrl')) {
     <!-- JavaScript Handlers -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        const existingInventoryItems = <?= json_encode(isset($pdo) ? getAllInventoryItemNamesForValidation($pdo) : [], JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
+
+        function normalizeItemNameClient(name) {
+            let clean = String(name || '').replace(/\s+/g, ' ').trim();
+            const dupRe = /^(.+?)\s*-\s*\1(\s*-\s*.*)?$/i;
+            while (dupRe.test(clean)) {
+                clean = clean.replace(dupRe, (_, first, rest) => (first.trim() + (rest ? ' ' + rest.trim() : '')).trim());
+            }
+            return clean.toLowerCase();
+        }
+
+        function findInventoryDuplicateClient(candidateName, itemType, excludeId, parentName = '') {
+            const rawNorm = normalizeItemNameClient(candidateName);
+            if (!rawNorm) return null;
+
+            const candidates = [rawNorm];
+            const parentNorm = normalizeItemNameClient(parentName);
+            if (itemType === 'variant' && parentNorm && !rawNorm.includes(parentNorm)) {
+                candidates.push(`${parentNorm} - ${rawNorm}`);
+            }
+
+            for (const item of existingInventoryItems) {
+                if (excludeId > 0 && item.type === itemType && Number(item.id) === Number(excludeId)) {
+                    continue;
+                }
+                if (candidates.includes(item.name) || candidates.includes(item.display_name)) {
+                    return `Item name already exists in inventory (${item.type === 'product' ? 'Main Product' : 'Variant'}: ${item.display_name}).`;
+                }
+            }
+            return null;
+        }
+
+        function checkModalDuplicateName(mode) {
+            let inputEl, errEl, itemType, excludeId = 0, parentName = '';
+            if (mode === 'add_variant') {
+                inputEl = document.getElementById('addVar_name');
+                errEl = document.getElementById('addVar_nameError');
+                itemType = 'variant';
+                const labelEl = document.getElementById('addVar_selectedLabel');
+                const idEl = document.getElementById('addVar_productId');
+                parentName = (idEl && idEl.value && labelEl) ? labelEl.textContent : '';
+            } else if (mode === 'edit_product') {
+                inputEl = document.getElementById('editProd_name');
+                errEl = document.getElementById('editProd_nameError');
+                itemType = 'product';
+                excludeId = parseInt(document.getElementById('editProd_id')?.value || '0', 10);
+            } else if (mode === 'edit_variant') {
+                inputEl = document.getElementById('editVar_name');
+                errEl = document.getElementById('editVar_nameError');
+                itemType = 'variant';
+                excludeId = parseInt(document.getElementById('editVar_id')?.value || '0', 10);
+                parentName = document.getElementById('editVar_parentName')?.value || '';
+            }
+            if (!inputEl || !errEl) return true;
+
+            const dupMsg = findInventoryDuplicateClient(inputEl.value, itemType, excludeId, parentName);
+            if (dupMsg) {
+                inputEl.classList.add('is-invalid');
+                errEl.textContent = dupMsg;
+                return false;
+            }
+            inputEl.classList.remove('is-invalid');
+            errEl.textContent = '';
+            return true;
+        }
+
         // Image Zoom
         function openProductImageZoom(imgSrc) {
             document.getElementById('zoomImage').src = imgSrc;
@@ -2622,6 +2632,7 @@ if (!function_exists('getQueryUrl')) {
                 const dd = bootstrap.Dropdown.getOrCreateInstance(dropdownBtn);
                 dd.hide();
             }
+            checkModalDuplicateName('add_variant');
         }
 
         function validateAddVariantForm() {
@@ -2637,6 +2648,26 @@ if (!function_exists('getQueryUrl')) {
                         }
                     }
                 });
+                return false;
+            }
+            if (!checkModalDuplicateName('add_variant')) {
+                document.getElementById('addVar_name')?.focus();
+                return false;
+            }
+            return true;
+        }
+
+        function validateEditProductForm() {
+            if (!checkModalDuplicateName('edit_product')) {
+                document.getElementById('editProd_name')?.focus();
+                return false;
+            }
+            return true;
+        }
+
+        function validateEditVariantForm() {
+            if (!checkModalDuplicateName('edit_variant')) {
+                document.getElementById('editVar_name')?.focus();
                 return false;
             }
             return true;
@@ -2664,6 +2695,7 @@ if (!function_exists('getQueryUrl')) {
                 optionsList.querySelectorAll('.searchable-select-option').forEach(btn => btn.classList.remove('active'));
             }
             if (nameInput) nameInput.value = '';
+            checkModalDuplicateName('add_variant');
 
             const modal = new bootstrap.Modal(document.getElementById('addVariantModal'));
             modal.show();
@@ -2678,6 +2710,7 @@ if (!function_exists('getQueryUrl')) {
             document.getElementById('editProd_price').value = parseFloat(prodData.price || 0).toFixed(2);
             document.getElementById('editProd_stock').value = parseInt(prodData.stock || 0);
             document.getElementById('editProd_desc').value = prodData.description || '';
+            checkModalDuplicateName('edit_product');
             const modal = new bootstrap.Modal(document.getElementById('editProductModal'));
             modal.show();
         }
@@ -2692,6 +2725,7 @@ if (!function_exists('getQueryUrl')) {
             document.getElementById('editVar_price').value = parseFloat(varData.price || 0).toFixed(2);
             document.getElementById('editVar_stock').value = parseInt(varData.stock || 0);
             document.getElementById('editVar_desc').value = varData.description || '';
+            checkModalDuplicateName('edit_variant');
             const modal = new bootstrap.Modal(document.getElementById('editVariantModal'));
             modal.show();
         }

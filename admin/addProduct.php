@@ -2,6 +2,7 @@
 session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../config/google_drive.php';
+require_once __DIR__ . '/../includes/inventory_helpers.php';
 
 if (!isset($_SESSION['role']) || $_SESSION['role'] != "admin") {
     header("Location: ../login.php");
@@ -11,7 +12,7 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] != "admin") {
 $message = "";
 
 if (isset($_POST['submit'])) {
-    $name = trim($_POST['product_name']);
+    $name = collapseDuplicateVariantPrefix((string)$_POST['product_name']);
     $cost_price = $_POST['cost_price'];
     $price = $_POST['price'];
     $category = $_POST['category'];
@@ -22,11 +23,10 @@ if (isset($_POST['submit'])) {
     if (floatval($cost_price) > floatval($price)) {
         $message = "Error: Cost price cannot be higher than the selling price!";
     } else {
-        $check_stmt = $pdo->prepare("SELECT id FROM products WHERE LOWER(product_name) = LOWER(:name)");
-        $check_stmt->execute([':name' => $name]);
+        $existingItemName = checkInventoryItemNameExists($pdo, $name, 'product', 0);
 
-        if ($check_stmt->rowCount() > 0) {
-            $message = "Error: Product '$name' already exists in the inventory!";
+        if ($existingItemName !== null) {
+            $message = "Error: Item '$name' already exists in the inventory ($existingItemName)!";
         } else {
             if (!isset($_FILES['image']) || $_FILES['image']['error'] === UPLOAD_ERR_NO_FILE) {
                 $message = "Error: Please select a valid product image to upload.";

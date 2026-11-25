@@ -2,6 +2,7 @@
 session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../config/image.php';
+require_once __DIR__ . '/../includes/inventory_helpers.php';
 
 if (file_exists(__DIR__ . '/../config/google_drive.php')) {
     require_once __DIR__ . '/../config/google_drive.php';
@@ -143,19 +144,10 @@ if (isset($_POST['add_variant'])) {
         exit();
     }
 
-    $stmt = $pdo->prepare("
-        SELECT id
-        FROM product_variants
-        WHERE product_id = :product_id
-          AND LOWER(variant_name) = LOWER(:variant_name)
-    ");
-    $stmt->execute([
-        'product_id' => $product_id,
-        'variant_name' => $variant_name
-    ]);
-
-    if ($stmt->fetch(PDO::FETCH_ASSOC)) {
-        $_SESSION['error_message'] = "Error: The variant name '$variant_name' already exists!";
+    $variant_name = collapseDuplicateVariantPrefix((string)$variant_name);
+    $existingVariantDup = checkInventoryItemNameExists($pdo, $variant_name, 'variant', 0, (int)$product_id);
+    if ($existingVariantDup !== null) {
+        $_SESSION['error_message'] = "Error: $existingVariantDup";
         header("Location: manageVariants.php?product_id=$product_id");
         exit();
     }
@@ -238,21 +230,10 @@ if (isset($_POST['update_variant'])) {
         exit();
     }
 
-    $stmt = $pdo->prepare("
-        SELECT id
-        FROM product_variants
-        WHERE product_id = :product_id
-          AND LOWER(variant_name) = LOWER(:variant_name)
-          AND id <> :variant_id
-    ");
-    $stmt->execute([
-        'product_id' => $product_id,
-        'variant_name' => $v_name,
-        'variant_id' => $v_id
-    ]);
-
-    if ($stmt->fetch(PDO::FETCH_ASSOC)) {
-        $_SESSION['error_message'] = "Error: The variant name '$v_name' already exists!";
+    $v_name = collapseDuplicateVariantPrefix((string)$v_name);
+    $existingVariantDup = checkInventoryItemNameExists($pdo, $v_name, 'variant', (int)$v_id, (int)$product_id);
+    if ($existingVariantDup !== null) {
+        $_SESSION['error_message'] = "Error: $existingVariantDup";
         header("Location: manageVariants.php?product_id=$product_id");
         exit();
     }
