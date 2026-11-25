@@ -157,3 +157,48 @@ if (!function_exists('getAllInventoryItemNamesForValidation')) {
         return $items;
     }
 }
+
+if (!function_exists('formatSharedUnitLabel')) {
+    /**
+     * Strips redundant leading "1 " from unit labels (e.g. "1 elf" -> "elf").
+     */
+    function formatSharedUnitLabel(?string $rawLabel, string $fallback = 'unit'): string
+    {
+        $label = trim((string)($rawLabel ?? ''));
+        if ($label === '') {
+            return $fallback;
+        }
+        $stripped = trim((string)preg_replace('/^1\s+/u', '', $label));
+        return $stripped !== '' ? $stripped : $fallback;
+    }
+}
+
+if (!function_exists('formatSharedQuantityWithUnit')) {
+    /**
+     * Formats quantity + unit label cleanly without duplicated numbers (e.g. "4 elf").
+     */
+    function formatSharedQuantityWithUnit($qty, ?string $rawLabel, string $fallbackUnit = 'units'): string
+    {
+        $unit = formatSharedUnitLabel($rawLabel, $fallbackUnit);
+        $numStr = is_int($qty) ? (string)$qty : rtrim(rtrim(number_format((float)$qty, 2, '.', ','), '0'), '.');
+        if ($numStr === '') {
+            $numStr = '0';
+        }
+        if (preg_match('/^\d/', $unit)) {
+            return $numStr . ' × ' . $unit;
+        }
+        return $numStr . ' ' . $unit;
+    }
+}
+
+if (!function_exists('formatSharedConversionRate')) {
+    /**
+     * Formats conversion rule cleanly (e.g. "1 elf = 10,000.00 kg").
+     */
+    function formatSharedConversionRate($conversionQty, string $baseUnit, ?string $rawLabel): string
+    {
+        $lhs = formatSharedQuantityWithUnit(1, $rawLabel, 'unit');
+        $rhs = number_format((float)$conversionQty, 2) . ' ' . trim($baseUnit);
+        return $lhs . ' = ' . $rhs;
+    }
+}

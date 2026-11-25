@@ -710,6 +710,7 @@ if ($current_view === 'shared_stock') {
         if ($s['physical_stock'] <= $s['low_stock_threshold']) $low_stock_sources++;
         $total_connected_variants += (int)$s['connected_variants_count'];
     }
+    $normal_sources = max(0, $total_sources - $low_stock_sources);
 
     $linked_variants_stmt = $pdo->query("
         SELECT siv.*, 
@@ -1310,29 +1311,322 @@ if (!function_exists('getQueryUrl')) {
             color: #ffffff;
         }
 
-        /* Shared Stock Cards */
+        /* Shared Stock Refactored Layout */
         .stat-card {
             background: #ffffff;
             border: 1px solid var(--border-color);
             border-radius: 12px;
-            padding: 18px 20px;
+            padding: 16px 18px;
             box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
             height: 100%;
         }
 
-        .source-card {
+        .shared-info-btn {
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid #cbd5e1;
+            background: #ffffff;
+            color: #475569;
+            transition: all 0.2s ease;
+        }
+
+        .shared-info-btn:hover,
+        .shared-info-btn.active {
+            background: #eff6ff;
+            border-color: #3b82f6;
+            color: #1d4ed8;
+        }
+
+        .shared-rule-banner {
+            background: #f8fbff;
+            border: 1px solid #bfdbfe;
+            border-left: 4px solid #2563eb;
+            border-radius: 10px;
+            padding: 12px 16px;
+        }
+
+        .shared-toolbar {
             background: #ffffff;
             border: 1px solid var(--border-color);
             border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-            margin-bottom: 24px;
+            padding: 12px 16px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+        }
+
+        .shared-filter-pill {
+            border: 1px solid #cbd5e1;
+            background: #ffffff;
+            color: #475569;
+            font-size: 0.82rem;
+            font-weight: 600;
+            border-radius: 50rem;
+            padding: 5px 12px;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.15s ease;
+        }
+
+        .shared-filter-pill:hover {
+            background: #f1f5f9;
+            color: #0f172a;
+        }
+
+        .shared-filter-pill.active {
+            background: #0f172a;
+            border-color: #0f172a;
+            color: #ffffff;
+        }
+
+        .shared-filter-pill .pill-count {
+            background: rgba(148, 163, 184, 0.2);
+            color: inherit;
+            border-radius: 50rem;
+            padding: 1px 7px;
+            font-size: 0.75rem;
+        }
+
+        .shared-filter-pill.active .pill-count {
+            background: rgba(255, 255, 255, 0.22);
+        }
+
+        .shared-layout-btn {
+            border-radius: 50rem !important;
+            font-size: 0.8rem;
+            font-weight: 600;
+            padding: 5px 12px;
+            color: #64748b;
+            border: none;
+            background: transparent;
+        }
+
+        .shared-layout-btn.active {
+            background: #0d6efd;
+            color: #ffffff;
+            box-shadow: 0 1px 4px rgba(13, 110, 253, 0.25);
+        }
+
+        .stock-progress-track {
+            height: 5px;
+            width: 100%;
+            min-width: 90px;
+            background: #e2e8f0;
+            border-radius: 50rem;
             overflow: hidden;
         }
 
-        .source-card-header {
+        .stock-progress-bar {
+            height: 100%;
+            border-radius: 50rem;
+            transition: width 0.25s ease;
+        }
+
+        /* Accordion Source Card */
+        .shared-acc-card {
+            background: #ffffff;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            margin-bottom: 12px;
+            overflow: hidden;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .shared-acc-card.is-low {
+            border-left: 4px solid #f59e0b;
+        }
+
+        .shared-acc-card.is-out {
+            border-left: 4px solid #ef4444;
+        }
+
+        .shared-acc-card:hover {
+            border-color: #cbd5e1;
+            box-shadow: 0 3px 10px rgba(15, 23, 42, 0.05);
+        }
+
+        .shared-acc-header {
+            padding: 14px 18px;
+            background: #ffffff;
+            cursor: pointer;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+        }
+
+        .shared-acc-header[aria-expanded="true"] {
+            background: #f8fafc;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .shared-acc-identity {
+            min-width: 210px;
+            flex: 1.2 1 220px;
+        }
+
+        .shared-acc-metrics {
+            display: flex;
+            align-items: center;
+            gap: 18px;
+            flex: 1 1 250px;
+            flex-wrap: wrap;
+        }
+
+        .shared-acc-actions {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .acc-chevron-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            border: 1px solid #cbd5e1;
+            background: #ffffff;
+            color: #475569;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.2s ease, background-color 0.15s ease;
+        }
+
+        .shared-acc-header[aria-expanded="true"] .acc-chevron-btn i {
+            transform: rotate(180deg);
+        }
+
+        .acc-chevron-btn i {
+            transition: transform 0.2s ease;
+        }
+
+        .shared-acc-body {
+            padding: 18px 20px;
+            background: #fcfdff;
+        }
+
+        /* Master-Detail Split View */
+        .shared-split-container {
+            display: grid;
+            grid-template-columns: 32% minmax(0, 1fr);
+            gap: 16px;
+            align-items: start;
+        }
+
+        .shared-split-master {
+            background: #ffffff;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+        }
+
+        .shared-master-list {
+            max-height: 620px;
+            overflow-y: auto;
+        }
+
+        .shared-master-item {
+            width: 100%;
+            text-align: left;
+            background: #ffffff;
+            border: 0;
+            border-bottom: 1px solid #f1f5f9;
+            padding: 13px 16px;
+            transition: background-color 0.15s ease;
+            cursor: pointer;
+        }
+
+        .shared-master-item:hover {
+            background: #f8fafc;
+        }
+
+        .shared-master-item.active {
+            background: #eff6ff;
+            border-left: 4px solid #0d6efd;
+        }
+
+        .shared-split-detail {
+            background: #ffffff;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+        }
+
+        .shared-detail-header {
             background: #f8fafc;
             border-bottom: 1px solid var(--border-color);
             padding: 16px 20px;
+        }
+
+        /* Responsive Linked Variants Table */
+        .shared-links-table thead th {
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.35px;
+            color: #475569;
+            background: #f8fafc;
+            white-space: nowrap;
+        }
+
+        @media (max-width: 991.98px) {
+            .shared-split-container {
+                grid-template-columns: 1fr;
+            }
+            .shared-master-list {
+                max-height: 260px;
+            }
+        }
+
+        @media (max-width: 767.98px) {
+            .shared-acc-header {
+                padding: 12px 14px;
+            }
+            .shared-acc-body {
+                padding: 14px;
+            }
+            .shared-links-table thead {
+                display: none;
+            }
+            .shared-links-table tbody tr {
+                display: block;
+                border: 1px solid #e2e8f0;
+                border-radius: 10px;
+                margin-bottom: 10px;
+                padding: 10px 12px;
+                background: #ffffff;
+            }
+            .shared-links-table tbody td {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                gap: 10px;
+                border: 0 !important;
+                border-bottom: 1px dashed #f1f5f9 !important;
+                padding: 6px 0 !important;
+                text-align: right !important;
+            }
+            .shared-links-table tbody td:last-child {
+                border-bottom: 0 !important;
+                justify-content: flex-end;
+                padding-top: 8px !important;
+            }
+            .shared-links-table tbody td::before {
+                content: attr(data-label);
+                font-size: 0.75rem;
+                font-weight: 700;
+                text-transform: uppercase;
+                color: #64748b;
+                text-align: left;
+                flex-shrink: 0;
+            }
         }
 
         /* Mobile Responsive */
@@ -1408,8 +1702,11 @@ if (!function_exists('getQueryUrl')) {
                             <i class="bi bi-diagram-2-fill"></i> Add Variant
                         </button>
                     <?php else: ?>
+                        <button type="button" class="shared-info-btn shadow-sm" id="sharedRuleToggleBtn" onclick="toggleSharedRuleBanner()" aria-expanded="false" aria-controls="sharedRuleBanner" title="Shared Stock Calculation Rule">
+                            <i class="bi bi-info-lg"></i>
+                        </button>
                         <button type="button" class="btn btn-primary rounded-pill px-3 py-2 fw-semibold btn-sm d-inline-flex align-items-center gap-2 shadow-sm" data-bs-toggle="modal" data-bs-target="#createSourceModal">
-                            <i class="bi bi-plus-circle"></i> Create Shared Source
+                            <i class="bi bi-plus-lg"></i> Create Shared Source
                         </button>
                     <?php endif; ?>
                 </div>
@@ -1436,9 +1733,150 @@ if (!function_exists('getQueryUrl')) {
             <!-- VIEW: SHARED STOCK MANAGEMENT                            -->
             <!-- ======================================================== -->
             <?php if ($current_view === 'shared_stock'): ?>
+                <?php
+                if (!function_exists('renderSharedSourceDetailPanel')) {
+                    function renderSharedSourceDetailPanel(array $source, array $connected_links): string
+                    {
+                        $s_id = (int)$source['id'];
+                        $cur_stock = floatval($source['physical_stock']);
+                        $thresh = floatval($source['low_stock_threshold']);
+                        $is_low = ($cur_stock <= $thresh);
+                        $is_out = ($cur_stock <= 0);
+                        $base_unit = (string)$source['base_unit'];
+                        $src_name = ucwords(trim((string)$source['source_name']));
+                        $bar_pct = $is_out ? 0 : ($thresh > 0 ? min(100, max(6, ($cur_stock / ($thresh * 5)) * 100)) : 100);
+                        $bar_cls = $is_out ? 'bg-danger' : ($is_low ? 'bg-warning' : 'bg-success');
+
+                        ob_start();
+                        ?>
+                        <div class="p-3 rounded-3 border mb-3 <?= $is_out ? 'bg-danger-subtle border-danger-subtle' : ($is_low ? 'bg-warning-subtle border-warning-subtle' : 'bg-white border-secondary-subtle'); ?>">
+                            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+                                <div>
+                                    <span class="text-muted small text-uppercase fw-semibold d-block" style="font-size: 0.72rem;">Available Physical Stock</span>
+                                    <span class="fs-4 fw-bold <?= $is_out ? 'text-danger' : ($is_low ? 'text-warning-emphasis' : 'text-primary'); ?>">
+                                        <?= number_format($cur_stock, 2); ?> <?= htmlspecialchars($base_unit); ?>
+                                    </span>
+                                </div>
+                                <div class="d-flex align-items-center gap-2">
+                                    <?php if ($is_out): ?>
+                                        <span class="badge bg-danger rounded-pill px-2.5 py-1"><i class="bi bi-x-circle me-1"></i> Out of Stock</span>
+                                    <?php elseif ($is_low): ?>
+                                        <span class="badge bg-warning text-dark rounded-pill px-2.5 py-1"><i class="bi bi-exclamation-triangle me-1"></i> Low Stock</span>
+                                    <?php else: ?>
+                                        <span class="badge bg-success rounded-pill px-2.5 py-1"><i class="bi bi-check-circle me-1"></i> Normal Level</span>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                            <div class="stock-progress-track mt-2">
+                                <div class="stock-progress-bar <?= $bar_cls; ?>" style="width: <?= number_format($bar_pct, 1); ?>%;"></div>
+                            </div>
+                            <div class="mt-2 text-muted small">
+                                Alert at &le; <strong><?= number_format($thresh, 2); ?> <?= htmlspecialchars($base_unit); ?></strong>
+                            </div>
+                        </div>
+
+                        <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+                            <h6 class="fw-bold text-dark mb-0 d-flex align-items-center gap-2" style="font-size: 0.92rem;">
+                                <i class="bi bi-diagram-2 text-primary"></i>
+                                Linked Products &amp; Selling Variants (<?= count($connected_links); ?>)
+                            </h6>
+                        </div>
+
+                        <?php if (empty($connected_links)): ?>
+                            <div class="text-center py-4 bg-white rounded-3 border text-muted">
+                                <p class="mb-2 small">No products or variants linked to this shared source yet.</p>
+                                <button type="button" class="btn btn-outline-primary btn-sm rounded-pill" onclick="openLinkModal(<?= $s_id; ?>, '<?= addslashes(htmlspecialchars($src_name)); ?>', '<?= addslashes(htmlspecialchars($base_unit)); ?>')">
+                                    <i class="bi bi-link-45deg me-1"></i> Link Variant Now
+                                </button>
+                            </div>
+                        <?php else: ?>
+                            <div class="table-responsive">
+                                <table class="table table-hover align-middle border mb-0 shared-links-table" style="font-size: 0.88rem;">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>Item Type</th>
+                                            <th>Product / Variant Name</th>
+                                            <th>Unit Label</th>
+                                            <th>Selling Price</th>
+                                            <th class="text-center">Available Sellable Units</th>
+                                            <th>Conversion Requirement</th>
+                                            <th class="text-center">Action</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($connected_links as $v):
+                                            $is_var = !empty($v['variant_id']);
+                                            $item_name = $is_var ? $v['variant_name'] : $v['product_name'];
+                                            $sub_label = $is_var ? "Variant of: " . $v['product_name'] : "Main Product";
+                                            $price = $is_var ? $v['var_price'] : $v['prod_price'];
+                                            $conv_val = floatval($v['conversion_qty']);
+                                            $current_sellable = calculateSellableUnits($cur_stock, $v['conversion_qty']);
+                                            $clean_unit_label = formatSharedUnitLabel($v['selling_unit_label'] ?? '', 'unit');
+                                            $sellable_str = formatSharedQuantityWithUnit($current_sellable, $v['selling_unit_label'] ?? '', 'units');
+                                            $conversion_str = formatSharedConversionRate($conv_val, $base_unit, $v['selling_unit_label'] ?? '');
+                                        ?>
+                                            <tr>
+                                                <td data-label="Item Type">
+                                                    <?php if ($is_var): ?>
+                                                        <span class="badge bg-info-subtle text-info border border-info-subtle rounded-pill">Variant</span>
+                                                    <?php else: ?>
+                                                        <span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill">Product</span>
+                                                    <?php endif; ?>
+                                                </td>
+                                                <td data-label="Product / Variant">
+                                                    <div class="fw-bold text-dark"><?= htmlspecialchars((string)$item_name); ?></div>
+                                                    <small class="text-muted"><?= htmlspecialchars($sub_label); ?></small>
+                                                </td>
+                                                <td data-label="Unit Label"><?= htmlspecialchars($clean_unit_label); ?></td>
+                                                <td data-label="Selling Price" class="fw-bold text-success">₱<?= number_format(floatval($price), 2); ?></td>
+                                                <td data-label="Available Units" class="text-center">
+                                                    <span class="badge <?= $current_sellable > 0 ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-danger-subtle text-danger border border-danger-subtle'; ?> rounded-pill px-3 py-1.5 fw-bold" style="font-size: 0.85rem;">
+                                                        <?= htmlspecialchars($sellable_str); ?>
+                                                    </span>
+                                                </td>
+                                                <td data-label="Conversion">
+                                                    <strong><?= htmlspecialchars($conversion_str); ?></strong>
+                                                    <small class="text-muted d-block">Deducted per sale</small>
+                                                </td>
+                                                <td data-label="Action" class="text-center">
+                                                    <form method="POST" action="products.php?view=shared_stock" onsubmit="return appConfirmForm(event, this, 'Are you sure you want to disconnect this item? It will revert to independent stock management.', { title: 'Disconnect Shared Stock', confirmText: 'Yes, Disconnect', variant: 'danger' });" style="display:inline;">
+                                                        <input type="hidden" name="action" value="disconnect_variant">
+                                                        <input type="hidden" name="link_id" value="<?= (int)$v['id']; ?>">
+                                                        <button type="submit" class="btn btn-outline-danger btn-sm rounded-pill px-2.5" title="Disconnect from Shared Stock">
+                                                            <i class="bi bi-trash"></i> Disconnect
+                                                        </button>
+                                                    </form>
+                                                </td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <?php endif; ?>
+                        <?php
+                        return ob_get_clean();
+                    }
+                }
+                ?>
+
+                <!-- Dismissible Shared Stock Calculation Rule Notice -->
+                <div id="sharedRuleBanner" class="shared-rule-banner d-none mb-3" role="region" aria-label="Shared Stock Calculation Rule">
+                    <div class="d-flex justify-content-between align-items-start gap-3">
+                        <div class="d-flex align-items-start gap-2">
+                            <i class="bi bi-info-circle-fill text-primary fs-5 mt-0.5 flex-shrink-0"></i>
+                            <div>
+                                <h6 class="fw-bold text-dark mb-1">Shared Stock Calculation Rule</h6>
+                                <p class="small text-muted mb-0">
+                                    Linked products and variants derive their sellable stock directly from their assigned bulk source and automatically convert units (e.g., kg) in real time across POS, Inventory, and Customer ordering whenever sold or refunded.
+                                </p>
+                            </div>
+                        </div>
+                        <button type="button" class="btn-close btn-sm flex-shrink-0" aria-label="Dismiss notice" onclick="toggleSharedRuleBanner(false)"></button>
+                    </div>
+                </div>
 
                 <!-- Metric Cards -->
-                <div class="row g-3 mb-4">
+                <div class="row g-3 mb-3">
                     <div class="col-12 col-md-4">
                         <div class="stat-card">
                             <div class="d-flex justify-content-between align-items-center">
@@ -1485,7 +1923,40 @@ if (!function_exists('getQueryUrl')) {
                     </div>
                 </div>
 
-                <!-- Shared Sources List -->
+                <!-- Shared Stock Search, Status Filter Pills & Layout Switcher Toolbar -->
+                <div class="shared-toolbar mb-3">
+                    <div class="d-flex flex-column flex-lg-row justify-content-between align-items-stretch align-items-lg-center gap-2">
+                        <div class="d-flex flex-column flex-md-row align-items-stretch align-items-md-center gap-2 flex-grow-1">
+                            <div class="input-group input-group-sm" style="max-width: 340px;">
+                                <span class="input-group-text bg-white border-end-0 text-muted"><i class="bi bi-search"></i></span>
+                                <input type="text" id="sharedSourceSearch" class="form-control border-start-0" placeholder="Search bulk source or linked variant..." oninput="filterSharedSources()" autocomplete="off">
+                            </div>
+
+                            <div class="d-flex flex-wrap align-items-center gap-1" role="group" aria-label="Filter sources by stock status">
+                                <button type="button" class="shared-filter-pill active" data-status-filter="all" onclick="setSharedStatusFilter('all')">
+                                    All <span class="pill-count"><?= $total_sources; ?></span>
+                                </button>
+                                <button type="button" class="shared-filter-pill" data-status-filter="normal" onclick="setSharedStatusFilter('normal')">
+                                    Normal <span class="pill-count"><?= $normal_sources; ?></span>
+                                </button>
+                                <button type="button" class="shared-filter-pill" data-status-filter="low" onclick="setSharedStatusFilter('low')">
+                                    Low Stock <span class="pill-count"><?= $low_stock_sources; ?></span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="btn-group p-1 bg-light border rounded-pill align-self-start align-self-lg-center" role="group" aria-label="Shared stock layout mode">
+                            <button type="button" class="btn shared-layout-btn active" id="layoutBtnAccordion" onclick="setSharedLayoutMode('accordion')">
+                                <i class="bi bi-view-stacked me-1"></i> Collapsible Accordion
+                            </button>
+                            <button type="button" class="btn shared-layout-btn" id="layoutBtnSplit" onclick="setSharedLayoutMode('split')">
+                                <i class="bi bi-layout-split me-1"></i> Master-Detail Split View
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Shared Sources Empty State or Views -->
                 <?php if (empty($sources)): ?>
                     <div class="text-center py-5 bg-white rounded-3 border">
                         <i class="bi bi-diagram-3 display-4 text-secondary opacity-50 mb-3 d-block"></i>
@@ -1496,159 +1967,211 @@ if (!function_exists('getQueryUrl')) {
                         </button>
                     </div>
                 <?php else: ?>
-                    <?php foreach ($sources as $source): 
-                        $s_id = $source['id'];
+                    <?php
+                    // Prepare normalized metadata once for both Accordion and Split views
+                    $prepared_sources = [];
+                    foreach ($sources as $source) {
+                        $s_id = (int)$source['id'];
                         $cur_stock = floatval($source['physical_stock']);
                         $thresh = floatval($source['low_stock_threshold']);
                         $is_low = ($cur_stock <= $thresh);
                         $is_out = ($cur_stock <= 0);
                         $connected_links = $links_by_source[$s_id] ?? [];
+                        $src_title = ucwords(trim((string)$source['source_name']));
+
+                        $search_tokens = [strtolower($src_title), '#' . $s_id, strtolower((string)$source['base_unit'])];
+                        foreach ($connected_links as $lnk) {
+                            $search_tokens[] = strtolower((string)($lnk['product_name'] ?? ''));
+                            if (!empty($lnk['variant_name'])) {
+                                $search_tokens[] = strtolower((string)$lnk['variant_name']);
+                            }
+                            if (!empty($lnk['selling_unit_label'])) {
+                                $search_tokens[] = strtolower((string)$lnk['selling_unit_label']);
+                            }
+                        }
+
+                        $bar_pct = $is_out ? 0 : ($thresh > 0 ? min(100, max(6, ($cur_stock / ($thresh * 5)) * 100)) : 100);
+                        $bar_cls = $is_out ? 'bg-danger' : ($is_low ? 'bg-warning' : 'bg-success');
+
+                        $prepared_sources[] = [
+                            'source' => $source,
+                            'id' => $s_id,
+                            'title' => $src_title,
+                            'cur_stock' => $cur_stock,
+                            'thresh' => $thresh,
+                            'is_low' => $is_low,
+                            'is_out' => $is_out,
+                            'status_key' => $is_low ? 'low' : 'normal',
+                            'links' => $connected_links,
+                            'links_count' => count($connected_links),
+                            'search_index' => implode(' ', array_unique($search_tokens)),
+                            'bar_pct' => $bar_pct,
+                            'bar_cls' => $bar_cls,
+                            'detail_html' => renderSharedSourceDetailPanel($source, $connected_links)
+                        ];
+                    }
                     ?>
-                        <div class="source-card">
-                            <!-- Card Header -->
-                            <div class="source-card-header d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
-                                <div>
-                                    <div class="d-flex align-items-center gap-2">
-                                        <h4 class="fw-bold mb-0 text-dark"><?= htmlspecialchars($source['source_name']); ?></h4>
-                                        <?php if ($source['is_active'] == 1): ?>
-                                            <span class="badge bg-success-subtle text-success border border-success-subtle rounded-pill px-2.5 py-1">Active</span>
-                                        <?php else: ?>
-                                            <span class="badge bg-secondary-subtle text-secondary border rounded-pill px-2.5 py-1">Inactive</span>
-                                        <?php endif; ?>
+
+                    <!-- No-Match Filter Notice -->
+                    <div id="sharedNoFilterMatch" class="text-center py-5 bg-white rounded-3 border d-none mb-3">
+                        <i class="bi bi-search display-5 text-secondary opacity-50 mb-2 d-block"></i>
+                        <h5 class="fw-bold text-dark mb-1">No matching shared sources found</h5>
+                        <p class="text-muted small mb-0">Try a different search term or reset the stock status filter.</p>
+                    </div>
+
+                    <!-- PRIMARY LAYOUT: COLLAPSIBLE ACCORDION (DEFAULT) -->
+                    <div id="sharedAccordionView">
+                        <?php foreach ($prepared_sources as $idx => $item):
+                            $src = $item['source'];
+                            $s_id = $item['id'];
+                            $collapse_id = 'sharedAccCollapse_' . $s_id;
+                            $card_cls = $item['is_out'] ? 'is-out' : ($item['is_low'] ? 'is-low' : '');
+                        ?>
+                            <div class="shared-acc-card <?= $card_cls; ?>"
+                                 data-source-id="<?= $s_id; ?>"
+                                 data-status="<?= $item['status_key']; ?>"
+                                 data-search="<?= htmlspecialchars($item['search_index'], ENT_QUOTES, 'UTF-8'); ?>">
+                                <div class="shared-acc-header"
+                                     role="button"
+                                     tabindex="0"
+                                     data-bs-toggle="collapse"
+                                     data-bs-target="#<?= $collapse_id; ?>"
+                                     aria-expanded="false"
+                                     aria-controls="<?= $collapse_id; ?>">
+                                    <div class="shared-acc-identity">
+                                        <div class="d-flex align-items-center gap-2 flex-wrap">
+                                            <h5 class="fw-bold mb-0 text-dark"><?= htmlspecialchars($item['title']); ?></h5>
+                                            <?php if ($src['is_active'] == 1): ?>
+                                                <span class="badge bg-success-subtle text-success border border-success-subtle rounded-pill px-2 py-0.5" style="font-size: 0.72rem;">Active</span>
+                                            <?php else: ?>
+                                                <span class="badge bg-secondary-subtle text-secondary border rounded-pill px-2 py-0.5" style="font-size: 0.72rem;">Inactive</span>
+                                            <?php endif; ?>
+                                            <?php if ($item['is_out']): ?>
+                                                <span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill px-2 py-0.5" style="font-size: 0.72rem;">Out of Stock</span>
+                                            <?php elseif ($item['is_low']): ?>
+                                                <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle rounded-pill px-2 py-0.5" style="font-size: 0.72rem;">Low Stock</span>
+                                            <?php endif; ?>
+                                        </div>
+                                        <small class="text-muted d-block mt-0.5" style="font-size: 0.8rem;">
+                                            Source ID: <strong>#<?= $s_id; ?></strong> | Base Unit: <strong><?= htmlspecialchars($src['base_unit']); ?></strong> | Created: <?= date('M d, Y', strtotime($src['created_at'])); ?>
+                                        </small>
                                     </div>
-                                    <small class="text-muted">
-                                        Source ID: <strong>#<?= $s_id; ?></strong> | Base Unit: <strong><?= htmlspecialchars($source['base_unit']); ?></strong> | Created: <?= date('M d, Y', strtotime($source['created_at'])); ?>
-                                    </small>
-                                </div>
 
-                                <div class="d-flex gap-2 flex-wrap">
-                                    <button class="btn btn-sm btn-primary rounded-pill px-3 py-1.5 shadow-sm" onclick="openLinkModal(<?= $s_id; ?>, '<?= addslashes(htmlspecialchars($source['source_name'])); ?>', '<?= addslashes(htmlspecialchars($source['base_unit'])); ?>')">
-                                        <i class="bi bi-link-45deg me-1"></i> Link Variant
-                                    </button>
-                                    <button class="btn btn-sm btn-outline-warning text-dark rounded-pill px-3 py-1.5" onclick="openAdjustModal(<?= $s_id; ?>, '<?= addslashes(htmlspecialchars($source['source_name'])); ?>', <?= $cur_stock; ?>, '<?= addslashes(htmlspecialchars($source['base_unit'])); ?>')">
-                                        <i class="bi bi-sliders me-1"></i> Adjust Stock
-                                    </button>
-                                    <button class="btn btn-sm btn-outline-secondary rounded-pill px-3 py-1.5" onclick="openEditSourceModal(<?= $s_id; ?>, '<?= addslashes(htmlspecialchars($source['source_name'])); ?>', '<?= addslashes(htmlspecialchars($source['base_unit'])); ?>', <?= $thresh; ?>, <?= $source['is_active']; ?>)">
-                                        <i class="bi bi-pencil me-1"></i> Edit Source
-                                    </button>
-                                </div>
-                            </div>
-
-                            <!-- Card Body -->
-                            <div class="p-4">
-                                <!-- Physical Stock Banner -->
-                                <div class="row g-3 mb-4">
-                                    <div class="col-md-6 col-lg-4">
-                                        <div class="p-3 rounded-3 border <?= $is_out ? 'bg-danger-subtle border-danger' : ($is_low ? 'bg-warning-subtle border-warning' : 'bg-light border-secondary-subtle'); ?>">
-                                            <div class="d-flex justify-content-between align-items-center">
-                                                <div>
-                                                    <span class="text-muted small text-uppercase fw-semibold d-block">Available Physical Stock</span>
-                                                    <span class="fs-3 fw-bold <?= $is_out ? 'text-danger' : ($is_low ? 'text-warning-emphasis' : 'text-primary'); ?>">
-                                                        <?= number_format($cur_stock, 2); ?> <?= htmlspecialchars($source['base_unit']); ?>
-                                                    </span>
-                                                </div>
-                                                <div>
-                                                    <?php if ($is_out): ?>
-                                                        <span class="badge bg-danger rounded-pill px-2.5 py-1.5"><i class="bi bi-x-circle me-1"></i> Out of Stock</span>
-                                                    <?php elseif ($is_low): ?>
-                                                        <span class="badge bg-warning text-dark rounded-pill px-2.5 py-1.5"><i class="bi bi-exclamation-triangle me-1"></i> Low Stock Alert</span>
-                                                    <?php else: ?>
-                                                        <span class="badge bg-success rounded-pill px-2.5 py-1.5"><i class="bi bi-check-circle me-1"></i> Normal Level</span>
-                                                    <?php endif; ?>
-                                                </div>
+                                    <div class="shared-acc-metrics">
+                                        <div style="min-width: 145px;">
+                                            <div class="fw-bold <?= $item['is_out'] ? 'text-danger' : ($item['is_low'] ? 'text-warning-emphasis' : 'text-dark'); ?>" style="font-size: 0.95rem;">
+                                                <?= number_format($item['cur_stock'], 2); ?> <?= htmlspecialchars($src['base_unit']); ?>
                                             </div>
-                                            <div class="mt-2 text-muted small">
-                                                Low stock alert triggers when physical stock reaches <strong><?= number_format($thresh, 2); ?> <?= htmlspecialchars($source['base_unit']); ?></strong> or below.
+                                            <div class="text-muted" style="font-size: 0.74rem;">
+                                                Alert at &le; <?= number_format($item['thresh'], 2); ?> <?= htmlspecialchars($src['base_unit']); ?>
+                                            </div>
+                                            <div class="stock-progress-track mt-1">
+                                                <div class="stock-progress-bar <?= $item['bar_cls']; ?>" style="width: <?= number_format($item['bar_pct'], 1); ?>%;"></div>
                                             </div>
                                         </div>
+                                        <span class="badge bg-light text-dark border rounded-pill px-2.5 py-1 fw-semibold" style="font-size: 0.76rem;">
+                                            <i class="bi bi-link-45deg text-primary"></i> <?= $item['links_count']; ?> <?= $item['links_count'] === 1 ? 'variant' : 'variants'; ?>
+                                        </span>
                                     </div>
-                                    <div class="col-md-6 col-lg-8">
-                                        <div class="p-3 rounded-3 border bg-light h-100 d-flex flex-column justify-content-center">
-                                            <h6 class="fw-bold text-dark mb-1"><i class="bi bi-info-circle-fill text-primary me-1"></i> Shared Stock Calculation Rule</h6>
-                                            <p class="small text-muted mb-0">
-                                                All linked variants derive their sellable stock directly from this <strong><?= htmlspecialchars($source['source_name']); ?></strong> bulk supply. Selling or refunding any variant automatically converts to <strong><?= htmlspecialchars($source['base_unit']); ?></strong> and updates this physical stock in real time across POS, Inventory, and Customer ordering.
-                                            </p>
-                                        </div>
-                                    </div>
-                                </div>
 
-                                <!-- Connected Variants Table -->
-                                <h6 class="fw-bold text-dark mb-2 d-flex align-items-center gap-2">
-                                    <i class="bi bi-diagram-2 text-primary"></i> Linked Products & Selling Variants (<?= count($connected_links); ?>)
-                                </h6>
-
-                                <?php if (empty($connected_links)): ?>
-                                    <div class="text-center py-4 bg-light rounded-3 border text-muted">
-                                        <p class="mb-2">No products or variants linked to this shared source yet.</p>
-                                        <button class="btn btn-outline-primary btn-sm rounded-pill" onclick="openLinkModal(<?= $s_id; ?>, '<?= addslashes(htmlspecialchars($source['source_name'])); ?>', '<?= addslashes(htmlspecialchars($source['base_unit'])); ?>')">
-                                            <i class="bi bi-link-45deg me-1"></i> Link Variant Now
+                                    <div class="shared-acc-actions" onclick="event.stopPropagation()">
+                                        <button type="button" class="btn btn-sm btn-primary rounded-pill px-2.5 py-1 shadow-sm" onclick="openLinkModal(<?= $s_id; ?>, '<?= addslashes(htmlspecialchars($item['title'])); ?>', '<?= addslashes(htmlspecialchars($src['base_unit'])); ?>')">
+                                            <i class="bi bi-link-45deg me-1"></i> Link Variant
+                                        </button>
+                                        <button type="button" class="btn btn-sm btn-outline-warning text-dark rounded-pill px-2.5 py-1" onclick="openAdjustModal(<?= $s_id; ?>, '<?= addslashes(htmlspecialchars($item['title'])); ?>', <?= $item['cur_stock']; ?>, '<?= addslashes(htmlspecialchars($src['base_unit'])); ?>')">
+                                            <i class="bi bi-sliders me-1"></i> Adjust Stock
+                                        </button>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary rounded-pill px-2.5 py-1" onclick="openEditSourceModal(<?= $s_id; ?>, '<?= addslashes(htmlspecialchars($item['title'])); ?>', '<?= addslashes(htmlspecialchars($src['base_unit'])); ?>', <?= $item['thresh']; ?>, <?= (int)$src['is_active']; ?>)">
+                                            <i class="bi bi-pencil me-1"></i> Edit Source
+                                        </button>
+                                        <button type="button" class="acc-chevron-btn ms-1" data-bs-toggle="collapse" data-bs-target="#<?= $collapse_id; ?>" aria-expanded="false" aria-controls="<?= $collapse_id; ?>" title="Toggle details">
+                                            <i class="bi bi-chevron-down"></i>
                                         </button>
                                     </div>
-                                <?php else: ?>
-                                    <div class="table-responsive">
-                                        <table class="table table-hover align-middle border mb-0" style="font-size: 0.9rem;">
-                                            <thead class="table-light">
-                                                <tr>
-                                                    <th>Item Type</th>
-                                                    <th>Product / Variant Name</th>
-                                                    <th>Unit Label</th>
-                                                    <th>Selling Price</th>
-                                                    <th class="text-center">Available Sellable Units</th>
-                                                    <th>Conversion Requirement</th>
-                                                    <th class="text-center">Action</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                <?php foreach ($connected_links as $v): 
-                                                    $is_var = !empty($v['variant_id']);
-                                                    $item_name = $is_var ? $v['variant_name'] : $v['product_name'];
-                                                    $sub_label = $is_var ? "Variant of: " . $v['product_name'] : "Main Product";
-                                                    $price = $is_var ? $v['var_price'] : $v['prod_price'];
-                                                    $conv_val = floatval($v['conversion_qty']);
-                                                    $current_sellable = calculateSellableUnits($cur_stock, $v['conversion_qty']);
-                                                ?>
-                                                    <tr>
-                                                        <td>
-                                                            <?php if ($is_var): ?>
-                                                                <span class="badge bg-info-subtle text-info border border-info-subtle rounded-pill">Variant</span>
-                                                            <?php else: ?>
-                                                                <span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill">Product</span>
-                                                            <?php endif; ?>
-                                                        </td>
-                                                        <td>
-                                                            <div class="fw-bold text-dark"><?= htmlspecialchars($item_name); ?></div>
-                                                            <small class="text-muted"><?= htmlspecialchars($sub_label); ?></small>
-                                                        </td>
-                                                        <td><?= htmlspecialchars($v['selling_unit_label'] ?: 'unit'); ?></td>
-                                                        <td class="fw-bold text-success">₱<?= number_format(floatval($price), 2); ?></td>
-                                                        <td class="text-center">
-                                                            <span class="badge <?= $current_sellable > 0 ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-danger-subtle text-danger border border-danger-subtle'; ?> rounded-pill px-3 py-1.5 fs-6 fw-bold">
-                                                                <?= $current_sellable; ?> <?= htmlspecialchars($v['selling_unit_label'] ?: 'units'); ?>
-                                                            </span>
-                                                        </td>
-                                                        <td>
-                                                            1 <?= htmlspecialchars($v['selling_unit_label'] ?: 'unit'); ?> = 
-                                                            <strong><?= number_format($conv_val, 2); ?> <?= htmlspecialchars($source['base_unit']); ?></strong> 
-                                                            <small class="text-muted d-block">Deducted from physical stock per sale</small>
-                                                        </td>
-                                                        <td class="text-center">
-                                                            <form method="POST" action="products.php?view=shared_stock" onsubmit="return appConfirmForm(event, this, 'Are you sure you want to disconnect this item? It will revert to independent stock management.', { title: 'Disconnect Shared Stock', confirmText: 'Yes, Disconnect', variant: 'danger' });" style="display:inline;">
-                                                                <input type="hidden" name="action" value="disconnect_variant">
-                                                                <input type="hidden" name="link_id" value="<?= $v['id']; ?>">
-                                                                <button type="submit" class="btn btn-outline-danger btn-sm rounded-pill px-2.5" title="Disconnect from Shared Stock">
-                                                                    <i class="bi bi-trash"></i> Disconnect
-                                                                </button>
-                                                            </form>
-                                                        </td>
-                                                    </tr>
-                                                <?php endforeach; ?>
-                                            </tbody>
-                                        </table>
+                                </div>
+
+                                <div id="<?= $collapse_id; ?>" class="collapse">
+                                    <div class="shared-acc-body">
+                                        <?= $item['detail_html']; ?>
                                     </div>
-                                <?php endif; ?>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+
+                    <!-- ALTERNATIVE LAYOUT: MASTER-DETAIL SPLIT VIEW -->
+                    <div id="sharedSplitView" class="shared-split-container d-none">
+                        <div class="shared-split-master">
+                            <div class="px-3 py-2.5 bg-light border-bottom d-flex justify-content-between align-items-center">
+                                <span class="fw-bold text-dark small text-uppercase">Bulk Sources</span>
+                                <span class="badge bg-white text-dark border rounded-pill" id="splitVisibleCount"><?= count($prepared_sources); ?></span>
+                            </div>
+                            <div class="shared-master-list" id="sharedMasterList">
+                                <?php foreach ($prepared_sources as $idx => $item):
+                                    $src = $item['source'];
+                                    $s_id = $item['id'];
+                                ?>
+                                    <button type="button"
+                                            class="shared-master-item <?= $idx === 0 ? 'active' : ''; ?>"
+                                            data-source-id="<?= $s_id; ?>"
+                                            data-status="<?= $item['status_key']; ?>"
+                                            data-search="<?= htmlspecialchars($item['search_index'], ENT_QUOTES, 'UTF-8'); ?>"
+                                            onclick="selectSplitSource(<?= $s_id; ?>)">
+                                        <div class="d-flex justify-content-between align-items-start gap-2 mb-1">
+                                            <span class="fw-bold text-dark"><?= htmlspecialchars($item['title']); ?></span>
+                                            <span class="badge <?= $item['is_out'] ? 'bg-danger-subtle text-danger' : ($item['is_low'] ? 'bg-warning-subtle text-warning-emphasis' : 'bg-success-subtle text-success'); ?> rounded-pill" style="font-size: 0.7rem;">
+                                                <?= $item['is_out'] ? 'Out' : ($item['is_low'] ? 'Low Stock' : ($src['is_active'] == 1 ? 'Active' : 'Inactive')); ?>
+                                            </span>
+                                        </div>
+                                        <div class="d-flex justify-content-between align-items-center small text-muted">
+                                            <span class="fw-semibold text-dark"><?= number_format($item['cur_stock'], 2); ?> <?= htmlspecialchars($src['base_unit']); ?></span>
+                                            <span><?= $item['links_count']; ?> <?= $item['links_count'] === 1 ? 'variant' : 'variants'; ?></span>
+                                        </div>
+                                    </button>
+                                <?php endforeach; ?>
                             </div>
                         </div>
-                    <?php endforeach; ?>
+
+                        <div class="shared-split-detail" id="sharedDetailContainer">
+                            <?php foreach ($prepared_sources as $idx => $item):
+                                $src = $item['source'];
+                                $s_id = $item['id'];
+                            ?>
+                                <div class="shared-split-pane <?= $idx === 0 ? '' : 'd-none'; ?>" data-source-id="<?= $s_id; ?>">
+                                    <div class="shared-detail-header d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+                                        <div>
+                                            <div class="d-flex align-items-center gap-2 flex-wrap">
+                                                <h4 class="fw-bold mb-0 text-dark"><?= htmlspecialchars($item['title']); ?></h4>
+                                                <?php if ($src['is_active'] == 1): ?>
+                                                    <span class="badge bg-success-subtle text-success border border-success-subtle rounded-pill px-2.5 py-1">Active</span>
+                                                <?php else: ?>
+                                                    <span class="badge bg-secondary-subtle text-secondary border rounded-pill px-2.5 py-1">Inactive</span>
+                                                <?php endif; ?>
+                                            </div>
+                                            <small class="text-muted">
+                                                Source ID: <strong>#<?= $s_id; ?></strong> | Base Unit: <strong><?= htmlspecialchars($src['base_unit']); ?></strong> | Created: <?= date('M d, Y', strtotime($src['created_at'])); ?>
+                                            </small>
+                                        </div>
+
+                                        <div class="d-flex gap-2 flex-wrap">
+                                            <button type="button" class="btn btn-sm btn-primary rounded-pill px-3 py-1.5 shadow-sm" onclick="openLinkModal(<?= $s_id; ?>, '<?= addslashes(htmlspecialchars($item['title'])); ?>', '<?= addslashes(htmlspecialchars($src['base_unit'])); ?>')">
+                                                <i class="bi bi-link-45deg me-1"></i> Link Variant
+                                            </button>
+                                            <button type="button" class="btn btn-sm btn-outline-warning text-dark rounded-pill px-3 py-1.5" onclick="openAdjustModal(<?= $s_id; ?>, '<?= addslashes(htmlspecialchars($item['title'])); ?>', <?= $item['cur_stock']; ?>, '<?= addslashes(htmlspecialchars($src['base_unit'])); ?>')">
+                                                <i class="bi bi-sliders me-1"></i> Adjust Stock
+                                            </button>
+                                            <button type="button" class="btn btn-sm btn-outline-secondary rounded-pill px-3 py-1.5" onclick="openEditSourceModal(<?= $s_id; ?>, '<?= addslashes(htmlspecialchars($item['title'])); ?>', '<?= addslashes(htmlspecialchars($src['base_unit'])); ?>', <?= $item['thresh']; ?>, <?= (int)$src['is_active']; ?>)">
+                                                <i class="bi bi-pencil me-1"></i> Edit Source
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="p-3 p-md-4 bg-light bg-opacity-25">
+                                        <?= $item['detail_html']; ?>
+                                    </div>
+                                </div>
+                            <?php endforeach; ?>
+                        </div>
+                    </div>
                 <?php endif; ?>
 
             <!-- ======================================================== -->
@@ -2745,7 +3268,110 @@ if (!function_exists('getQueryUrl')) {
             modal.show();
         }
 
-        // --- SHARED STOCK MODAL HANDLERS ---
+        // --- SHARED STOCK INTERACTIVE VIEW STATE & MODAL HANDLERS ---
+        let activeSharedStatusFilter = 'all';
+        let activeSharedLayoutMode = 'accordion';
+
+        function toggleSharedRuleBanner(forceState) {
+            const banner = document.getElementById('sharedRuleBanner');
+            const btn = document.getElementById('sharedRuleToggleBtn');
+            if (!banner) return;
+
+            const shouldShow = (typeof forceState === 'boolean') ? forceState : banner.classList.contains('d-none');
+            banner.classList.toggle('d-none', !shouldShow);
+            if (btn) {
+                btn.classList.toggle('active', shouldShow);
+                btn.setAttribute('aria-expanded', shouldShow ? 'true' : 'false');
+            }
+        }
+
+        function setSharedStatusFilter(status) {
+            activeSharedStatusFilter = status || 'all';
+            document.querySelectorAll('.shared-filter-pill').forEach(btn => {
+                btn.classList.toggle('active', btn.getAttribute('data-status-filter') === activeSharedStatusFilter);
+            });
+            filterSharedSources();
+        }
+
+        function selectSplitSource(sourceId) {
+            const idStr = String(sourceId);
+            document.querySelectorAll('#sharedMasterList .shared-master-item').forEach(btn => {
+                btn.classList.toggle('active', btn.getAttribute('data-source-id') === idStr);
+            });
+            document.querySelectorAll('#sharedDetailContainer .shared-split-pane').forEach(pane => {
+                pane.classList.toggle('d-none', pane.getAttribute('data-source-id') !== idStr);
+            });
+        }
+
+        function applySharedLayoutVisibility(hasVisible) {
+            const accView = document.getElementById('sharedAccordionView');
+            const splitView = document.getElementById('sharedSplitView');
+            const emptyNotice = document.getElementById('sharedNoFilterMatch');
+            if (!accView || !splitView) return;
+
+            if (!hasVisible) {
+                accView.classList.add('d-none');
+                splitView.classList.add('d-none');
+                if (emptyNotice) emptyNotice.classList.remove('d-none');
+                return;
+            }
+
+            if (emptyNotice) emptyNotice.classList.add('d-none');
+            accView.classList.toggle('d-none', activeSharedLayoutMode !== 'accordion');
+            splitView.classList.toggle('d-none', activeSharedLayoutMode !== 'split');
+        }
+
+        function filterSharedSources() {
+            const searchEl = document.getElementById('sharedSourceSearch');
+            const query = searchEl ? searchEl.value.toLowerCase().trim() : '';
+            const status = activeSharedStatusFilter;
+            let visibleCount = 0;
+
+            document.querySelectorAll('#sharedAccordionView .shared-acc-card').forEach(card => {
+                const hay = card.getAttribute('data-search') || '';
+                const st = card.getAttribute('data-status') || '';
+                const matches = (status === 'all' || st === status) && (query === '' || hay.includes(query));
+                card.classList.toggle('d-none', !matches);
+                if (matches) visibleCount++;
+            });
+
+            let firstVisibleSplitId = null;
+            let activeSplitVisible = false;
+            document.querySelectorAll('#sharedMasterList .shared-master-item').forEach(btn => {
+                const hay = btn.getAttribute('data-search') || '';
+                const st = btn.getAttribute('data-status') || '';
+                const matches = (status === 'all' || st === status) && (query === '' || hay.includes(query));
+                btn.classList.toggle('d-none', !matches);
+                if (matches) {
+                    if (firstVisibleSplitId === null) firstVisibleSplitId = btn.getAttribute('data-source-id');
+                    if (btn.classList.contains('active')) activeSplitVisible = true;
+                }
+            });
+
+            const countBadge = document.getElementById('splitVisibleCount');
+            if (countBadge) countBadge.textContent = String(visibleCount);
+
+            if (!activeSplitVisible && firstVisibleSplitId !== null) {
+                selectSplitSource(firstVisibleSplitId);
+            }
+
+            applySharedLayoutVisibility(visibleCount > 0);
+        }
+
+        function setSharedLayoutMode(mode) {
+            activeSharedLayoutMode = (mode === 'split') ? 'split' : 'accordion';
+            try {
+                localStorage.setItem('taipan_shared_layout', activeSharedLayoutMode);
+            } catch (e) {}
+
+            const btnAcc = document.getElementById('layoutBtnAccordion');
+            const btnSplit = document.getElementById('layoutBtnSplit');
+            if (btnAcc) btnAcc.classList.toggle('active', activeSharedLayoutMode === 'accordion');
+            if (btnSplit) btnSplit.classList.toggle('active', activeSharedLayoutMode === 'split');
+
+            filterSharedSources();
+        }
+
         function openLinkModal(sourceId, sourceName, baseUnit) {
             document.getElementById('link_source_id').value = sourceId;
             document.getElementById('link_source_name').textContent = sourceName;
@@ -2819,6 +3445,24 @@ if (!function_exists('getQueryUrl')) {
                             appSidebar.classList.remove('show');
                         }
                     }
+                });
+            }
+
+            if (document.getElementById('sharedAccordionView')) {
+                let savedLayout = 'accordion';
+                try {
+                    const stored = localStorage.getItem('taipan_shared_layout');
+                    if (stored === 'split' || stored === 'accordion') savedLayout = stored;
+                } catch (e) {}
+                setSharedLayoutMode(savedLayout);
+
+                document.querySelectorAll('.shared-acc-header[data-bs-toggle="collapse"]').forEach(hdr => {
+                    hdr.addEventListener('keydown', function (ev) {
+                        if (ev.key === 'Enter' || ev.key === ' ') {
+                            ev.preventDefault();
+                            hdr.click();
+                        }
+                    });
                 });
             }
         });
