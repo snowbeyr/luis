@@ -10,101 +10,80 @@ if (!isset($_SESSION['user_id'])) {
 if (isset($_GET['id']) && isset($_GET['status'])) {
 
     $id = (int) $_GET['id'];
-    $new_status = mysqli_real_escape_string($conn, $_GET['status']);
+    $new_status = strtolower(trim((string)$_GET['status']));
     $admin_id = (int) $_SESSION['user_id'];
 
+    require_once __DIR__ . '/../includes/inventory_helpers.php';
+    ensureCancellationSchema($pdo);
+
+    // GUARD: Block status changes when a Pending cancellation request exists
+    $chkCancel = $pdo->prepare("
+        SELECT id FROM customer_requests
+        WHERE order_number = ?
+          AND LOWER(TRIM(request_type)) = 'cancel'
+          AND (LOWER(TRIM(status)) = 'pending' OR status IS NULL)
+        LIMIT 1
+    ");
+    $chkCancel->execute([(string)$id]);
+    if ($chkCancel->fetchColumn()) {
+        $_SESSION['app_modal'] = [
+            'title' => 'Action Blocked',
+            'message' => 'This order has a pending cancellation request. Please approve or decline the cancellation request before proceeding with any order status updates.',
+            'type' => 'warning'
+        ];
+        header("Location: orders.php#order-" . $id);
+        exit();
+    }
+
     // 2. Get order
-    $res = mysqli_query($conn, "SELECT status, cart FROM orders WHERE id = $id");
-    $order = mysqli_fetch_assoc($res);
+    $stmtOrd = $pdo->prepare("SELECT status, cart FROM orders WHERE id = ?");
+    $stmtOrd->execute([$id]);
+    $order = $stmtOrd->fetch(PDO::FETCH_ASSOC);
 
     if (!$order) {
         die("Order not found");
     }
 
-    $old_status = strtolower($order['status']);
-
-    $items = json_decode($order['cart'], true);
-
-    // =========================
-    // STOCK ONLY ON COMPLETED
-    // =========================
-    if ($new_status == 'completed' && $old_status != 'completed') {
-
-        if (is_array($items)) {
-            foreach ($items as $item) {
-                $qty = (int)$item['qty'];
-                $p_id = (int)$item['id'];
-
-                mysqli_query($conn, "
-                    UPDATE products 
-                    SET stock = stock - $qty 
-                    WHERE id = $p_id
-                ");
-            }
-        }
-    }
-
-    // OPTIONAL: if you want refund stock when cancelling AFTER completed
-    if ($new_status == 'declined' && $old_status == 'completed') {
-
-        if (is_array($items)) {
-            foreach ($items as $item) {
-                $qty = (int)$item['qty'];
-                $p_id = (int)$item['id'];
-
-                mysqli_query($conn, "
-                    UPDATE products 
-                    SET stock = stock + $qty 
-                    WHERE id = $p_id
-                ");
-            }
-        }
+    $old_status = normalizeCancellationOrderStatus($order['status'] ?? '');
+    if (in_array($old_status, ['cancelled', 'declined'], true)) {
+        $_SESSION['app_modal'] = [
+            'title' => 'Order Finalized',
+            'message' => "Order #{$id} is already " . strtoupper($old_status) . " and cannot be modified.",
+            'type' => 'warning'
+        ];
+        header("Location: orders.php#order-" . $id);
+        exit();
     }
 
     // =========================
     // UPDATE ORDER STATUS
     // =========================
-    require_once __DIR__ . '/../includes/inventory_helpers.php';
-    ensureOrderTimelineColumns($pdo);
-
-    if ($new_status == 'approved') {
-
-        $update_query = "
-            UPDATE orders 
-            SET status = '$new_status',
-                approved_by = $admin_id,
-                approved_at = COALESCE(approved_at, NOW())
-            WHERE id = $id
-        ";
-
-    } elseif ($new_status == 'declined') {
-
-        $update_query = "
-            UPDATE orders 
-            SET status = '$new_status',
-                declined_by = $admin_id 
-            WHERE id = $id
-        ";
-
+    if ($new_status === 'approved') {
+        $pdo->prepare("UPDATE orders SET status = ?, approved_by = ?, approved_at = COALESCE(approved_at, NOW()) WHERE id = ?")
+            ->execute([$new_status, $admin_id, $id]);
+    } elseif ($new_status === 'declined') {
+        $pdo->prepare("UPDATE orders SET status = ?, declined_by = ? WHERE id = ?")
+            ->execute([$new_status, $admin_id, $id]);
+        restoreOrderInventorySafely($pdo, $id, (string)($_SESSION['username'] ?? 'Admin'), 'Order Declined Restoration');
+    } elseif ($new_status === 'cancelled') {
+        finalizeOrderCancellation($pdo, $id, [
+            'mode' => 'manual',
+            'admin_id' => $admin_id,
+            'actor_name' => (string)($_SESSION['username'] ?? 'Admin'),
+            'actor_role' => 'admin',
+            'reason' => 'Cancelled via admin status update',
+        ]);
     } else {
-
         $tsCol = getOrderStepTimestampColumn((string)$new_status);
-        $tsSet = ($tsCol !== null) ? ", $tsCol = NOW()" : "";
-        $update_query = "
-            UPDATE orders 
-            SET status = '$new_status'
-                $tsSet
-            WHERE id = $id
-        ";
+        if ($tsCol !== null) {
+            $pdo->prepare("UPDATE orders SET status = ?, {$tsCol} = NOW() WHERE id = ?")->execute([$new_status, $id]);
+        } else {
+            $pdo->prepare("UPDATE orders SET status = ? WHERE id = ?")->execute([$new_status, $id]);
+        }
     }
 
-    if (mysqli_query($conn, $update_query)) {
-        header("Location: orders.php?success=1");
-        exit();
-    } else {
-        echo "Error updating record: " . mysqli_error($conn);
-    }
-
+    header("Location: orders.php?success=1#order-" . $id);
+    exit();
 } else {
     echo "Invalid request parameters.";
 }

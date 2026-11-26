@@ -415,7 +415,8 @@ if (!function_exists('ensureOrderTimelineColumns')) {
                 ADD COLUMN IF NOT EXISTS preparing_at TIMESTAMP NULL,
                 ADD COLUMN IF NOT EXISTS out_for_delivery_at TIMESTAMP NULL,
                 ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP NULL,
-                ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP NULL
+                ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP NULL,
+                ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMP NULL
             ");
             $checked = true;
         } catch (Throwable $e) {
@@ -437,6 +438,7 @@ if (!function_exists('getOrderStepTimestampColumn')) {
             'out_for_delivery' => 'out_for_delivery_at',
             'delivered' => 'delivered_at',
             'completed' => 'completed_at',
+            'cancelled' => 'cancelled_at',
         ];
         return $map[$st] ?? null;
     }
@@ -536,6 +538,7 @@ if (!function_exists('hydrateOrderTimelineTimestamps')) {
             $shippingRaw = !empty($order['out_for_delivery_at']) ? (string)$order['out_for_delivery_at'] : ($auditMap[$oid]['shipping'] ?? null);
             $deliveredRaw = !empty($order['delivered_at']) ? (string)$order['delivered_at'] : ($auditMap[$oid]['delivered'] ?? null);
             $completedRaw = !empty($order['completed_at']) ? (string)$order['completed_at'] : ($auditMap[$oid]['completed'] ?? null);
+            $cancelledRaw = !empty($order['cancelled_at']) ? (string)$order['cancelled_at'] : null;
 
             // Auto-completed orders before completed_at column existed: fallback to delivered_at + 72h if no audit row
             if ($status === 'completed' && empty($completedRaw) && !empty($deliveredRaw)) {
@@ -558,8 +561,757 @@ if (!function_exists('hydrateOrderTimelineTimestamps')) {
                 'shipping' => formatTimelineStepDateTime($shippingRaw),
                 'delivered' => formatTimelineStepDateTime($deliveredRaw),
                 'completed' => formatTimelineStepDateTime($completedRaw),
+                'cancelled' => formatTimelineStepDateTime($cancelledRaw),
             ];
         }
         unset($order);
+    }
+}
+
+if (!function_exists('ensureCancellationSchema')) {
+    /**
+     * Ensures cancellation metadata, refund status tracking, idempotent inventory restoration flags,
+     * and the in-app notifications table exist in PostgreSQL.
+     */
+    function ensureCancellationSchema(PDO $pdo): void
+    {
+        static $schemaReady = false;
+        if ($schemaReady) {
+            return;
+        }
+
+        ensureOrderTimelineColumns($pdo);
+
+        try {
+            $pdo->exec("
+                ALTER TABLE orders
+                ADD COLUMN IF NOT EXISTS cancellation_reason TEXT NULL,
+                ADD COLUMN IF NOT EXISTS cancellation_mode VARCHAR(30) NULL,
+                ADD COLUMN IF NOT EXISTS inventory_restored SMALLINT DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS refund_status VARCHAR(40) NULL
+            ");
+            $pdo->exec("
+                ALTER TABLE customer_requests
+                ADD COLUMN IF NOT EXISTS customer_id INTEGER NULL,
+                ADD COLUMN IF NOT EXISTS cancellation_mode VARCHAR(30) NULL,
+                ADD COLUMN IF NOT EXISTS processed_by INTEGER NULL,
+                ADD COLUMN IF NOT EXISTS processed_at TIMESTAMP NULL,
+                ADD COLUMN IF NOT EXISTS auto_approved SMALLINT DEFAULT 0
+            ");
+            $pdo->exec("
+                CREATE TABLE IF NOT EXISTS notifications (
+                    id SERIAL PRIMARY KEY,
+                    recipient_role VARCHAR(30) NOT NULL,
+                    recipient_email VARCHAR(255) NULL,
+                    order_id INTEGER NULL,
+                    request_id INTEGER NULL,
+                    title VARCHAR(255) NOT NULL,
+                    message TEXT NOT NULL,
+                    type VARCHAR(30) DEFAULT 'info',
+                    is_read SMALLINT DEFAULT 0,
+                    unique_key VARCHAR(150) UNIQUE NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ");
+            $schemaReady = true;
+        } catch (Throwable $e) {
+            error_log('ensureCancellationSchema error: ' . $e->getMessage());
+        }
+    }
+}
+
+if (!function_exists('logSystemAudit')) {
+    /**
+     * Inserts an entry into audit_log using PDO inside a SAVEPOINT when in an active
+     * PostgreSQL transaction so auxiliary logging never aborts the caller transaction.
+     */
+    function logSystemAudit(PDO $pdo, ?int $userId, string $username, string $role, string $action, string $details): void
+    {
+        $inTxn = $pdo->inTransaction();
+        $spName = 'sp_audit_' . mt_rand(1000, 999999);
+        try {
+            if ($inTxn) {
+                $pdo->exec("SAVEPOINT {$spName}");
+            }
+            $ip = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+            $stmt = $pdo->prepare("
+                INSERT INTO audit_log (user_id, username, role, action, details, ip_address, \"timestamp\")
+                VALUES (:uid, :uname, :role, :action, :details, :ip, NOW())
+            ");
+            $stmt->execute([
+                ':uid' => ($userId !== null && $userId > 0) ? $userId : 0,
+                ':uname' => $username !== '' ? $username : 'System',
+                ':role' => $role !== '' ? $role : 'system',
+                ':action' => $action,
+                ':details' => $details,
+                ':ip' => $ip,
+            ]);
+            if ($inTxn) {
+                $pdo->exec("RELEASE SAVEPOINT {$spName}");
+            }
+        } catch (Throwable $e) {
+            if ($inTxn) {
+                try {
+                    $pdo->exec("ROLLBACK TO SAVEPOINT {$spName}");
+                } catch (Throwable $ignored) {}
+            }
+            error_log('logSystemAudit error: ' . $e->getMessage());
+        }
+    }
+}
+
+if (!function_exists('createSystemNotification')) {
+    /**
+     * Persists an idempotent in-app notification record (duplicates prevented via unique_key).
+     */
+    function createSystemNotification(PDO $pdo, array $data): bool
+    {
+        ensureCancellationSchema($pdo);
+        $role = trim((string)($data['recipient_role'] ?? 'customer'));
+        $email = isset($data['recipient_email']) && $data['recipient_email'] !== '' ? trim((string)$data['recipient_email']) : null;
+        $orderId = !empty($data['order_id']) ? (int)$data['order_id'] : null;
+        $requestId = !empty($data['request_id']) ? (int)$data['request_id'] : null;
+        $title = trim((string)($data['title'] ?? 'Order Update'));
+        $message = trim((string)($data['message'] ?? ''));
+        $type = trim((string)($data['type'] ?? 'info'));
+        $uniqueKey = !empty($data['unique_key']) ? trim((string)$data['unique_key']) : null;
+
+        if ($message === '') {
+            return false;
+        }
+
+        $inTxn = $pdo->inTransaction();
+        $spName = 'sp_notif_' . mt_rand(1000, 999999);
+        try {
+            if ($inTxn) {
+                $pdo->exec("SAVEPOINT {$spName}");
+            }
+            $stmt = $pdo->prepare("
+                INSERT INTO notifications (recipient_role, recipient_email, order_id, request_id, title, message, type, unique_key)
+                VALUES (:role, :email, :oid, :rid, :title, :msg, :type, :ukey)
+                ON CONFLICT (unique_key) DO NOTHING
+            ");
+            $stmt->execute([
+                ':role' => $role,
+                ':email' => $email,
+                ':oid' => $orderId,
+                ':rid' => $requestId,
+                ':title' => $title,
+                ':msg' => $message,
+                ':type' => $type,
+                ':ukey' => $uniqueKey,
+            ]);
+            $inserted = $stmt->rowCount() > 0;
+            if ($inTxn) {
+                $pdo->exec("RELEASE SAVEPOINT {$spName}");
+            }
+            return $inserted;
+        } catch (Throwable $e) {
+            if ($inTxn) {
+                try {
+                    $pdo->exec("ROLLBACK TO SAVEPOINT {$spName}");
+                } catch (Throwable $ignored) {}
+            }
+            error_log('createSystemNotification error: ' . $e->getMessage());
+            return false;
+        }
+    }
+}
+
+if (!function_exists('normalizeCancellationOrderStatus')) {
+    /**
+     * Normalizes order status labels so variations like "Order Placed", "pending", "out for delivery" compare reliably.
+     */
+    function normalizeCancellationOrderStatus(?string $status): string
+    {
+        $raw = strtolower(trim((string)$status));
+        $raw = preg_replace('/[\s\-]+/', '_', $raw);
+        if ($raw === 'order_placed' || $raw === 'placed') {
+            return 'pending';
+        }
+        if ($raw === 'canceled') {
+            return 'cancelled';
+        }
+        return $raw;
+    }
+}
+
+if (!function_exists('restoreOrderInventorySafely')) {
+    /**
+     * Restores/releases inventory once for a cancelled or declined order inside a row-locked transaction.
+     * Prevents duplicate restoration across shared stock sources, product variants, and main products.
+     */
+    function restoreOrderInventorySafely(PDO $pdo, int $orderId, string $actorName = 'System', string $movementLabel = 'Online Order Cancellation Restoration'): array
+    {
+        ensureCancellationSchema($pdo);
+        require_once __DIR__ . '/shared_inventory_functions.php';
+
+        $startedTxn = false;
+        if (!$pdo->inTransaction()) {
+            $pdo->beginTransaction();
+            $startedTxn = true;
+        }
+
+        try {
+            $stmtOrd = $pdo->prepare("SELECT id, status, cart, inventory_restored FROM orders WHERE id = ? FOR UPDATE");
+            $stmtOrd->execute([$orderId]);
+            $orderRow = $stmtOrd->fetch(PDO::FETCH_ASSOC);
+
+            if (!$orderRow) {
+                if ($startedTxn) {
+                    $pdo->rollBack();
+                }
+                return ['restored' => false, 'already_restored' => false, 'items_restored' => 0, 'error' => 'Order not found'];
+            }
+
+            if ((int)($orderRow['inventory_restored'] ?? 0) === 1) {
+                if ($startedTxn) {
+                    $pdo->commit();
+                }
+                return ['restored' => false, 'already_restored' => true, 'items_restored' => 0, 'error' => null];
+            }
+
+            $stmtItems = $pdo->prepare("SELECT product_id, variant_id, qty, product_name FROM order_items WHERE order_id = ? ORDER BY id ASC");
+            $stmtItems->execute([$orderId]);
+            $items = $stmtItems->fetchAll(PDO::FETCH_ASSOC);
+
+            if (empty($items) && !empty($orderRow['cart'])) {
+                $decodedCart = json_decode((string)$orderRow['cart'], true);
+                if (is_array($decodedCart)) {
+                    foreach ($decodedCart as $cItem) {
+                        $items[] = [
+                            'product_id' => $cItem['id'] ?? ($cItem['product_id'] ?? 0),
+                            'variant_id' => $cItem['variant_id'] ?? null,
+                            'qty' => $cItem['qty'] ?? 0,
+                            'product_name' => $cItem['name'] ?? ($cItem['product_name'] ?? 'Item'),
+                        ];
+                    }
+                }
+            }
+
+            $itemsRestored = 0;
+            $seenKeys = [];
+
+            foreach ($items as $item) {
+                $prodId = (int)($item['product_id'] ?? 0);
+                $varId = !empty($item['variant_id']) ? (int)$item['variant_id'] : null;
+                $qty = (int)($item['qty'] ?? 0);
+
+                if ($prodId <= 0 || $qty <= 0) {
+                    continue;
+                }
+
+                $linkedSource = getLinkedSourceInfo($pdo, $prodId, $varId);
+                if ($linkedSource) {
+                    $itemKey = $varId ? "v_{$varId}" : "p_{$prodId}";
+                    $seq = ($seenKeys[$itemKey] ?? 0) + 1;
+                    $seenKeys[$itemKey] = $seq;
+                    $suffix = $seq > 1 ? "_s{$seq}" : "";
+
+                    // Guard against historical partial restorations logged prior to inventory_restored column
+                    $stmtHist = $pdo->prepare("
+                        SELECT id
+                        FROM shared_inventory_movements
+                        WHERE reference_id = ?
+                          AND source_id = ?
+                          AND qty_in_base_unit > 0
+                          AND (
+                                LOWER(movement_type) LIKE '%cancel%'
+                             OR LOWER(movement_type) LIKE '%declin%'
+                             OR LOWER(movement_type) LIKE '%restor%'
+                          )
+                          AND (
+                                (?::INTEGER IS NOT NULL AND variant_id = ?::INTEGER)
+                             OR (?::INTEGER IS NULL AND product_id = ?::INTEGER AND (variant_id IS NULL OR variant_id = 0))
+                          )
+                        LIMIT 1
+                    ");
+                    $stmtHist->execute([
+                        (string)$orderId,
+                        (int)$linkedSource['source_id'],
+                        $varId, $varId,
+                        $varId, $prodId,
+                    ]);
+
+                    if (!$stmtHist->fetchColumn()) {
+                        $idempKey = "cancel_restore_{$orderId}_{$itemKey}{$suffix}";
+                        list($resOk, $resMsg) = restoreSharedStock(
+                            $pdo,
+                            (int)$linkedSource['source_id'],
+                            $prodId,
+                            $varId,
+                            $qty,
+                            $movementLabel,
+                            $orderId,
+                            $actorName,
+                            "Inventory restored for Order #{$orderId} ({$linkedSource['source_name']})",
+                            $idempKey
+                        );
+                        if (!$resOk) {
+                            throw new RuntimeException("Shared stock restore failed for Order #{$orderId}: {$resMsg}");
+                        }
+                        $itemsRestored++;
+                    }
+                } else {
+                    if ($varId !== null) {
+                        $lk = $pdo->prepare("SELECT id FROM product_variants WHERE id = ? FOR UPDATE");
+                        $lk->execute([$varId]);
+                        if ($lk->fetchColumn()) {
+                            $up = $pdo->prepare("UPDATE product_variants SET stock = stock + ? WHERE id = ?");
+                            $up->execute([$qty, $varId]);
+                            $itemsRestored++;
+                        }
+                    } else {
+                        $lk = $pdo->prepare("SELECT id FROM products WHERE id = ? FOR UPDATE");
+                        $lk->execute([$prodId]);
+                        if ($lk->fetchColumn()) {
+                            $up = $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?");
+                            $up->execute([$qty, $prodId]);
+                            $itemsRestored++;
+                        }
+                    }
+                }
+            }
+
+            // Release any active shared_inventory_reservations tied to this order
+            $relRes = $pdo->prepare("
+                UPDATE shared_inventory_reservations
+                SET status = 'RELEASED', updated_at = NOW()
+                WHERE order_id = ? AND UPPER(status) = 'RESERVED'
+            ");
+            $relRes->execute([$orderId]);
+
+            $markOrd = $pdo->prepare("UPDATE orders SET inventory_restored = 1 WHERE id = ?");
+            $markOrd->execute([$orderId]);
+
+            if ($startedTxn) {
+                $pdo->commit();
+            }
+
+            return [
+                'restored' => true,
+                'already_restored' => false,
+                'items_restored' => $itemsRestored,
+                'error' => null,
+            ];
+        } catch (Throwable $e) {
+            if ($startedTxn && $pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
+    }
+}
+
+if (!function_exists('determineOrderPaymentRefundStatus')) {
+    /**
+     * Checks whether payment was collected for an order so refund status is tracked separately
+     * without auto-marking a cancelled order as Refunded.
+     */
+    function determineOrderPaymentRefundStatus(array $orderRow): array
+    {
+        $method = strtoupper(trim((string)($orderRow['payment_method'] ?? 'COD')));
+        $scheme = strtolower(trim((string)($orderRow['payment_scheme'] ?? '')));
+        $paidAmount = (float)($orderRow['paid_amount'] ?? 0);
+        $hasProof = !empty(trim((string)($orderRow['proof_of_payment'] ?? ''))) || !empty(trim((string)($orderRow['ref_no'] ?? '')));
+        $existingRefund = trim((string)($orderRow['refund_status'] ?? ''));
+
+        $isPaidOnline = in_array($method, ['GCASH', 'MAYA'], true)
+            || $paidAmount > 0
+            || $hasProof
+            || str_contains($scheme, '50')
+            || str_contains($scheme, 'down');
+
+        if ($existingRefund === 'Refunded') {
+            return ['requires_refund' => $isPaidOnline, 'refund_status' => 'Refunded'];
+        }
+
+        if ($isPaidOnline) {
+            return ['requires_refund' => true, 'refund_status' => 'Pending Refund'];
+        }
+
+        return ['requires_refund' => false, 'refund_status' => 'Not Applicable'];
+    }
+}
+
+if (!function_exists('finalizeOrderCancellation')) {
+    /**
+     * Shared atomic order cancellation transition used by both Automatic Cancellation (Placed/Pending/Approved)
+     * and Admin-Approved Cancellation (Preparing). Handles locking, inventory restoration, payment preservation,
+     * timestamps, audit logs, and duplicate-safe notifications.
+     */
+    function finalizeOrderCancellation(PDO $pdo, int $orderId, array $opts = []): array
+    {
+        ensureCancellationSchema($pdo);
+
+        $mode = ($opts['mode'] ?? 'automatic') === 'manual' ? 'manual' : 'automatic';
+        $requestId = !empty($opts['request_id']) ? (int)$opts['request_id'] : null;
+        $adminId = !empty($opts['admin_id']) ? (int)$opts['admin_id'] : null;
+        $actorName = trim((string)($opts['actor_name'] ?? ($mode === 'automatic' ? 'System (Auto-Cancel)' : 'Admin')));
+        $actorRole = trim((string)($opts['actor_role'] ?? ($mode === 'automatic' ? 'system' : 'admin')));
+        $reason = trim((string)($opts['reason'] ?? 'Customer Cancellation Request'));
+
+        $startedTxn = false;
+        if (!$pdo->inTransaction()) {
+            $pdo->beginTransaction();
+            $startedTxn = true;
+        }
+
+        try {
+            $stmtOrd = $pdo->prepare("SELECT * FROM orders WHERE id = ? FOR UPDATE");
+            $stmtOrd->execute([$orderId]);
+            $orderRow = $stmtOrd->fetch(PDO::FETCH_ASSOC);
+
+            if (!$orderRow) {
+                throw new RuntimeException("Order #{$orderId} not found.");
+            }
+
+            $prevStatus = normalizeCancellationOrderStatus($orderRow['status'] ?? '');
+            $payInfo = determineOrderPaymentRefundStatus($orderRow);
+
+            $restoreResult = restoreOrderInventorySafely(
+                $pdo,
+                $orderId,
+                $actorName,
+                $mode === 'automatic' ? 'Automatic Order Cancellation' : 'Admin-Approved Cancellation'
+            );
+
+            $upOrd = $pdo->prepare("
+                UPDATE orders
+                SET status = 'cancelled',
+                    sent_to_cashier = 0,
+                    cancelled_at = COALESCE(cancelled_at, NOW()),
+                    cancelled_by = COALESCE(:cancelled_by, cancelled_by),
+                    cancellation_reason = CASE
+                        WHEN COALESCE(TRIM(cancellation_reason), '') = '' THEN :reason
+                        ELSE cancellation_reason
+                    END,
+                    cancellation_mode = COALESCE(:cmode, cancellation_mode),
+                    refund_status = CASE
+                        WHEN refund_status = 'Refunded' THEN 'Refunded'
+                        ELSE :ref_status
+                    END
+                WHERE id = :oid
+            ");
+            $upOrd->execute([
+                ':cancelled_by' => $adminId,
+                ':reason' => $reason,
+                ':cmode' => $mode,
+                ':ref_status' => $payInfo['refund_status'],
+                ':oid' => $orderId,
+            ]);
+
+            if ($requestId !== null) {
+                $autoFlag = $mode === 'automatic' ? 1 : 0;
+                $upReq = $pdo->prepare("
+                    UPDATE customer_requests
+                    SET status = 'Approved',
+                        cancellation_mode = :cmode,
+                        auto_approved = :auto_flag,
+                        processed_by = :pby,
+                        processed_at = COALESCE(processed_at, NOW()),
+                        refund_status = CASE
+                            WHEN refund_status = 'Refunded' THEN 'Refunded'
+                            ELSE :ref_status
+                        END
+                    WHERE id = :rid
+                ");
+                $upReq->execute([
+                    ':cmode' => $mode,
+                    ':auto_flag' => $autoFlag,
+                    ':pby' => $adminId,
+                    ':ref_status' => $payInfo['refund_status'],
+                    ':rid' => $requestId,
+                ]);
+            }
+
+            $auditAction = $mode === 'automatic' ? 'Order Auto-Cancelled' : 'Cancellation Approved';
+            $auditDetails = ($mode === 'automatic'
+                ? "Automatically cancelled Order #{$orderId} from status '" . strtoupper($prevStatus) . "'"
+                : "Approved cancellation request" . ($requestId ? " #{$requestId}" : "") . " for Order #{$orderId} from status '" . strtoupper($prevStatus) . "'")
+                . ". Reason: {$reason}";
+            logSystemAudit($pdo, $adminId, $actorName, $actorRole, $auditAction, $auditDetails);
+
+            $custEmail = trim((string)($orderRow['email'] ?? ''));
+            $custMsg = $mode === 'automatic'
+                ? "Your cancellation request for Order #{$orderId} has been automatically approved because your order has not yet entered the preparation stage. Your order is now cancelled."
+                : "Your cancellation request for Order #{$orderId} has been approved. Your order is now cancelled.";
+
+            if ($custEmail !== '') {
+                createSystemNotification($pdo, [
+                    'recipient_role' => 'customer',
+                    'recipient_email' => $custEmail,
+                    'order_id' => $orderId,
+                    'request_id' => $requestId,
+                    'title' => "Order #{$orderId} Cancelled",
+                    'message' => $custMsg,
+                    'type' => 'info',
+                    'unique_key' => "cancel_cust_{$orderId}_" . ($requestId ?? 0),
+                ]);
+            }
+
+            if ($startedTxn) {
+                $pdo->commit();
+            }
+
+            return [
+                'order_id' => $orderId,
+                'previous_status' => $prevStatus,
+                'mode' => $mode,
+                'requires_refund' => $payInfo['requires_refund'],
+                'refund_status' => $payInfo['refund_status'],
+                'inventory_restored' => $restoreResult,
+            ];
+        } catch (Throwable $e) {
+            if ($startedTxn && $pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
+    }
+}
+
+if (!function_exists('processCustomerTicketAction')) {
+    /**
+     * Unified transactional handler for Admin approval, decline, or completion of customer tickets
+     * (Cancellation Requests and Exchanges/Returns). Supports nested transactions cleanly.
+     */
+    function processCustomerTicketAction(PDO $pdo, int $reqId, string $status, string $declineReason, ?int $adminId, string $adminName, bool $sendEmail = true): array
+    {
+        ensureCancellationSchema($pdo);
+
+        $status = trim($status);
+        $declineReason = trim($declineReason);
+
+        if (!in_array($status, ['Approved', 'Declined', 'Completed'], true)) {
+            return ['success' => false, 'message' => '❌ Invalid ticket action requested.', 'pane' => '#cancel-pane'];
+        }
+
+        $paneTarget = '#exchange-pane';
+        $notifyPayload = null;
+        $startedTxn = false;
+
+        try {
+            if (!$pdo->inTransaction()) {
+                $pdo->beginTransaction();
+                $startedTxn = true;
+            }
+
+            $stmtLock = $pdo->prepare("
+                SELECT cr.*, o.id AS ord_id, o.status AS ord_status, o.cart, o.payment_method, o.payment_scheme, o.paid_amount, o.email, o.fullname, o.surname
+                FROM customer_requests cr
+                JOIN orders o ON CAST(cr.order_number AS INTEGER) = o.id
+                WHERE cr.id = ?
+                FOR UPDATE OF cr, o
+            ");
+            $stmtLock->execute([$reqId]);
+            $ticket = $stmtLock->fetch(PDO::FETCH_ASSOC);
+
+            if (!$ticket) {
+                if ($startedTxn && $pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                return ['success' => false, 'message' => '❌ Ticket or linked order not found.', 'pane' => '#cancel-pane'];
+            }
+
+            $requestType = strtolower(trim((string)($ticket['request_type'] ?? '')));
+            $paneTarget = ($requestType === 'cancel') ? '#cancel-pane' : '#exchange-pane';
+            $orderId = (int)$ticket['ord_id'];
+            $curReqStatus = trim((string)($ticket['status'] ?? 'Pending'));
+
+            if ($requestType === 'cancel') {
+                if (in_array($status, ['Approved', 'Declined'], true) && strcasecmp($curReqStatus, 'Pending') !== 0) {
+                    if ($startedTxn && $pdo->inTransaction()) {
+                        $pdo->rollBack();
+                    }
+                    return [
+                        'success' => false,
+                        'message' => "⚠️ Cancellation ticket #{$reqId} has already been processed (Status: {$curReqStatus}).",
+                        'pane' => $paneTarget,
+                    ];
+                }
+
+                if ($status === 'Declined' && $declineReason === '') {
+                    if ($startedTxn && $pdo->inTransaction()) {
+                        $pdo->rollBack();
+                    }
+                    return [
+                        'success' => false,
+                        'message' => '❌ A decline reason is required when declining a cancellation request.',
+                        'pane' => $paneTarget,
+                    ];
+                }
+
+                if ($status === 'Approved') {
+                    $cancelReason = trim((string)($ticket['reason'] ?? 'Customer Cancellation Request'));
+                    if (!empty($ticket['details'])) {
+                        $cancelReason .= ' (' . trim((string)$ticket['details']) . ')';
+                    }
+
+                    $cancelMeta = finalizeOrderCancellation($pdo, $orderId, [
+                        'mode' => 'manual',
+                        'request_id' => $reqId,
+                        'admin_id' => $adminId,
+                        'actor_name' => $adminName,
+                        'actor_role' => 'admin',
+                        'reason' => $cancelReason,
+                    ]);
+
+                    $pdo->prepare("UPDATE notifications SET is_read = 1 WHERE recipient_role = 'admin' AND request_id = ?")
+                        ->execute([$reqId]);
+
+                    $custFull = trim(($ticket['fullname'] ?? '') . ' ' . ($ticket['surname'] ?? '')) ?: 'Customer';
+                    $refundNote = !empty($cancelMeta['requires_refund'])
+                        ? "<p style='background:#fff3cd;padding:10px;border-radius:5px;color:#856404;'><strong>Payment Note:</strong> Your e-wallet payment record has been marked as <strong>Pending Refund</strong>. Our team will upload your refund receipt separately.</p>"
+                        : '';
+                    $notifyPayload = [
+                        'email' => $ticket['email'] ?? '',
+                        'name' => $custFull,
+                        'subject' => "Cancellation Approved: Order #{$orderId}",
+                        'body' => "
+                            <h3>Hi " . htmlspecialchars($custFull) . ",</h3>
+                            <p>Your cancellation request for Order <strong>#{$orderId}</strong> has been <strong>approved</strong> by our team.</p>
+                            <p>Your order is now <strong>CANCELLED</strong>.</p>
+                            {$refundNote}
+                            <br>
+                            <h4>Best regards,<br>R. Taipan Construction Supply and Services, OPC</h4>
+                        ",
+                        'email_status' => 'Approved',
+                    ];
+                } elseif ($status === 'Declined') {
+                    $upReq = $pdo->prepare("
+                        UPDATE customer_requests
+                        SET status = 'Declined',
+                            admin_notes = ?,
+                            cancellation_mode = COALESCE(cancellation_mode, 'manual'),
+                            processed_by = ?,
+                            processed_at = NOW()
+                        WHERE id = ?
+                    ");
+                    $upReq->execute([$declineReason, $adminId, $reqId]);
+
+                    $pdo->prepare("UPDATE notifications SET is_read = 1 WHERE recipient_role = 'admin' AND request_id = ?")
+                        ->execute([$reqId]);
+
+                    logSystemAudit(
+                        $pdo,
+                        $adminId,
+                        $adminName,
+                        'admin',
+                        'Cancellation Declined',
+                        "Declined cancellation request #{$reqId} for Order #{$orderId}. Reason: {$declineReason}"
+                    );
+
+                    $custEmail = trim((string)($ticket['email'] ?? ''));
+                    if ($custEmail !== '') {
+                        createSystemNotification($pdo, [
+                            'recipient_role' => 'customer',
+                            'recipient_email' => $custEmail,
+                            'order_id' => $orderId,
+                            'request_id' => $reqId,
+                            'title' => "Cancellation Declined (#{$orderId})",
+                            'message' => "Your cancellation request for Order #{$orderId} was declined. Reason: {$declineReason}",
+                            'type' => 'warning',
+                            'unique_key' => "cancel_declined_{$reqId}",
+                        ]);
+                    }
+
+                    $custFull = trim(($ticket['fullname'] ?? '') . ' ' . ($ticket['surname'] ?? '')) ?: 'Customer';
+                    $notifyPayload = [
+                        'email' => $ticket['email'] ?? '',
+                        'name' => $custFull,
+                        'subject' => "Cancellation Request Update: Order #{$orderId}",
+                        'body' => "
+                            <h3>Hi " . htmlspecialchars($custFull) . ",</h3>
+                            <p>Your cancellation request for Order <strong>#{$orderId}</strong> has been <strong>declined</strong>.</p>
+                            <div style='background:#f8d7da;padding:12px;border-left:4px solid #dc3545;margin:12px 0;'>
+                                <strong>Reason provided by Admin:</strong><br>" . nl2br(htmlspecialchars($declineReason)) . "
+                            </div>
+                            <p>Your order remains in <strong>" . strtoupper((string)$ticket['ord_status']) . "</strong> status and processing will continue.</p>
+                            <br>
+                            <h4>Best regards,<br>R. Taipan Construction Supply and Services, OPC</h4>
+                        ",
+                        'email_status' => 'Declined',
+                    ];
+                } elseif ($status === 'Completed') {
+                    if (normalizeCancellationOrderStatus($ticket['ord_status'] ?? '') !== 'cancelled') {
+                        finalizeOrderCancellation($pdo, $orderId, [
+                            'mode' => 'manual',
+                            'request_id' => $reqId,
+                            'admin_id' => $adminId,
+                            'actor_name' => $adminName,
+                            'actor_role' => 'admin',
+                            'reason' => trim((string)($ticket['reason'] ?? 'Customer Cancellation Request')),
+                        ]);
+                    }
+                    $pdo->prepare("
+                        UPDATE customer_requests
+                        SET status = 'Completed',
+                            email_status = 'Completed',
+                            processed_by = COALESCE(processed_by, ?),
+                            processed_at = COALESCE(processed_at, NOW())
+                        WHERE id = ?
+                    ")->execute([$adminId, $reqId]);
+                }
+            } else {
+                $sqlEx = "UPDATE customer_requests SET status = ?, processed_by = COALESCE(processed_by, ?), processed_at = COALESCE(processed_at, NOW())"
+                    . ($status === 'Completed' ? ", email_status = 'Completed'" : "")
+                    . ($status === 'Declined' && $declineReason !== '' ? ", admin_notes = ?" : "")
+                    . " WHERE id = ?";
+                $paramsEx = ($status === 'Declined' && $declineReason !== '')
+                    ? [$status, $adminId, $declineReason, $reqId]
+                    : [$status, $adminId, $reqId];
+                $pdo->prepare($sqlEx)->execute($paramsEx);
+
+                if (in_array($status, ['Approved', 'Completed'], true) && strpos(strtolower((string)($ticket['reason'] ?? '')), 'damaged') !== false) {
+                    $checkDmg = $pdo->prepare("SELECT id FROM damaged_items WHERE order_number = ? AND account = ? LIMIT 1");
+                    $checkDmg->execute([(string)$orderId, $ticket['account']]);
+                    if ($checkDmg->rowCount() == 0) {
+                        $itemDetails = !empty($ticket['item_to_replace']) ? $ticket['item_to_replace'] : $ticket['reason'];
+                        if (!empty($ticket['details'])) {
+                            $itemDetails .= "\nDetails: " . $ticket['details'];
+                        }
+                        $pdo->prepare("INSERT INTO damaged_items (order_number, account, product_image, item_details, date_logged) VALUES (?, ?, ?, ?, NOW())")
+                            ->execute([(string)$orderId, $ticket['account'], $ticket['product_image'], $itemDetails]);
+                    }
+                }
+            }
+
+            if ($startedTxn && $pdo->inTransaction()) {
+                $pdo->commit();
+            }
+
+            if ($sendEmail && $notifyPayload !== null && !empty($notifyPayload['email']) && ($ticket['email_status'] ?? '') !== $notifyPayload['email_status']) {
+                try {
+                    if (function_exists('sendSystemEmail')) {
+                        $mailRes = sendSystemEmail(
+                            $notifyPayload['email'],
+                            $notifyPayload['name'],
+                            $notifyPayload['subject'],
+                            $notifyPayload['body']
+                        );
+                        if (!empty($mailRes['success'])) {
+                            $pdo->prepare("UPDATE customer_requests SET email_status = ? WHERE id = ?")
+                                ->execute([$notifyPayload['email_status'], $reqId]);
+                        }
+                    }
+                } catch (Throwable $mailEx) {
+                    error_log("Cancellation decision email error: " . $mailEx->getMessage());
+                }
+            }
+
+            if ($requestType === 'cancel' && $status === 'Approved') {
+                return ['success' => true, 'message' => "✅ Cancellation request #{$reqId} approved. Order #{$orderId} is now CANCELLED and inventory has been restored.", 'pane' => $paneTarget];
+            }
+            if ($requestType === 'cancel' && $status === 'Declined') {
+                return ['success' => true, 'message' => "ℹ️ Cancellation request #{$reqId} declined. Order #{$orderId} remains in PREPARING status.", 'pane' => $paneTarget];
+            }
+            return ['success' => true, 'message' => "🎉 Ticket #{$reqId} status successfully updated to {$status}!", 'pane' => $paneTarget];
+        } catch (Throwable $e) {
+            if ($startedTxn && $pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            return ['success' => false, 'message' => '❌ Failed to update status: ' . $e->getMessage(), 'pane' => $paneTarget];
+        }
     }
 }

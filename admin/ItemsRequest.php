@@ -5,6 +5,8 @@ require_once __DIR__ . '/../config/google_drive.php';
 require_once __DIR__ . '/../config/image.php';
 require_once __DIR__ . '/../config/email.php';
 require_once __DIR__ . '/../includes/shared_inventory_functions.php';
+require_once __DIR__ . '/../includes/inventory_helpers.php';
+ensureCancellationSchema($pdo);
 
 if (!isset($_SESSION['role']) || $_SESSION['role'] !== "admin") {
     header("Location: ../login.php");
@@ -140,224 +142,37 @@ if (isset($_POST['send_email_update'])) {
     exit();
 }
 
-// --- 2. STATUS UPDATE LOGIC ---
+// --- 2. UNIFIED TICKET STATUS UPDATE HANDLER (POST & GET -> processCustomerTicketAction in inventory_helpers.php) ---
 if (isset($_POST['update_status'])) {
-    $req_id = (int)$_POST['ticket_id'];
-    $status = $_POST['status'];
-    $decline_reason = isset($_POST['decline_reason']) ? trim($_POST['decline_reason']) : '';
-    
-    if (in_array($status, ['Approved', 'Declined', 'Completed'])) {
-        $check_req = $pdo->prepare("SELECT cr.*, o.cart, o.payment_method 
-                                     FROM customer_requests cr 
-                                     JOIN orders o ON CAST(cr.order_number AS INTEGER) = o.id 
-                                     WHERE cr.id = ?");
-        $check_req->execute([$req_id]);
-        
-        if ($check_req->rowCount() > 0) {
-            $ticket_data = $check_req->fetch(PDO::FETCH_ASSOC);
-            $request_type = $ticket_data['request_type'];
-            $order_number = $ticket_data['order_number'];
-            $cart_array = json_decode($ticket_data['cart'], true);
-            $pay_method_check = strtoupper(trim($ticket_data['payment_method'] ?? ''));
-            $is_ewallet = ($pay_method_check === 'GCASH' || $pay_method_check === 'MAYA');
-
-            try {
-                $pdo->beginTransaction();
-
-                $extra_updates_sql = "";
-                $extra_params = [];
-                
-                if ($status === 'Completed') {
-                    $extra_updates_sql .= ", email_status = ?";
-                    $extra_params[] = 'Completed';
-                }
-                
-                if ($status === 'Declined' && !empty($decline_reason)) {
-                    $extra_updates_sql .= ", admin_notes = ?";
-                    $extra_params[] = $decline_reason;
-                }
-                
-                $extra_params[] = $status;
-                $extra_params[] = $req_id;
-
-                $update_stmt = $pdo->prepare("UPDATE customer_requests SET status = ?" . $extra_updates_sql . " WHERE id = ?");
-                $update_stmt->execute($extra_params);
-
-                if ($status === 'Approved' && $request_type === 'cancel') {
-                    if (is_array($cart_array)) {
-                        foreach ($cart_array as $item) {
-                            $qty = (int)$item['qty'];
-                            $product_id = (int)$item['id'];
-                            $variant_id = !empty($item['variant_id']) ? (int)$item['variant_id'] : null;
-
-                            $linked_source = getLinkedSourceInfo($pdo, $product_id, $variant_id);
-                            if ($linked_source) {
-                                $idemp = "cancel_approval_{$req_id}_{$product_id}_" . ($variant_id ?: '0');
-                                restoreSharedStock(
-                                    $pdo,
-                                    $linked_source['source_id'],
-                                    $product_id,
-                                    $variant_id,
-                                    $qty,
-                                    'Cancellation Restoration',
-                                    $order_number,
-                                    $admin_name ?? 'Admin',
-                                    "Approved cancellation request #$req_id for order #$order_number",
-                                    $idemp
-                                );
-                            } else {
-                                if ($variant_id) {
-                                    $up_var = $pdo->prepare("UPDATE product_variants SET stock = stock + ? WHERE id = ?");
-                                    $up_var->execute([$qty, $variant_id]);
-                                } else {
-                                    $up_prod = $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?");
-                                    $up_prod->execute([$qty, $product_id]);
-                                }
-                            }
-                        }
-                    }
-                    
-                    // Kapag E-Wallet at in-approve, huwag munang i-set sa 'cancelled' ang order status sa orders table kung kailangan pa ng refund proof; para sa COD o kung tapos na, pwede nang cancelled.
-                    if (!$is_ewallet || $status === 'Completed') {
-                        $up_ord = $pdo->prepare("UPDATE orders SET status = 'cancelled', sent_to_cashier = 0, cancelled_by = ? WHERE id = ?");
-                        $up_ord->execute([$admin_id, $order_number]);
-                    }
-                }
-
-                if (in_array($status, ['Approved', 'Completed']) && strpos(strtolower($ticket_data['reason']), 'damaged') !== false) {
-                    $check_dmg = $pdo->prepare("SELECT id FROM damaged_items WHERE order_number = ? AND account = ? LIMIT 1");
-                    $check_dmg->execute([$order_number, $ticket_data['account']]);
-                    
-                    if ($check_dmg->rowCount() == 0) {
-                        $item_details = !empty($ticket_data['item_to_replace']) ? $ticket_data['item_to_replace'] : $ticket_data['reason'];
-                        if (!empty($ticket_data['details'])) {
-                            $item_details .= "\nDetails: " . $ticket_data['details'];
-                        }
-
-                        $ins_dmg = $pdo->prepare("INSERT INTO damaged_items (order_number, account, product_image, item_details, date_logged) VALUES (?, ?, ?, ?, NOW())");
-                        $ins_dmg->execute([
-                            $order_number,
-                            $ticket_data['account'],
-                            $ticket_data['product_image'],
-                            $item_details
-                        ]);
-                    }
-                }
-
-                $pdo->commit();
-                $_SESSION['msg'] = "🎉 Ticket #$req_id status successfully updated to $status!";
-            } catch (Exception $e) {
-                if ($pdo->inTransaction()) {
-                    $pdo->rollBack();
-                }
-                $_SESSION['msg'] = "❌ Failed to update status: " . $e->getMessage();
-            }
-        }
+    $req_id = (int)($_POST['ticket_id'] ?? 0);
+    $status = (string)($_POST['status'] ?? '');
+    $decline_reason = isset($_POST['decline_reason']) ? trim((string)$_POST['decline_reason']) : '';
+    $res = processCustomerTicketAction($pdo, $req_id, $status, $decline_reason, $admin_id ? (int)$admin_id : null, (string)$admin_name);
+    if ($res['success']) {
+        $_SESSION['msg'] = $res['message'];
+    } else {
+        $_SESSION['err'] = $res['message'];
     }
-    $pane_target = ($request_type == 'cancel') ? '#cancel-pane' : '#exchange-pane';
-    header("Location: ItemsRequest.php" . $pane_target);
+    header("Location: ItemsRequest.php" . $res['pane']);
     exit();
 }
 
 // --- QUICK GET STATUS UPDATE HANDLER ---
 if (isset($_GET['id']) && isset($_GET['status'])) {
     $req_id = (int)$_GET['id'];
-    $status = $_GET['status'];
-    
-    if (in_array($status, ['Approved', 'Completed'])) {
-        $check_req = $pdo->prepare("SELECT cr.*, o.cart, o.payment_method 
-                                     FROM customer_requests cr 
-                                     JOIN orders o ON CAST(cr.order_number AS INTEGER) = o.id 
-                                     WHERE cr.id = ?");
-        $check_req->execute([$req_id]);
-        
-        if ($check_req->rowCount() > 0) {
-            $ticket_data = $check_req->fetch(PDO::FETCH_ASSOC);
-            $request_type = $ticket_data['request_type'];
-            $order_number = $ticket_data['order_number'];
-            $cart_array = json_decode($ticket_data['cart'], true);
-            $pay_method_check = strtoupper(trim($ticket_data['payment_method'] ?? ''));
-            $is_ewallet = ($pay_method_check === 'GCASH' || $pay_method_check === 'MAYA');
-
-            try {
-                $pdo->beginTransaction();
-
-                $up_req = $pdo->prepare("UPDATE customer_requests SET status = ? WHERE id = ?");
-                $up_req->execute([$status, $req_id]);
-
-                if ($status === 'Approved' && $request_type === 'cancel') {
-                    if (is_array($cart_array)) {
-                        foreach ($cart_array as $item) {
-                            $qty = (int)$item['qty'];
-                            $product_id = (int)$item['id'];
-                            $variant_id = !empty($item['variant_id']) ? (int)$item['variant_id'] : null;
-
-                            $linked_source = getLinkedSourceInfo($pdo, $product_id, $variant_id);
-                            if ($linked_source) {
-                                $idemp = "cancel_approval_{$req_id}_{$product_id}_" . ($variant_id ?: '0');
-                                restoreSharedStock(
-                                    $pdo,
-                                    $linked_source['source_id'],
-                                    $product_id,
-                                    $variant_id,
-                                    $qty,
-                                    'Cancellation Restoration',
-                                    $order_number,
-                                    $admin_name ?? 'Admin',
-                                    "Approved cancellation request #$req_id for order #$order_number",
-                                    $idemp
-                                );
-                            } else {
-                                if ($variant_id) {
-                                    $up_var = $pdo->prepare("UPDATE product_variants SET stock = stock + ? WHERE id = ?");
-                                    $up_var->execute([$qty, $variant_id]);
-                                } else {
-                                    $up_prod = $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?");
-                                    $up_prod->execute([$qty, $product_id]);
-                                }
-                            }
-                        }
-                    }
-                    
-                    if (!$is_ewallet || $status === 'Completed') {
-                        $up_ord = $pdo->prepare("UPDATE orders SET status = 'cancelled', sent_to_cashier = 0, cancelled_by = ? WHERE id = ?");
-                        $up_ord->execute([$admin_id, $order_number]);
-                    }
-                }
-
-                if (in_array($status, ['Approved', 'Completed']) && strpos(strtolower($ticket_data['reason']), 'damaged') !== false) {
-                    $check_dmg = $pdo->prepare("SELECT id FROM damaged_items WHERE order_number = ? AND account = ? LIMIT 1");
-                    $check_dmg->execute([$order_number, $ticket_data['account']]);
-                    
-                    if ($check_dmg->rowCount() == 0) {
-                        $item_details = !empty($ticket_data['item_to_replace']) ? $ticket_data['item_to_replace'] : $ticket_data['reason'];
-                        if (!empty($ticket_data['details'])) {
-                            $item_details .= "\nDetails: " . $ticket_data['details'];
-                        }
-
-                        $ins_dmg = $pdo->prepare("INSERT INTO damaged_items (order_number, account, product_image, item_details, date_logged) VALUES (?, ?, ?, ?, NOW())");
-                        $ins_dmg->execute([
-                            $order_number,
-                            $ticket_data['account'],
-                            $ticket_data['product_image'],
-                            $item_details
-                        ]);
-                    }
-                }
-
-                $pdo->commit();
-                $_SESSION['msg'] = "🎉 Ticket #$req_id status successfully updated to $status!";
-            } catch (Exception $e) {
-                if ($pdo->inTransaction()) {
-                    $pdo->rollBack();
-                }
-                $_SESSION['msg'] = "❌ Failed to update status: " . $e->getMessage();
-            }
+    $status = (string)$_GET['status'];
+    if (in_array($status, ['Approved', 'Completed'], true)) {
+        $res = processCustomerTicketAction($pdo, $req_id, $status, '', $admin_id ? (int)$admin_id : null, (string)$admin_name);
+        if ($res['success']) {
+            $_SESSION['msg'] = $res['message'];
+        } else {
+            $_SESSION['err'] = $res['message'];
         }
+        header("Location: ItemsRequest.php" . $res['pane']);
+        exit();
     }
-    
-    $pane_target = ($request_type == 'cancel') ? '#cancel-pane' : '#exchange-pane';
-    header("Location: ItemsRequest.php" . $pane_target);
+    $_SESSION['err'] = "❌ Invalid quick status update request.";
+    header("Location: ItemsRequest.php#cancel-pane");
     exit();
 }
 
@@ -418,9 +233,19 @@ if (isset($_POST['submit_refund'])) {
             $t_data = $get_info->fetch(PDO::FETCH_ASSOC);
             $order_number = $t_data['order_number'];
             
-            // I-update na sa cancelled ang orders table kapag na-refund na nang tuluyan
-            $up_ord_cancel = $pdo->prepare("UPDATE orders SET status = 'cancelled', sent_to_cashier = 0, cancelled_by = ? WHERE id = ?");
-            $up_ord_cancel->execute([$admin_id, $order_number]);
+            // Ensure orders row preserves cancelled status and marks refund_status = 'Refunded' once refund proof is uploaded
+            $up_ord_cancel = $pdo->prepare("
+                UPDATE orders
+                SET status = 'cancelled',
+                    sent_to_cashier = 0,
+                    cancelled_by = COALESCE(cancelled_by, ?),
+                    cancelled_at = COALESCE(cancelled_at, NOW()),
+                    refund_status = 'Refunded',
+                    refund_receipt = ?,
+                    refund_reference = ?
+                WHERE id = ?
+            ");
+            $up_ord_cancel->execute([$admin_id, $proof_path, $ref_no, $order_number]);
 
             $customer_email = $t_data['email'];
             $customer_name = $t_data['fullname'] . ' ' . $t_data['surname'];
@@ -489,7 +314,26 @@ if (isset($_POST['submit_refund'])) {
     exit();
 }
 
-$cancel_result   = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname, o.contact_number, o.full_address, o.landmark, o.cart, o.payment_method, o.payment_scheme, o.total_amount, o.ref_no, o.paid_amount, o.refund_reference, o.status as order_status FROM customer_requests cr LEFT JOIN orders o ON CAST(cr.order_number AS INTEGER) = o.id WHERE cr.request_type = 'cancel' ORDER BY cr.id DESC");
+$cancel_result   = $pdo->query("
+    SELECT cr.*,
+           o.order_date, o.fullname, o.surname, o.contact_number, o.full_address, o.landmark, o.cart,
+           o.payment_method, o.payment_scheme, o.total_amount, o.ref_no, o.paid_amount, o.refund_reference,
+           o.status AS order_status, o.cancelled_at, o.cancellation_mode AS order_cancel_mode,
+           o.refund_status AS order_refund_status, o.inventory_restored,
+           u_proc.username AS processed_admin
+    FROM customer_requests cr
+    LEFT JOIN orders o ON CAST(cr.order_number AS INTEGER) = o.id
+    LEFT JOIN users u_proc ON cr.processed_by = u_proc.id
+    WHERE LOWER(TRIM(cr.request_type)) = 'cancel'
+    ORDER BY cr.id DESC
+");
+$cancel_rows = $cancel_result->fetchAll(PDO::FETCH_ASSOC);
+$pendingCancelCount = 0;
+foreach ($cancel_rows as $crRow) {
+    if (strcasecmp(trim((string)($crRow['status'] ?? 'Pending')), 'Pending') === 0) {
+        $pendingCancelCount++;
+    }
+}
 $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname, o.contact_number, o.full_address, o.landmark, o.cart, o.payment_method, o.payment_scheme, o.total_amount, o.ref_no, o.paid_amount, o.refund_reference, o.status as order_status FROM customer_requests cr LEFT JOIN orders o ON CAST(cr.order_number AS INTEGER) = o.id WHERE cr.request_type IN ('exchange', 'return', 'others') ORDER BY cr.id DESC");
 ?>
 <!DOCTYPE html>
@@ -736,7 +580,14 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
         <?php endif; ?>
 
         <ul class="nav nav-pills mb-4 bg-light p-2 rounded-3 flex-column flex-sm-row" id="requestCenterTabs" role="tablist">
-            <li class="nav-item mb-2 mb-sm-0"><button class="nav-link active w-100 text-center text-sm-start" id="cancel-tab" data-bs-toggle="pill" data-bs-target="#cancel-pane" type="button" role="tab"><i class="bi bi-x-circle"></i> Cancellations</button></li>
+            <li class="nav-item mb-2 mb-sm-0">
+                <button class="nav-link active w-100 text-center text-sm-start" id="cancel-tab" data-bs-toggle="pill" data-bs-target="#cancel-pane" type="button" role="tab">
+                    <i class="bi bi-x-circle"></i> Cancellations
+                    <?php if ($pendingCancelCount > 0): ?>
+                        <span class="badge bg-danger ms-1"><?php echo $pendingCancelCount; ?> Pending</span>
+                    <?php endif; ?>
+                </button>
+            </li>
             <li class="nav-item"><button class="nav-link w-100 text-center text-sm-start" id="exchange-tab" data-bs-toggle="pill" data-bs-target="#exchange-pane" type="button" role="tab"><i class="bi bi-arrow-left-right"></i> Exchanges & Inquiries</button></li>
         </ul>
 
@@ -760,7 +611,6 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
                         </thead>
                         <tbody>
                             <?php 
-                            $cancel_rows = $cancel_result->fetchAll(PDO::FETCH_ASSOC);
                             if(count($cancel_rows) == 0): 
                             ?>
                                 <tr><td colspan="8" class="text-center text-muted py-3">No cancellation requests found.</td></tr>
@@ -792,13 +642,44 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
                                     </td>
                                     <td>
                                         <div class="d-flex flex-column gap-1 align-items-start">
-                                            <span class="badge <?php 
-                                                if ($row['status'] == 'Pending') echo 'bg-warning text-dark';
-                                                elseif ($row['status'] == 'Approved') echo 'bg-success';
-                                                elseif ($row['status'] == 'Completed') echo 'bg-primary';
-                                                elseif ($row['status'] == 'Declined') echo 'bg-danger';
-                                                else echo 'bg-dark';
-                                            ?>"><?php echo htmlspecialchars($row['status']); ?></span>
+                                            <div class="d-flex flex-wrap gap-1 align-items-center">
+                                                <span class="badge <?php 
+                                                    if ($row['status'] == 'Pending') echo 'bg-warning text-dark';
+                                                    elseif ($row['status'] == 'Approved') echo 'bg-success';
+                                                    elseif ($row['status'] == 'Completed') echo 'bg-primary';
+                                                    elseif ($row['status'] == 'Declined') echo 'bg-danger';
+                                                    else echo 'bg-dark';
+                                                ?>"><?php echo htmlspecialchars($row['status']); ?></span>
+                                                <?php
+                                                $cMode = strtolower(trim((string)($row['cancellation_mode'] ?? ($row['order_cancel_mode'] ?? ''))));
+                                                if ($cMode === 'automatic'):
+                                                ?>
+                                                    <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle">Auto-Cancelled</span>
+                                                <?php elseif ($cMode === 'manual' && $row['status'] !== 'Pending'): ?>
+                                                    <span class="badge bg-light text-dark border">Admin Review</span>
+                                                <?php endif; ?>
+                                            </div>
+                                            <?php if (!empty($row['order_status'])): ?>
+                                                <small class="text-muted">Order: <strong><?php echo strtoupper(htmlspecialchars((string)$row['order_status'])); ?></strong></small>
+                                            <?php endif; ?>
+                                            <?php
+                                            $decisionTimeInfo = formatTimelineStepDateTime($row['processed_at'] ?? ($row['cancelled_at'] ?? null));
+                                            $procBy = ($cMode === 'automatic') ? 'System (Auto)' : (!empty($row['processed_admin']) ? $row['processed_admin'] : '');
+                                            if ($decisionTimeInfo || $procBy !== ''):
+                                            ?>
+                                                <small class="text-muted" style="white-space: normal;">
+                                                    <?php if ($procBy !== '') echo 'By ' . htmlspecialchars($procBy); ?>
+                                                    <?php if ($decisionTimeInfo) echo ($procBy !== '' ? ' • ' : '') . htmlspecialchars($decisionTimeInfo['full']); ?>
+                                                </small>
+                                            <?php endif; ?>
+                                            <?php
+                                            $refState = trim((string)($row['order_refund_status'] ?? ($row['refund_status'] ?? '')));
+                                            if ($refState === 'Pending Refund'):
+                                            ?>
+                                                <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle">Pending Refund</span>
+                                            <?php elseif ($refState === 'Refunded'): ?>
+                                                <span class="badge bg-success-subtle text-success border border-success-subtle">Refunded</span>
+                                            <?php endif; ?>
                                             
                                             <?php if($row['status'] == 'Declined' && !empty($row['admin_notes'])): ?>
                                                 <small class="text-danger" style="white-space: normal;"><strong>Decline Reason:</strong> <?php echo htmlspecialchars($row['admin_notes']); ?></small>

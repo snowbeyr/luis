@@ -364,12 +364,14 @@ if (isset($_POST['send_email_update'])) {
 
 // STATUS UPDATE (WITH GOOGLE DRIVE UPLOAD FOR ADMIN REFUND RECEIPT & AUDIT LOGGING)
 if (isset($_POST['update_status'])) {
-    $order_id = (int) $_POST['order_id'];
-    $new_status = $_POST['status'];
-    $decline_reason = $_POST['decline_reason'] ?? '';
+    ensureCancellationSchema($pdo);
 
-    // GUARD: Check if order has an active pending cancellation request in customer_requests
-    $chk_cancel = $pdo->prepare("
+    $order_id = (int) ($_POST['order_id'] ?? 0);
+    $new_status = strtolower(trim((string)($_POST['status'] ?? '')));
+    $decline_reason = trim((string)($_POST['decline_reason'] ?? ''));
+
+    // GUARD: Check if order has an active pending cancellation request before starting upload/DB changes
+    $chk_cancel_pre = $pdo->prepare("
         SELECT id, reason 
         FROM customer_requests 
         WHERE order_number = ? 
@@ -377,30 +379,26 @@ if (isset($_POST['update_status'])) {
           AND (LOWER(TRIM(status)) = 'pending' OR status IS NULL)
         LIMIT 1
     ");
-    $chk_cancel->execute([(string)$order_id]);
-    $pending_cancel = $chk_cancel->fetch(PDO::FETCH_ASSOC);
-
-    if ($pending_cancel) {
+    $chk_cancel_pre->execute([(string)$order_id]);
+    if ($chk_cancel_pre->fetch(PDO::FETCH_ASSOC)) {
         $_SESSION['app_modal'] = [
-            'title' => 'Action Blocked',
-            'message' => "Order #$order_id currently has an active pending Cancellation Request.\n\nYou must Approve or Decline the cancellation request in Customer Service Request before updating the order status.",
+            'title' => 'Action Blocked — Pending Cancellation Request',
+            'message' => "This order has a pending cancellation request. Please approve or decline the cancellation request before proceeding with any order status updates.",
             'type' => 'warning'
         ];
-        header("Location: orders.php");
+        header("Location: orders.php#order-" . $order_id);
         exit();
     }
 
-    $stmt = $pdo->prepare("SELECT status, cart, payment_method FROM orders WHERE id = ?");
-    $stmt->execute([$order_id]);
-    $order = $stmt->fetch(PDO::FETCH_ASSOC);
-    
-    $old_status = $order['status'];
-    $pm = strtoupper(trim($order['payment_method'] ?? 'COD'));
+    // Read order payment method for optional decline receipt upload before acquiring row locks
+    $stmtPm = $pdo->prepare("SELECT payment_method FROM orders WHERE id = ?");
+    $stmtPm->execute([$order_id]);
+    $pm = strtoupper(trim((string)($stmtPm->fetchColumn() ?: 'COD')));
 
     $ref_no = $_POST['refund_reference'] ?? '';
     $proof_path = "";
 
-    if ($new_status == 'declined') {
+    if ($new_status === 'declined') {
         if (($pm === 'GCASH' || $pm === 'MAYA') && isset($_FILES['refund_receipt']) && $_FILES['refund_receipt']['error'] === UPLOAD_ERR_OK) {
             $file_tmp = $_FILES['refund_receipt']['tmp_name'];
             $file_name = $_FILES['refund_receipt']['name'];
@@ -433,78 +431,112 @@ if (isset($_POST['update_status'])) {
         }
     }
 
-    if ($new_status == 'approved' && $old_status != 'approved') {
-        $stmt = $pdo->prepare("UPDATE orders SET status = ?, approved_by = ?, approved_at = COALESCE(approved_at, NOW()) WHERE id = ?");
-        $stmt->execute([$new_status, $admin_id, $order_id]);
-        
-        // I-log sa Audit Trail
-        logAdminAction($pdo, $admin_id, $admin_name, 'admin', 'Order Approved', "Approved Order #$order_id");
-    } elseif ($new_status == 'declined' && $old_status != 'declined') {
-        if (!empty($proof_path)) {
-            $stmt = $pdo->prepare("UPDATE orders SET status = ?, declined_by = ?, decline_reason = ?, refund_receipt = ?, refund_reference = ? WHERE id = ?");
-            $stmt->execute([$new_status, $admin_id, $decline_reason, $proof_path, $ref_no, $order_id]);
-        } else {
-            $stmt = $pdo->prepare("UPDATE orders SET status = ?, declined_by = ?, decline_reason = ? WHERE id = ?");
-            $stmt->execute([$new_status, $admin_id, $decline_reason, $order_id]);
-        }
-        
-        // I-log sa Audit Trail
-        logAdminAction($pdo, $admin_id, $admin_name, 'admin', 'Order Declined', "Declined Order #$order_id. Reason: $decline_reason");
-    } else {
-        $tsCol = getOrderStepTimestampColumn((string)$new_status);
-        if ($tsCol !== null) {
-            $stmt = $pdo->prepare("UPDATE orders SET status = ?, {$tsCol} = NOW() WHERE id = ?");
-            $stmt->execute([$new_status, $order_id]);
-        } else {
-            $stmt = $pdo->prepare("UPDATE orders SET status = ? WHERE id = ?");
-            $stmt->execute([$new_status, $order_id]);
+    try {
+        $pdo->beginTransaction();
+
+        // Row-level FOR UPDATE lock against concurrent customer cancel submission or status update
+        $stmt = $pdo->prepare("SELECT id, status, cart, payment_method, inventory_restored FROM orders WHERE id = ? FOR UPDATE");
+        $stmt->execute([$order_id]);
+        $order = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$order) {
+            $pdo->rollBack();
+            $_SESSION['app_modal'] = [
+                'title' => 'Order Not Found',
+                'message' => "Order #{$order_id} could not be found.",
+                'type' => 'danger'
+            ];
+            header("Location: orders.php");
+            exit();
         }
 
-        // I-log sa Audit Trail ang iba pang status updates (Preparing, Out for Delivery, Delivered, Completed)
-        $actionTitle = 'Order Status Update';
-        if ($new_status === 'preparing') $actionTitle = 'Order Preparing';
-        elseif ($new_status === 'out_for_delivery') $actionTitle = 'Order Out for Delivery';
-        elseif ($new_status === 'delivered') $actionTitle = 'Order Delivered';
-        elseif ($new_status === 'completed') $actionTitle = 'Order Completed';
+        $chk_cancel = $pdo->prepare("
+            SELECT id, reason 
+            FROM customer_requests 
+            WHERE order_number = ? 
+              AND LOWER(TRIM(request_type)) = 'cancel' 
+              AND (LOWER(TRIM(status)) = 'pending' OR status IS NULL)
+            LIMIT 1
+            FOR UPDATE
+        ");
+        $chk_cancel->execute([(string)$order_id]);
+        $pending_cancel = $chk_cancel->fetch(PDO::FETCH_ASSOC);
 
-        logAdminAction($pdo, $admin_id, $admin_name, 'admin', $actionTitle, "Updated Order #$order_id status to " . strtoupper($new_status));
-    }
+        if ($pending_cancel) {
+            $pdo->rollBack();
+            $_SESSION['app_modal'] = [
+                'title' => 'Action Blocked — Pending Cancellation Request',
+                'message' => "This order has a pending cancellation request. Please approve or decline the cancellation request before proceeding with any order status updates.",
+                'type' => 'warning'
+            ];
+            header("Location: orders.php#order-" . $order_id);
+            exit();
+        }
 
-    // Restore stock if declined or cancelled
-    if (($new_status == 'declined' || $new_status == 'cancelled') && $old_status != 'declined' && $old_status != 'cancelled') {
-        $cart_items = json_decode($order['cart'], true);
-        if (!empty($cart_items)) {
-            foreach ($cart_items as $item) {
-                $qty = (int)$item['qty'];
-                $product_id = (int)$item['id'];
-                $variant_id = !empty($item['variant_id']) ? (int)$item['variant_id'] : null;
+        $old_status = normalizeCancellationOrderStatus($order['status'] ?? '');
+        if (in_array($old_status, ['cancelled', 'declined'], true)) {
+            $pdo->rollBack();
+            $_SESSION['app_modal'] = [
+                'title' => 'Order Already Finalized',
+                'message' => "Order #{$order_id} is already " . strtoupper($old_status) . " and cannot be moved to another status.",
+                'type' => 'warning'
+            ];
+            header("Location: orders.php#order-" . $order_id);
+            exit();
+        }
 
-                $linked_source = getLinkedSourceInfo($pdo, $product_id, $variant_id);
-                if ($linked_source) {
-                    $idemp = "order_status_cancel_{$order_id}_{$product_id}_" . ($variant_id ?: '0');
-                    restoreSharedStock(
-                        $pdo,
-                        $linked_source['source_id'],
-                        $product_id,
-                        $variant_id,
-                        $qty,
-                        'Cancellation Restoration',
-                        $order_id,
-                        $admin_name ?? 'Admin',
-                        "Status changed to {$new_status} for order #$order_id",
-                        $idemp
-                    );
-                } else {
-                    if (!empty($variant_id)) {
-                        $stmtStock = $pdo->prepare("UPDATE product_variants SET stock = stock + ? WHERE id = ?");
-                        $stmtStock->execute([$qty, $variant_id]);
-                    } else {
-                        $stmtStock = $pdo->prepare("UPDATE products SET stock = stock + ? WHERE id = ?");
-                        $stmtStock->execute([$qty, $product_id]);
-                    }
-                }
+        if ($new_status === 'approved' && $old_status !== 'approved') {
+            $stmt = $pdo->prepare("UPDATE orders SET status = ?, approved_by = ?, approved_at = COALESCE(approved_at, NOW()) WHERE id = ?");
+            $stmt->execute([$new_status, $admin_id, $order_id]);
+            logAdminAction($pdo, $admin_id, $admin_name, 'admin', 'Order Approved', "Approved Order #$order_id");
+        } elseif ($new_status === 'declined' && $old_status !== 'declined') {
+            if (!empty($proof_path)) {
+                $stmt = $pdo->prepare("UPDATE orders SET status = ?, declined_by = ?, decline_reason = ?, refund_receipt = ?, refund_reference = ?, refund_status = 'Refunded' WHERE id = ?");
+                $stmt->execute([$new_status, $admin_id, $decline_reason, $proof_path, $ref_no, $order_id]);
+            } else {
+                $stmt = $pdo->prepare("UPDATE orders SET status = ?, declined_by = ?, decline_reason = ? WHERE id = ?");
+                $stmt->execute([$new_status, $admin_id, $decline_reason, $order_id]);
             }
+            logAdminAction($pdo, $admin_id, $admin_name, 'admin', 'Order Declined', "Declined Order #$order_id. Reason: $decline_reason");
+        } else {
+            $tsCol = getOrderStepTimestampColumn((string)$new_status);
+            if ($tsCol !== null) {
+                $stmt = $pdo->prepare("UPDATE orders SET status = ?, {$tsCol} = NOW() WHERE id = ?");
+                $stmt->execute([$new_status, $order_id]);
+            } else {
+                $stmt = $pdo->prepare("UPDATE orders SET status = ? WHERE id = ?");
+                $stmt->execute([$new_status, $order_id]);
+            }
+
+            $actionTitle = 'Order Status Update';
+            if ($new_status === 'preparing') $actionTitle = 'Order Preparing';
+            elseif ($new_status === 'out_for_delivery') $actionTitle = 'Order Out for Delivery';
+            elseif ($new_status === 'delivered') $actionTitle = 'Order Delivered';
+            elseif ($new_status === 'completed') $actionTitle = 'Order Completed';
+
+            logAdminAction($pdo, $admin_id, $admin_name, 'admin', $actionTitle, "Updated Order #$order_id status to " . strtoupper($new_status));
         }
+
+        // Safely restore stock once if declined or cancelled
+        if (in_array($new_status, ['declined', 'cancelled'], true) && !in_array($old_status, ['declined', 'cancelled'], true)) {
+            restoreOrderInventorySafely(
+                $pdo,
+                $order_id,
+                (string)($admin_name ?? 'Admin'),
+                $new_status === 'declined' ? 'Order Declined Restoration' : 'Order Cancellation Restoration'
+            );
+        }
+
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        $_SESSION['app_modal'] = [
+            'title' => 'Update Failed',
+            'message' => 'Failed to update order status: ' . $e->getMessage(),
+            'type' => 'danger'
+        ];
     }
 
     header("Location: orders.php#order-" . $order_id);
@@ -570,6 +602,8 @@ if (isset($_POST['send_to_cashier'])) {
         }
     }
 }
+
+ensureCancellationSchema($pdo);
 
 // Fetch orders via PDO
 $orders_result = $pdo->query("SELECT * FROM orders ORDER BY id DESC");
@@ -735,7 +769,12 @@ body{
     <a href="dashboard.php"><i class="bi bi-grid"></i> Dashboard</a>
     <a href="products.php"><i class="bi bi-box-seam"></i> Inventory</a>
     <a href="orders.php" class="active"><i class="bi bi-receipt"></i> Orders</a>
-    <a href="ItemsRequest.php"><i class="bi bi-arrow-return-left"></i> Customer Service request</a>
+    <a href="ItemsRequest.php" class="d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-arrow-return-left"></i> Customer Service request</span>
+        <?php if (!empty($pendingCancellations)): ?>
+            <span class="badge bg-danger rounded-pill"><?php echo count($pendingCancellations); ?></span>
+        <?php endif; ?>
+    </a>
     <a href="damageItems.php"><i class="bi bi-exclamation-triangle"></i> Damaged Items</a>
     <a href="profile.php" class="sidebar-link"><i class="bi bi-person-badge"></i> My Profile</a>
 
@@ -751,6 +790,19 @@ body{
     <div class="d-flex justify-content-between mb-3 shadow-sm p-3 bg-white rounded align-items-center">
         <h4 class="mb-0 fs-5 fw-bold text-dark">📦 Orders Management</h4>
     </div>
+
+    <?php if (!empty($pendingCancellations)): ?>
+        <div class="alert alert-danger shadow-sm border-danger-subtle d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
+            <div>
+                <i class="bi bi-exclamation-octagon-fill me-2"></i>
+                <strong>Pending Cancellation Request Alert:</strong>
+                <?php echo count($pendingCancellations); ?> order(s) (<?php echo '#' . implode(', #', array_keys($pendingCancellations)); ?>) have a pending cancellation request. Status updates for affected orders are locked until Admin approves or declines in Customer Service Requests.
+            </div>
+            <a href="ItemsRequest.php#cancel-pane" class="btn btn-danger btn-sm fw-semibold text-nowrap">
+                <i class="bi bi-arrow-right-circle me-1"></i> Review Cancellation Requests
+            </a>
+        </div>
+    <?php endif; ?>
 
     <div class="table-responsive bg-white p-3 rounded shadow-sm">
         <table class="table table-hover align-middle">
@@ -810,7 +862,23 @@ body{
                         </button>
                     </td>
                     <td class="text-center"> 
-                        <?php if($row['status'] == 'pending'): ?>
+                        <?php if ($hasPendingCancel && !in_array(strtolower((string)$row['status']), ['cancelled', 'declined', 'completed'], true)): ?>
+                            <div class="d-flex flex-column align-items-center gap-1">
+                                <span class="badge bg-warning text-dark border border-warning-subtle">
+                                    <i class="bi bi-shield-lock-fill me-1"></i> Pending Cancellation Request
+                                </span>
+                                <div class="d-flex gap-1">
+                                    <button type="button" class="btn btn-secondary btn-sm disabled" aria-disabled="true"
+                                        title="This order has a pending cancellation request. Please approve or decline the cancellation request before proceeding with any order status updates."
+                                        onclick="return interceptPendingCancel(event, <?php echo $oid; ?>);">
+                                        Status Locked
+                                    </button>
+                                </div>
+                                <a href="ItemsRequest.php#cancel-pane" class="small text-danger fw-semibold text-decoration-none">
+                                    Review in Requests
+                                </a>
+                            </div>
+                        <?php elseif($row['status'] == 'pending'): ?>
                             <form method="POST" class="d-inline">
                                 <input type="hidden" name="order_id" value="<?php echo $row['id']; ?>">
                                 <button type="submit" name="status" value="approved" class="btn btn-success btn-sm mb-1"
@@ -1540,7 +1608,7 @@ function interceptPendingCancel(event, orderId) {
     if (titleEl) titleEl.textContent = `Order #${orderId} - Pending Cancellation Request`;
     if (reasonEl) reasonEl.textContent = reason;
     if (textEl) {
-        textEl.innerHTML = `<strong>Order #${orderId}</strong> currently has a pending cancellation request in Customer Service Request.<br><br>You must <strong>approve or decline</strong> the cancellation request in Customer Service Request before updating the order status here.`;
+        textEl.innerHTML = `This order has a pending cancellation request. Please approve or decline the cancellation request before proceeding with any order status updates.`;
     }
     
     const modalEl = document.getElementById('cancelWarningModal');

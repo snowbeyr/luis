@@ -496,15 +496,13 @@ onclick="clearCart()">
 <div class="card border-0 shadow-sm">
 <div class="card-body py-3 px-3">
 <div class="d-flex justify-content-between align-items-center mb-1 small">
-<span class="text-muted">Payment Method</span>
-<span class="badge bg-success-subtle text-success border border-success-subtle fw-semibold">Cash (Walk-in POS)</span>
 </div>
 <div class="d-flex justify-content-between align-items-center mb-1">
 <span class="text-muted small">Total Amount</span>
 <strong class="fs-6 text-dark">₱<span id="reviewTotalAmount">0.00</span></strong>
 </div>
 <div class="d-flex justify-content-between align-items-center mb-1">
-<span class="text-muted small">Paid Amount (Cash)</span>
+<span class="text-muted small">Paid Amount</span>
 <strong class="fs-6 text-primary">₱<span id="reviewPaidAmount">0.00</span></strong>
 </div>
 <hr class="my-2">

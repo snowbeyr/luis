@@ -122,10 +122,11 @@ try {
         ORDER BY id DESC
     ");
     $order_stmt->execute([':email' => $customerEmail]);
+    ensureCancellationSchema($pdo);
     $allOrders = $order_stmt->fetchAll(PDO::FETCH_ASSOC);
     hydrateOrderTimelineTimestamps($pdo, $allOrders);
 
-    // Fetch exchange/return requests by customer email
+    // Fetch exchange/return and cancellation requests by customer email
     $req_stmt = $pdo->prepare("
         SELECT * FROM customer_requests 
         WHERE LOWER(TRIM(account)) = LOWER(:email)
@@ -134,13 +135,17 @@ try {
     $req_stmt->execute([':email' => $customerEmail]);
     $allRequests = $req_stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // Map exchange requests by order_number
+    // Map exchange & latest cancellation requests by order_number
     $exchangeOrderIds = [];
+    $cancelRequests = [];
     foreach ($allRequests as $req) {
         $type = strtolower(trim($req['request_type'] ?? ''));
+        $reqOid = (int) $req['order_number'];
         if (in_array($type, ['exchange', 'return'], true)) {
-            $exchangeRequests[(int) $req['order_number']][] = $req;
-            $exchangeOrderIds[] = (int) $req['order_number'];
+            $exchangeRequests[$reqOid][] = $req;
+            $exchangeOrderIds[] = $reqOid;
+        } elseif ($type === 'cancel' && $reqOid > 0 && !isset($cancelRequests[$reqOid])) {
+            $cancelRequests[$reqOid] = $req;
         }
     }
 
@@ -1038,11 +1043,17 @@ foreach ($allOrders as $o) {
                         <?php
                         $rawStatus = strtolower(trim($order['status'] ?? 'pending'));
                         $hasEx = isset($exchangeRequests[(int) $order['id']]);
+                        $latestCancel = $cancelRequests[(int) $order['id']] ?? null;
+                        $latestCancelStatus = strtolower(trim((string)($latestCancel['status'] ?? '')));
+                        $hasPendingCancel = ($latestCancel && ($latestCancelStatus === 'pending' || $latestCancelStatus === ''));
 
                         // Determine Badge Details
                         if ($hasEx) {
                             $badgeClass = 'badge-exchange';
                             $statusLabel = 'EXCHANGE REQUESTED';
+                        } elseif ($hasPendingCancel && $rawStatus === 'preparing') {
+                            $badgeClass = 'badge-to-ship';
+                            $statusLabel = 'PREPARING (CANCELLATION PENDING)';
                         } elseif (in_array($rawStatus, ['pending', 'approved', 'preparing'], true)) {
                             $badgeClass = 'badge-to-ship';
                             $statusLabel = $rawStatus === 'preparing' ? 'PREPARING ORDER' : ($rawStatus === 'approved' ? 'ORDER APPROVED' : 'PENDING APPROVAL');
@@ -1140,10 +1151,14 @@ foreach ($allOrders as $o) {
                                             </a>
                                         <?php endif; ?>
 
-                                        <?php if ($rawStatus === 'pending'): ?>
+                                        <?php if (in_array($rawStatus, ['pending', 'approved', 'preparing'], true) && !$hasPendingCancel): ?>
                                             <a href="customerService.php?order_id=<?php echo $order['id']; ?>&type=cancel&email=<?php echo urlencode($customerEmail); ?>" class="btn btn-outline-danger btn-sm fw-semibold">
                                                 <i class="bi bi-x-circle me-1"></i> Cancel Request
                                             </a>
+                                        <?php elseif ($hasPendingCancel): ?>
+                                            <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle px-2 py-2 small">
+                                                <i class="bi bi-hourglass-split me-1"></i> Cancel Pending Review
+                                            </span>
                                         <?php endif; ?>
 
                                         <!-- Safe JSON payload container for zero escaping bugs -->
@@ -1157,6 +1172,55 @@ foreach ($allOrders as $o) {
                                     </div>
                                 </div>
                             </div>
+
+                            <?php if ($hasPendingCancel): ?>
+                                <div class="px-4 pb-3">
+                                    <div class="alert alert-warning py-2 px-3 mb-0 small rounded-3 border-0 bg-warning-subtle text-warning-emphasis">
+                                        <i class="bi bi-hourglass-split me-1"></i>
+                                        <strong>Cancellation Request Under Review:</strong> Your cancellation request (Reason: <?php echo htmlspecialchars((string)($latestCancel['reason'] ?? 'N/A'), ENT_QUOTES, 'UTF-8'); ?>) is pending Admin review.
+                                    </div>
+                                </div>
+                            <?php elseif ($latestCancel && $latestCancelStatus === 'declined' && !in_array($rawStatus, ['cancelled', 'canceled', 'declined'], true)): ?>
+                                <div class="px-4 pb-3">
+                                    <div class="alert alert-danger py-2 px-3 mb-0 small rounded-3 border border-danger-subtle">
+                                        <i class="bi bi-x-octagon-fill me-1"></i>
+                                        <strong>Cancellation Request Declined:</strong> <?php echo htmlspecialchars((string)($latestCancel['admin_notes'] ?? 'Your order is already in preparation and can no longer be cancelled.'), ENT_QUOTES, 'UTF-8'); ?>
+                                    </div>
+                                </div>
+                            <?php elseif (in_array($rawStatus, ['cancelled', 'canceled'], true)): ?>
+                                <?php
+                                $cancelMode = strtolower(trim((string)($order['cancellation_mode'] ?? ($latestCancel['cancellation_mode'] ?? ''))));
+                                $cancelModeLabel = $cancelMode === 'automatic' ? 'Automatically Approved' : ($cancelMode === 'manual' ? 'Approved by Admin' : 'Cancelled');
+                                $cancelTimeStr = $order['timeline']['cancelled']['full'] ?? '';
+                                $cancelReasonTxt = trim((string)($order['cancellation_reason'] ?? ($latestCancel['reason'] ?? '')));
+                                $refundStatusTxt = trim((string)($order['refund_status'] ?? ($latestCancel['refund_status'] ?? '')));
+                                ?>
+                                <div class="px-4 pb-3">
+                                    <div class="alert alert-light border py-2 px-3 mb-0 small rounded-3 text-secondary">
+                                        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+                                            <div>
+                                                <i class="bi bi-x-circle-fill text-danger me-1"></i>
+                                                <strong class="text-dark">Order Cancelled (<?php echo htmlspecialchars($cancelModeLabel); ?>)</strong>
+                                                <?php if ($cancelReasonTxt !== ''): ?>
+                                                    <span class="ms-1">• Reason: <?php echo htmlspecialchars($cancelReasonTxt, ENT_QUOTES, 'UTF-8'); ?></span>
+                                                <?php endif; ?>
+                                            </div>
+                                            <?php if ($cancelTimeStr !== ''): ?>
+                                                <span class="text-muted"><i class="bi bi-clock me-1"></i><?php echo htmlspecialchars($cancelTimeStr); ?></span>
+                                            <?php endif; ?>
+                                        </div>
+                                        <?php if ($refundStatusTxt === 'Pending Refund'): ?>
+                                            <div class="mt-1 text-warning-emphasis fw-semibold">
+                                                <i class="bi bi-cash-coin me-1"></i> Payment Refund Status: Pending Refund (our team will process your e-wallet refund separately).
+                                            </div>
+                                        <?php elseif ($refundStatusTxt === 'Refunded'): ?>
+                                            <div class="mt-1 text-success fw-semibold">
+                                                <i class="bi bi-check-circle-fill me-1"></i> Payment Refund Status: Refunded
+                                            </div>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
 
                             <?php if ($rawStatus === 'delivered'): ?>
                                 <div class="px-4 pb-3">
@@ -1489,8 +1553,12 @@ foreach ($allOrders as $o) {
                 if (elPlaced) elPlaced.classList.add('active');
                 reachedSteps = ['placed'];
                 const displayStatus = (status === 'canceled') ? 'CANCELLED' : status.toUpperCase();
+                const cancelWhen = (order.timeline && order.timeline.cancelled && order.timeline.cancelled.full)
+                    ? ` (${order.timeline.cancelled.full})`
+                    : '';
+                const cancelReason = order.cancellation_reason ? `<div class="mt-1 fw-normal">Reason: ${String(order.cancellation_reason)}</div>` : '';
                 alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-danger-subtle text-danger border border-danger-subtle';
-                alertBox.innerHTML = `<i class="bi bi-x-circle-fill me-1"></i> This order was ${displayStatus}.`;
+                alertBox.innerHTML = `<i class="bi bi-x-circle-fill me-1"></i> This order was ${displayStatus}${cancelWhen}.${cancelReason}`;
             } else {
                 // Pending
                 stepperFill.style.width = '4%';

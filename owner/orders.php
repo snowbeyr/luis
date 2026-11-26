@@ -205,9 +205,11 @@ body{
                             <?php 
                                 if (in_array($status, ['cancelled', 'canceled'])) {
                                     if (!empty($row['cancelled_admin'])) {
-                                        echo '<span class="text-danger">Cancelled: <strong>' . htmlspecialchars($row['cancelled_admin']) . '</strong></span>';
+                                        echo '<span class="text-danger">Admin Approved: <strong>' . htmlspecialchars($row['cancelled_admin']) . '</strong></span>';
+                                    } elseif (($row['cancellation_mode'] ?? '') === 'automatic') {
+                                        echo '<span class="text-info fw-semibold">Automatic (Customer)</span>';
                                     } else {
-                                        echo '<small class="text-muted">N/A</small>';
+                                        echo '<small class="text-muted">Customer / System</small>';
                                     }
                                 } elseif ($status === 'declined') {
                                     if (!empty($row['declined_admin'])) {

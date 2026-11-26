@@ -18,6 +18,13 @@ if (file_exists(__DIR__ . '/../config/google_drive.php')) {
     require_once __DIR__ . '/../config/google_drive.php';
 }
 
+if (file_exists(__DIR__ . '/../config/email.php')) {
+    require_once __DIR__ . '/../config/email.php';
+}
+
+require_once __DIR__ . '/../includes/inventory_helpers.php';
+ensureCancellationSchema($pdo);
+
 $message = "";
 $message_type = "";
 
@@ -166,15 +173,25 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_items') {
             $ref_no = $order_data['ref_no'] ?? '';
             $paid_amount = $order_data['paid_amount'] ?? 0;
 
-            // Check cancellation request status
+            // Check latest cancellation request status
             $is_cancel_completed = false;
-            $stmt_cancel = $pdo->prepare("SELECT status FROM customer_requests WHERE order_number = :order_id AND request_type = 'cancel' ORDER BY id DESC LIMIT 1");
+            $latest_cancel = null;
+            $stmt_cancel = $pdo->prepare("SELECT id, status, reason, admin_notes, cancellation_mode, auto_approved, processed_at, created_at FROM customer_requests WHERE order_number = :order_id AND LOWER(TRIM(request_type)) = 'cancel' ORDER BY id DESC LIMIT 1");
             $stmt_cancel->execute([':order_id' => $order_id]);
-            $cancel_row = $stmt_cancel->fetch();
+            $cancel_row = $stmt_cancel->fetch(PDO::FETCH_ASSOC);
 
-            if ($cancel_row && strtolower(trim($cancel_row['status'] ?? '')) === 'completed') {
-                $is_cancel_completed = true;
+            if ($cancel_row) {
+                $latest_cancel = $cancel_row;
+                if (in_array(strtolower(trim($cancel_row['status'] ?? '')), ['approved', 'completed'], true)) {
+                    $is_cancel_completed = true;
+                }
             }
+
+            $norm_status = normalizeCancellationOrderStatus($ord_status);
+            $can_cancel = in_array($norm_status, ['pending', 'approved', 'preparing'], true);
+            $cancellation_mode = in_array($norm_status, ['pending', 'approved'], true)
+                ? 'automatic'
+                : ($norm_status === 'preparing' ? 'manual' : 'disallowed');
 
             // CHECK FOR EXISTING PENDING REQUEST (CASE-INSENSITIVE ANTI-SPAM CHECK)
             $has_pending_request = false;
@@ -186,6 +203,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_items') {
             if ($pending_row) {
                 $has_pending_request = true;
                 $pending_req_type = strtoupper($pending_row['request_type']);
+                $can_cancel = false;
             }
 
             // Parse items: Check pos_transaction_items or order_items
@@ -280,6 +298,10 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_items') {
                     'landmark' => $landmark,
                     'ref_no' => $ref_no,
                     'paid_amount' => $paid_amount,
+                    'normalized_status' => $norm_status,
+                    'can_cancel' => $can_cancel,
+                    'cancellation_mode' => $cancellation_mode,
+                    'latest_cancel' => $latest_cancel,
                     'is_cancel_completed' => $is_cancel_completed,
                     'has_pending_request' => $has_pending_request,
                     'pending_req_type' => $pending_req_type
@@ -303,91 +325,254 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_items') {
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
     $order_id = trim($_POST['order_id'] ?? '');
     $email = trim($_POST['email'] ?? '');
-    $request_type = trim($_POST['request_type'] ?? '');
+    $request_type = strtolower(trim($_POST['request_type'] ?? ''));
     $reason = trim($_POST['reason'] ?? '');
     $user_comments = trim($_POST['details'] ?? '');
 
-    $stmt_ver = $pdo->prepare("SELECT * FROM orders WHERE id = :order_id AND email = :email LIMIT 1");
-    $stmt_ver->execute([':order_id' => $order_id, ':email' => $email]);
-    $v_data = $stmt_ver->fetch();
+    if ($order_id === '' || !ctype_digit($order_id) || $email === '') {
+        $message = "❌ Invalid Order ID or Email address.";
+        $message_type = "danger";
+    } elseif (!in_array($request_type, ['cancel', 'exchange', 'return', 'others'], true)) {
+        $message = "❌ Invalid request type selected.";
+        $message_type = "danger";
+    } elseif ($reason === '') {
+        $message = "❌ Please select a reason for your request.";
+        $message_type = "danger";
+    } else {
+        $order_id_int = (int)$order_id;
+        $filename = null;
 
-    if ($v_data) {
-        $v_status = strtolower(trim($v_data['status'] ?? ''));
-        $v_ord_date_str = $v_data['order_date'] ?? ($v_data['created_at'] ?? 'now');
-        
-        // Backend Anti-Spam Check: Harangan kapag may PENDING request na ang order
-        $stmt_check_pending = $pdo->prepare("SELECT request_type FROM customer_requests WHERE order_number = :order_id AND (LOWER(TRIM(status)) = 'pending' OR status IS NULL) LIMIT 1");
-        $stmt_check_pending->execute([':order_id' => $order_id]);
-        $existing_pending = $stmt_check_pending->fetch();
+        // Upload optional proof photo before entering the row-locked DB transaction
+        if (isset($_FILES['product_image']) && $_FILES['product_image']['error'] === UPLOAD_ERR_OK) {
+            $file_tmp = $_FILES['product_image']['tmp_name'];
+            $ext = strtolower(pathinfo($_FILES['product_image']['name'], PATHINFO_EXTENSION));
+            $new_filename = "REQ_" . $order_id_int . "_" . time() . "_" . rand(1000, 9999) . "." . $ext;
+            $CUSTOMER_SERVICE_FOLDER_ID = "1Gu8SOPjnIDEwoMhRFhZkxHqPsUL7MKNS";
 
-        if ($existing_pending) {
-            $message = "❌ Submission Blocked: Order #" . htmlspecialchars($order_id) . " already has an active PENDING " . strtoupper($existing_pending['request_type']) . " request under review by the admin.";
-            $message_type = "danger";
-        } else {
-                // Backend 1-Day (24 Hours) Exchange Limit Validation
-                $order_timestamp = strtotime($v_ord_date_str);
-                $time_passed = time() - $order_timestamp;
-                $is_exceeded_1day = ($time_passed > 86400); // 86400 seconds = 24 hours
-
-                if ($v_status === 'cancelled' || $v_status === 'declined') {
-                    $message = "❌ Cannot submit request. This order has already been " . $v_status . ".";
-                    $message_type = "danger";
+            try {
+                if (function_exists('uploadProductImageToDrive')) {
+                    $file_id = uploadProductImageToDrive($file_tmp, $new_filename, $CUSTOMER_SERVICE_FOLDER_ID);
+                    if (!empty($file_id)) {
+                        $filename = "https://drive.google.com/uc?export=view&id=" . $file_id;
+                    }
                 }
-                elseif ($request_type === 'exchange' && $v_status !== 'completed') {
+            } catch (Throwable $e) {
+                error_log("CUSTOMER SERVICE GOOGLE DRIVE UPLOAD ERROR: " . $e->getMessage());
+            }
+
+            if (empty($filename)) {
+                $target_dir = "../uploads/";
+                if (!is_dir($target_dir)) {
+                    mkdir($target_dir, 0777, true);
+                }
+                if (move_uploaded_file($file_tmp, $target_dir . $new_filename)) {
+                    $filename = $new_filename;
+                }
+            }
+        }
+
+        try {
+            $pdo->beginTransaction();
+
+            // Lock the order row to avoid concurrent status transitions / duplicate cancel submissions
+            $stmt_ver = $pdo->prepare("SELECT * FROM orders WHERE id = :order_id AND LOWER(TRIM(email)) = LOWER(:email) LIMIT 1 FOR UPDATE");
+            $stmt_ver->execute([':order_id' => $order_id_int, ':email' => $email]);
+            $v_data = $stmt_ver->fetch(PDO::FETCH_ASSOC);
+
+            if (!$v_data) {
+                $pdo->rollBack();
+                $message = "❌ Verification error. Order not found for that email.";
+                $message_type = "danger";
+            } else {
+                $v_status = normalizeCancellationOrderStatus($v_data['status'] ?? '');
+                $v_ord_date_str = $v_data['order_date'] ?? ($v_data['created_at'] ?? 'now');
+
+                // Backend Anti-Spam Check: Lock & check active Pending requests (and active cancel requests)
+                $stmt_check_pending = $pdo->prepare("
+                    SELECT request_type, status
+                    FROM customer_requests
+                    WHERE order_number = :order_id
+                      AND (
+                            LOWER(TRIM(status)) = 'pending'
+                         OR status IS NULL
+                         OR (LOWER(TRIM(request_type)) = 'cancel' AND LOWER(TRIM(status)) IN ('approved', 'completed'))
+                      )
+                    LIMIT 1
+                    FOR UPDATE
+                ");
+                $stmt_check_pending->execute([':order_id' => (string)$order_id_int]);
+                $existing_pending = $stmt_check_pending->fetch(PDO::FETCH_ASSOC);
+
+                if ($existing_pending) {
+                    $pdo->rollBack();
+                    $exType = strtoupper($existing_pending['request_type'] ?? 'REQUEST');
+                    $exStat = strtoupper($existing_pending['status'] ?? 'PENDING');
+                    $message = "❌ Submission Blocked: Order #{$order_id_int} already has an active {$exType} request (Status: {$exStat}). Duplicate requests are not allowed.";
+                    $message_type = "danger";
+                } elseif ($v_status === 'cancelled' || $v_status === 'declined') {
+                    $pdo->rollBack();
+                    $message = "❌ Cancellation is no longer available. Order #{$order_id_int} has already been " . strtoupper($v_status) . ".";
+                    $message_type = "danger";
+                } elseif ($request_type === 'cancel' && $v_status === 'delivered') {
+                    $pdo->rollBack();
+                    $message = "❌ Cancellation is no longer available because Order #{$order_id_int} has already been DELIVERED. For delivery problems or wrong/damaged items, please confirm receipt and use the Return / Exchange or delivery dispute process.";
+                    $message_type = "danger";
+                } elseif ($request_type === 'cancel' && $v_status === 'out_for_delivery') {
+                    $pdo->rollBack();
+                    $message = "❌ Cancellation is no longer available because Order #{$order_id_int} is already OUT FOR DELIVERY.";
+                    $message_type = "danger";
+                } elseif ($request_type === 'cancel' && $v_status === 'completed') {
+                    $pdo->rollBack();
+                    $message = "❌ Cancellation is no longer available because Order #{$order_id_int} has already been COMPLETED. You may submit a Return / Exchange request within 24 hours if eligible.";
+                    $message_type = "danger";
+                } elseif ($request_type === 'exchange' && $v_status !== 'completed') {
+                    $pdo->rollBack();
                     $message = "❌ Cannot request exchange. Item Exchange is only allowed for COMPLETED orders.";
                     $message_type = "danger";
-                }
-                elseif ($request_type === 'exchange' && $is_exceeded_1day) {
-                    $message = "❌ Item Exchange requests are only allowed within 24 hours (1 day) after the order completion/date.";
+                } elseif ($request_type === 'exchange' && ((time() - strtotime($v_ord_date_str)) > 86400)) {
+                    $pdo->rollBack();
+                    $message = "❌ Item Exchange requests are only allowed within 24 hours (1 day) after order completion/date.";
                     $message_type = "danger";
-                }
-                elseif ($request_type === 'cancel' && in_array($v_status, ['out for delivery', 'out_for_delivery', 'completed', 'delivered'])) {
-                    $message = "❌ Cannot request cancellation. Order status is " . strtoupper($v_data['status']) . ".";
+                } elseif ($request_type !== 'cancel' && in_array($v_status, ['out_for_delivery', 'delivered'], true)) {
+                    $pdo->rollBack();
+                    $message = "❌ Submitting requests for this order status is locked.";
                     $message_type = "danger";
-                }
-                elseif (in_array($v_status, ['out for delivery', 'out_for_delivery', 'delivered'])) {
-                    $message = "❌ Cannot submit request. Submitting requests for this order status is locked.";
-                    $message_type = "danger";
-                } else {
-                    $filename = null;
-                    if (isset($_FILES['product_image']) && $_FILES['product_image']['error'] === UPLOAD_ERR_OK) {
-                        $file_tmp = $_FILES['product_image']['tmp_name'];
-                        $ext = strtolower(pathinfo($_FILES['product_image']['name'], PATHINFO_EXTENSION));
-                        $new_filename = "REQ_" . $order_id . "_" . time() . "_" . rand(1000, 9999) . "." . $ext;
-
-                        // Dedicated Customer Service Google Drive Folder ID
-                        $CUSTOMER_SERVICE_FOLDER_ID = "1Gu8SOPjnIDEwoMhRFhZkxHqPsUL7MKNS";
-
-                        // 1. Unang i-upload sa Google Drive mula sa temporary PHP file
-                        try {
-                            if (function_exists('uploadProductImageToDrive')) {
-                                $file_id = uploadProductImageToDrive($file_tmp, $new_filename, $CUSTOMER_SERVICE_FOLDER_ID);
-                                if (!empty($file_id)) {
-                                    $filename = "https://drive.google.com/uc?export=view&id=" . $file_id;
-                                }
-                            }
-                        } catch (Throwable $e) {
-                            error_log("CUSTOMER SERVICE GOOGLE DRIVE UPLOAD ERROR: " . $e->getMessage());
-                        }
-
-                        // 2. Fallback sa Local Uploads directory kung nag-fail o nag-timeout ang Drive upload
-                        if (empty($filename)) {
-                            $target_dir = "../uploads/";
-                            if (!is_dir($target_dir)) {
-                                mkdir($target_dir, 0777, true);
-                            }
-                            if (move_uploaded_file($file_tmp, $target_dir . $new_filename)) {
-                                $filename = $new_filename;
-                            }
+                } elseif ($request_type === 'cancel') {
+                    // Determine Customer ID if signed in or registered
+                    $cust_id = !empty($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null;
+                    if ($cust_id === null) {
+                        $cuStmt = $pdo->prepare("SELECT id FROM users WHERE LOWER(TRIM(email)) = LOWER(:em) LIMIT 1");
+                        $cuStmt->execute([':em' => $email]);
+                        $foundCid = $cuStmt->fetchColumn();
+                        if ($foundCid) {
+                            $cust_id = (int)$foundCid;
                         }
                     }
 
+                    $payInfo = determineOrderPaymentRefundStatus($v_data);
+
+                    if (in_array($v_status, ['pending', 'approved'], true)) {
+                        // POLICY A & B: Placed/Pending & Approved -> AUTOMATIC CANCELLATION
+                        $stmt_ins = $pdo->prepare("
+                            INSERT INTO customer_requests
+                            (order_number, account, customer_id, request_type, reason, details, item_to_replace, product_image, status, cancellation_mode, auto_approved, processed_at, refund_status, email_status)
+                            VALUES
+                            (:order_id, :email, :cust_id, 'cancel', :reason, :details, NULL, :product_image, 'Approved', 'automatic', 1, NOW(), :refund_status, 'Approved')
+                            RETURNING id
+                        ");
+                        $stmt_ins->execute([
+                            ':order_id' => (string)$order_id_int,
+                            ':email' => $email,
+                            ':cust_id' => $cust_id,
+                            ':reason' => $reason,
+                            ':details' => $user_comments,
+                            ':product_image' => $filename,
+                            ':refund_status' => $payInfo['refund_status'],
+                        ]);
+                        $newReqId = (int)$stmt_ins->fetchColumn();
+
+                        $cancelMeta = finalizeOrderCancellation($pdo, $order_id_int, [
+                            'mode' => 'automatic',
+                            'request_id' => $newReqId,
+                            'admin_id' => null,
+                            'actor_name' => $email,
+                            'actor_role' => 'customer',
+                            'reason' => $reason . ($user_comments !== '' ? " ({$user_comments})" : ''),
+                        ]);
+
+                        $pdo->commit();
+
+                        // Send non-blocking email notification once
+                        if (function_exists('sendSystemEmail') && !empty($v_data['email'])) {
+                            try {
+                                $custFull = trim(($v_data['fullname'] ?? '') . ' ' . ($v_data['surname'] ?? '')) ?: 'Customer';
+                                $refundNote = !empty($cancelMeta['requires_refund'])
+                                    ? "<p style='background:#fff3cd;padding:10px;border-radius:5px;color:#856404;'><strong>Payment Note:</strong> Your e-wallet payment record has been preserved and marked as <strong>Pending Refund</strong>. Our admin will upload your refund proof shortly.</p>"
+                                    : "";
+                                $mailHtml = "
+                                    <h3>Hi " . htmlspecialchars($custFull) . ",</h3>
+                                    <p>Your cancellation request for Order <strong>#{$order_id_int}</strong> has been <strong>automatically approved</strong> because your order has not yet entered the preparation stage.</p>
+                                    <p><strong>Reason:</strong> " . htmlspecialchars($reason) . "</p>
+                                    <p><strong>Order Status:</strong> CANCELLED</p>
+                                    {$refundNote}
+                                    <br>
+                                    <h4>Best regards,<br>R. Taipan Construction Supply and Services, OPC</h4>
+                                ";
+                                sendSystemEmail($v_data['email'], $custFull, "Order #{$order_id_int} Automatically Cancelled", $mailHtml);
+                            } catch (Throwable $mailErr) {
+                                error_log("Auto-cancel email error: " . $mailErr->getMessage());
+                            }
+                        }
+
+                        $message = "Your cancellation request has been automatically approved because your order has not yet entered the preparation stage. Your order has been successfully cancelled.";
+                        $message_type = "success";
+                    } elseif ($v_status === 'preparing') {
+                        // POLICY C: Preparing -> REQUIRES ADMIN APPROVAL
+                        $stmt_ins = $pdo->prepare("
+                            INSERT INTO customer_requests
+                            (order_number, account, customer_id, request_type, reason, details, item_to_replace, product_image, status, cancellation_mode, auto_approved, refund_status)
+                            VALUES
+                            (:order_id, :email, :cust_id, 'cancel', :reason, :details, NULL, :product_image, 'Pending', 'manual', 0, :refund_status)
+                            RETURNING id
+                        ");
+                        $stmt_ins->execute([
+                            ':order_id' => (string)$order_id_int,
+                            ':email' => $email,
+                            ':cust_id' => $cust_id,
+                            ':reason' => $reason,
+                            ':details' => $user_comments,
+                            ':product_image' => $filename,
+                            ':refund_status' => $payInfo['refund_status'],
+                        ]);
+                        $newReqId = (int)$stmt_ins->fetchColumn();
+
+                        logSystemAudit(
+                            $pdo,
+                            $cust_id,
+                            $email,
+                            'customer',
+                            'Cancellation Request Submitted',
+                            "Submitted cancellation request #{$newReqId} for Order #{$order_id_int} (Status: PREPARING). Reason: {$reason}"
+                        );
+
+                        createSystemNotification($pdo, [
+                            'recipient_role' => 'admin',
+                            'recipient_email' => null,
+                            'order_id' => $order_id_int,
+                            'request_id' => $newReqId,
+                            'title' => "Cancellation Request: Order #{$order_id_int}",
+                            'message' => "Customer {$email} requested to cancel Order #{$order_id_int} (currently Preparing). Reason: {$reason}. Admin approval or decline is required before any order status updates.",
+                            'type' => 'warning',
+                            'unique_key' => "admin_cancel_pending_{$newReqId}",
+                        ]);
+
+                        createSystemNotification($pdo, [
+                            'recipient_role' => 'customer',
+                            'recipient_email' => $email,
+                            'order_id' => $order_id_int,
+                            'request_id' => $newReqId,
+                            'title' => "Cancellation Request Submitted (#{$order_id_int})",
+                            'message' => "Your cancellation request for Order #{$order_id_int} has been submitted and is pending Admin review.",
+                            'type' => 'info',
+                            'unique_key' => "cust_cancel_pending_{$newReqId}",
+                        ]);
+
+                        $pdo->commit();
+
+                        $message = "Your cancellation request has been submitted successfully. Our team will review your request and notify you of the decision.";
+                        $message_type = "success";
+                    } else {
+                        $pdo->rollBack();
+                        $message = "❌ Cancellation is not permitted for the current order status (" . strtoupper($v_data['status']) . ").";
+                        $message_type = "danger";
+                    }
+                } else {
+                    // Existing Exchange / Other Ticket Submission Logic
                     $total_ordered_qty_map = [];
                     $total_ordered_price_map = [];
                     try {
-                        // Check order_items first
                         $oi_chk = $pdo->prepare("SELECT product_name, price, qty FROM order_items WHERE order_id = ?");
-                        $oi_chk->execute([$order_id]);
+                        $oi_chk->execute([$order_id_int]);
                         $db_oi = $oi_chk->fetchAll(PDO::FETCH_ASSOC);
                         if (!empty($db_oi)) {
                             foreach ($db_oi as $it) {
@@ -412,18 +597,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
                     if ($request_type === 'exchange') {
                         $exchange_items = $_POST['exchange_items'] ?? [];
                         $exchange_qtys = $_POST['exchange_qtys'] ?? [];
-                        $is_valid_qty = true;
+                        $is_valid_qty = !empty($exchange_items);
                         $submitted_counts = [];
 
                         for ($i = 0; $i < count($exchange_items); $i++) {
                             $item_name = $exchange_items[$i];
                             $item_qty = intval($exchange_qtys[$i] ?? 1);
-                            
-                            if (!isset($total_ordered_qty_map[$item_name])) {
+                            if (!isset($total_ordered_qty_map[$item_name]) || $item_qty <= 0) {
                                 $is_valid_qty = false;
                                 break;
                             }
-                            
                             $submitted_counts[$item_name] = ($submitted_counts[$item_name] ?? 0) + $item_qty;
                             if ($submitted_counts[$item_name] > $total_ordered_qty_map[$item_name]) {
                                 $is_valid_qty = false;
@@ -432,7 +615,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
                         }
 
                         if (!$is_valid_qty) {
-                            $message = "❌ Security Error: The quantity of items requested for exchange exceeds your original order.";
+                            $pdo->rollBack();
+                            $message = "❌ Security Error: The quantity of items requested for exchange is invalid or exceeds your original order.";
                             $message_type = "danger";
                         } else {
                             $readable_items_list = "";
@@ -444,58 +628,69 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
                                 $credit_info = $unit_price > 0 ? " — Exchange Credit: ₱" . number_format($credit, 2) . " (₱" . number_format($unit_price, 2) . "/unit)" : "";
                                 $readable_items_list .= "• {$item_name} (Qty: {$item_qty}x){$credit_info}\n";
                             }
-                            
-                            $stmt_ins = $pdo->prepare("INSERT INTO customer_requests 
-                            (order_number, account, request_type, reason, details, item_to_replace, product_image, status) 
-                            VALUES 
-                            (:order_id, :email, :request_type, :reason, :details, :item_to_replace, :product_image, 'Pending')");
-                            
+
+                            $stmt_ins = $pdo->prepare("
+                                INSERT INTO customer_requests
+                                (order_number, account, request_type, reason, details, item_to_replace, product_image, status)
+                                VALUES
+                                (:order_id, :email, :request_type, :reason, :details, :item_to_replace, :product_image, 'Pending')
+                            ");
                             $ins = $stmt_ins->execute([
-                                ':order_id' => $order_id,
+                                ':order_id' => (string)$order_id_int,
                                 ':email' => $email,
                                 ':request_type' => $request_type,
                                 ':reason' => $reason,
                                 ':details' => $user_comments,
                                 ':item_to_replace' => trim($readable_items_list),
-                                ':product_image' => $filename
+                                ':product_image' => $filename,
                             ]);
-                            
+
                             if ($ins) {
+                                $pdo->commit();
                                 $message = "🎉 Your ticket request (" . strtoupper($request_type) . ") has been submitted successfully! Admin will review it.";
                                 $message_type = "success";
                             } else {
+                                $pdo->rollBack();
                                 $message = "❌ Failed to submit request. Please try again.";
                                 $message_type = "danger";
                             }
                         }
                     } else {
-                    $stmt_ins = $pdo->prepare("INSERT INTO customer_requests
-                    (order_number, account, request_type, reason, details, item_to_replace, product_image, status)
-                    VALUES
-                    (:order_id, :email, :request_type, :reason, :details, NULL, :product_image, 'Pending')");
+                        $stmt_ins = $pdo->prepare("
+                            INSERT INTO customer_requests
+                            (order_number, account, request_type, reason, details, item_to_replace, product_image, status)
+                            VALUES
+                            (:order_id, :email, :request_type, :reason, :details, NULL, :product_image, 'Pending')
+                        ");
+                        $ins = $stmt_ins->execute([
+                            ':order_id' => (string)$order_id_int,
+                            ':email' => $email,
+                            ':request_type' => $request_type,
+                            ':reason' => $reason,
+                            ':details' => $user_comments,
+                            ':product_image' => $filename,
+                        ]);
 
-                    $ins = $stmt_ins->execute([
-                        ':order_id' => $order_id,
-                        ':email' => $email,
-                        ':request_type' => $request_type,
-                        ':reason' => $reason,
-                        ':details' => $user_comments,
-                        ':product_image' => $filename
-                    ]);
-
-                    if ($ins) {
-                        $message = "🎉 Your ticket request (" . strtoupper($request_type) . ") has been submitted successfully! Admin will review it.";
-                        $message_type = "success";
-                    } else {
-                        $message = "❌ Failed to submit request. Please try again.";
-                        $message_type = "danger";
+                        if ($ins) {
+                            $pdo->commit();
+                            $message = "🎉 Your ticket request (" . strtoupper($request_type) . ") has been submitted successfully! Admin will review it.";
+                            $message_type = "success";
+                        } else {
+                            $pdo->rollBack();
+                            $message = "❌ Failed to submit request. Please try again.";
+                            $message_type = "danger";
+                        }
                     }
                 }
             }
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            error_log("Customer service submit error: " . $e->getMessage());
+            $message = "❌ Failed to process request: " . htmlspecialchars($e->getMessage());
+            $message_type = "danger";
         }
-} else {
-        $message = "❌ Verification error. Order connection lost.";
-        $message_type = "danger";
     }
 }
 ?>
@@ -622,6 +817,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
                                     </label>
                                 </div>
                             </div>
+                            <div id="cancelPolicyBanner" class="alert d-none small mt-3 mb-0"></div>
                         </div>
 
                         <div id="formFieldsContainer">
@@ -875,7 +1071,6 @@ function renderLiveReceiptPreview() {
 }
 
 function handleFormTypeSetup(status) {
-    const currentStatus = status.toLowerCase().trim();
     const reqCancel = document.getElementById('req_cancel');
     const reqExchange = document.getElementById('req_exchange');
     const lblExchange = document.getElementById('lbl_req_exchange');
@@ -884,6 +1079,11 @@ function handleFormTypeSetup(status) {
     const btnSubmitForm = document.getElementById('btnSubmitForm');
     const requestActionsBox = document.getElementById('requestActionsBox');
     const formFieldsContainer = document.getElementById('formFieldsContainer');
+    const cancelPolicyBanner = document.getElementById('cancelPolicyBanner');
+    
+    let currentStatus = (currentOrderInfo.normalized_status || (status ? status.toLowerCase().trim().replace(/[\s-]+/g, '_') : ''));
+    if (currentStatus === 'placed' || currentStatus === 'order_placed') currentStatus = 'pending';
+    if (currentStatus === 'canceled') currentStatus = 'cancelled';
     
     errorWrapper.classList.add('d-none');
     errorWrapper.innerHTML = '';
@@ -893,6 +1093,10 @@ function handleFormTypeSetup(status) {
     btnSubmitForm.classList.remove('d-none');
     requestActionsBox.classList.remove('d-none');
     formFieldsContainer.classList.remove('d-none');
+    if (cancelPolicyBanner) {
+        cancelPolicyBanner.className = 'alert d-none small mt-3 mb-0';
+        cancelPolicyBanner.innerHTML = '';
+    }
     reqCancel.disabled = false;
     reqExchange.disabled = false;
     lblCancel.classList.remove('disabled', 'btn-outline-secondary');
@@ -935,11 +1139,29 @@ function handleFormTypeSetup(status) {
         formFieldsContainer.classList.add('d-none');
         
         errorWrapper.classList.remove('d-none');
-        errorWrapper.innerHTML = `⚠️ <strong>Note:</strong> This order has already been <strong>${currentStatus.toUpperCase()}</strong> or has a completed cancellation request. Submitting a new ticket is disabled.`;
+        errorWrapper.innerHTML = `⚠️ <strong>Cancellation Not Available:</strong> This order has already been <strong>${currentStatus.toUpperCase()}</strong> or has an approved cancellation request. Submitting a new ticket is disabled.`;
     }
 
-    // 3. Lock Cancellation for Delivery/Delivered/Completed states
-    if (currentStatus === 'out for delivery' || currentStatus === 'out_for_delivery' || currentStatus === 'delivered' || currentStatus === 'completed') {
+    // 3. Policy banners for cancellable statuses (Placed/Pending, Approved, Preparing)
+    if (currentStatus === 'pending' || currentStatus === 'approved') {
+        reqCancel.checked = true;
+        if (cancelPolicyBanner) {
+            cancelPolicyBanner.className = 'alert alert-success small mt-3 mb-0';
+            cancelPolicyBanner.innerHTML = `<i class="bi bi-lightning-charge-fill me-1"></i> <strong>Automatic Cancellation Eligible:</strong> Since your order is still <strong>${currentStatus === 'approved' ? 'Approved' : 'Placed / Pending'}</strong> and has not entered preparation, your cancellation request will be <strong>automatically approved immediately</strong>.`;
+        }
+    } else if (currentStatus === 'preparing') {
+        reqCancel.checked = true;
+        if (cancelPolicyBanner) {
+            cancelPolicyBanner.className = 'alert alert-warning small mt-3 mb-0';
+            const prevDecline = (currentOrderInfo.latest_cancel && String(currentOrderInfo.latest_cancel.status || '').toLowerCase() === 'declined')
+                ? `<div class="mt-2 pt-2 border-top border-warning-subtle text-danger"><strong>Previous Cancellation Declined:</strong> ${String(currentOrderInfo.latest_cancel.admin_notes || 'No reason provided')}</div>`
+                : '';
+            cancelPolicyBanner.innerHTML = `<i class="bi bi-hourglass-split me-1"></i> <strong>Admin Approval Required:</strong> Your order is currently being <strong>Prepared</strong>. Your cancellation request will be reviewed by our Admin before any order cancellation occurs.${prevDecline}`;
+        }
+    }
+
+    // 4. Lock Cancellation for Delivery/Delivered/Completed states
+    if (currentStatus === 'out_for_delivery' || currentStatus === 'delivered' || currentStatus === 'completed') {
         reqCancel.disabled = true;
         lblCancel.classList.add('disabled', 'btn-outline-secondary');
         lblCancel.classList.remove('btn-outline-dark');
@@ -951,27 +1173,26 @@ function handleFormTypeSetup(status) {
             }
         }
         
-        if (currentStatus !== 'completed' && currentStatus !== 'cancelled' && currentStatus !== 'declined' && !currentOrderInfo.is_cancel_completed) {
+        if (currentStatus === 'out_for_delivery') {
             errorWrapper.classList.remove('d-none');
-            errorWrapper.innerHTML = `ℹ️ Order status is <strong>${status.toUpperCase()}</strong>. Cancellation option is locked.`;
+            errorWrapper.innerHTML = `ℹ️ <strong>Cancellation Unavailable:</strong> Your order is already <strong>OUT FOR DELIVERY</strong>. Cancellation is no longer available.`;
+        } else if (currentStatus === 'delivered') {
+            errorWrapper.classList.remove('d-none');
+            errorWrapper.innerHTML = `ℹ️ <strong>Cancellation Unavailable:</strong> This order has already been <strong>DELIVERED</strong>. For delivery issues or damaged/missing items, please confirm <strong>Order Received</strong> in My Purchases and submit a <strong>Return / Exchange</strong> or Customer Service dispute instead.`;
         }
     }
 
-    // 4. Lock whole form if status is Out for Delivery or Delivered
-    if (currentStatus === 'out for delivery' || currentStatus === 'out_for_delivery' || currentStatus === 'delivered') {
+    // 5. Lock whole form if status is Out for Delivery or Delivered
+    if (currentStatus === 'out_for_delivery' || currentStatus === 'delivered') {
         btnSubmitForm.disabled = true;
         reqExchange.disabled = true;
         lblExchange.classList.add('disabled', 'btn-outline-secondary');
         lblExchange.classList.remove('btn-outline-primary');
         formFieldsContainer.classList.add('d-none');
-        
-        errorWrapper.classList.remove('d-none');
-        errorWrapper.innerHTML = `⚠️ <strong>Note:</strong> Order status is <strong>${status.toUpperCase()}</strong>. Ticket submission is currently locked for this status.`;
     }
-    // 5. Exchange Policy (Completed Status + 1-Day Limit Validation)
-    else if (currentStatus === 'completed' && !currentOrderInfo.is_cancel_completed && currentStatus !== 'cancelled' && currentStatus !== 'declined') {
+    // 6. Exchange Policy (Completed Status + 1-Day Limit Validation)
+    else if (currentStatus === 'completed' && !currentOrderInfo.is_cancel_completed) {
         if (isExceeded1Day) {
-            // EXCEEDED 1 DAY: Disable exchange and form submission with English note
             reqExchange.disabled = true;
             lblExchange.classList.add('disabled', 'btn-outline-secondary');
             lblExchange.classList.remove('btn-outline-primary');
@@ -980,12 +1201,14 @@ function handleFormTypeSetup(status) {
             formFieldsContainer.classList.add('d-none');
 
             errorWrapper.classList.remove('d-none');
-            errorWrapper.innerHTML = `⚠️ <strong>Notice:</strong> Item exchange requests are strictly allowed within <strong>1 day (24 hours)</strong> after order completion. Since 24 hours have already passed, submitting an exchange ticket is now disabled.`;
+            errorWrapper.innerHTML = `⚠️ <strong>Notice:</strong> Regular cancellation is not allowed for completed orders, and item exchange requests are strictly allowed within <strong>1 day (24 hours)</strong> after order completion.`;
         } else {
             reqExchange.disabled = false;
             lblExchange.classList.remove('disabled', 'btn-outline-secondary');
             lblExchange.classList.add('btn-outline-primary');
             reqExchange.checked = true;
+            errorWrapper.classList.remove('d-none');
+            errorWrapper.innerHTML = `ℹ️ <strong>Completed Order:</strong> Regular cancellation is no longer available, but you may request an item Return / Exchange within 24 hours.`;
         }
     } else {
         reqExchange.disabled = true;
