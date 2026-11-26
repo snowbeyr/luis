@@ -253,7 +253,11 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
             exit();
         }
 
-        $effective_pid = $current_var['product_id'];
+        $effective_pid = (int)$current_var['product_id'];
+        $linked_shared_var = getLinkedSourceInfo($pdo, $effective_pid, (int)$v_id);
+        if ($linked_shared_var) {
+            $v_stock = calculateSellableUnits($linked_shared_var['physical_stock'], $linked_shared_var['conversion_qty']);
+        }
 
         $v_name = collapseDuplicateVariantPrefix((string)$v_name);
         $dup_err = checkInventoryItemNameExists($pdo, $v_name, 'variant', (int)$v_id, (int)$effective_pid);
@@ -338,6 +342,11 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
     }
 
     try {
+        $linked_shared_prod = getLinkedSourceInfo($pdo, (int)$p_id, null);
+        if ($linked_shared_prod) {
+            $stock = calculateSellableUnits($linked_shared_prod['physical_stock'], $linked_shared_prod['conversion_qty']);
+        }
+
         $dup_err = checkInventoryItemNameExists($pdo, $p_name, 'product', (int)$p_id);
         if ($dup_err !== null) {
             $_SESSION['error_message'] = $dup_err;
@@ -779,8 +788,6 @@ if ($current_view === 'shared_stock') {
     $type_filter = trim($_GET['type'] ?? '');
     $status_filter = trim($_GET['status'] ?? ($_GET['filter'] ?? ''));
     $sort = trim($_GET['sort'] ?? 'newest');
-    $page = filter_input(INPUT_GET, 'page', FILTER_VALIDATE_INT) ?: 1;
-    $per_page = 20;
 
     try {
         $cat_stmt = $pdo->query("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND TRIM(category) != '' ORDER BY category ASC");
@@ -812,7 +819,11 @@ if ($current_view === 'shared_stock') {
             p.category AS category,
             p.cost_price AS cost_price,
             p.price AS price,
-            p.stock AS stock,
+            CASE
+                WHEN sis.id IS NOT NULL AND siv.conversion_qty > 0
+                THEN GREATEST(0, FLOOR(sis.physical_stock / siv.conversion_qty)::integer)
+                ELSE p.stock
+            END AS stock,
             p.product_description AS description,
             p.image AS image,
             p.is_archived AS is_archived,
@@ -820,9 +831,16 @@ if ($current_view === 'shared_stock') {
             'Main' AS item_type,
             p.id AS parent_sort_id,
             0 AS is_variant_order,
+            sis.id AS shared_source_id,
+            sis.source_name AS shared_source_name,
+            sis.base_unit AS shared_base_unit,
+            sis.physical_stock AS shared_physical_stock,
+            siv.conversion_qty AS shared_conversion_qty,
             (SELECT COUNT(*) FROM product_variants pv WHERE pv.product_id = p.id AND pv.is_archived = 0) AS active_variants_count,
             (SELECT COUNT(*) FROM product_variants pv WHERE pv.product_id = p.id AND pv.is_archived = 1) AS archived_variants_count
         FROM products p
+        LEFT JOIN shared_inventory_variants siv ON siv.product_id = p.id AND (siv.variant_id IS NULL OR siv.variant_id = 0)
+        LEFT JOIN shared_inventory_sources sis ON sis.id = siv.source_id AND sis.is_active = 1
 
         UNION ALL
 
@@ -835,7 +853,11 @@ if ($current_view === 'shared_stock') {
             p.category AS category,
             v.cost_price AS cost_price,
             v.price AS price,
-            v.stock AS stock,
+            CASE
+                WHEN sis.id IS NOT NULL AND siv.conversion_qty > 0
+                THEN GREATEST(0, FLOOR(sis.physical_stock / siv.conversion_qty)::integer)
+                ELSE v.stock
+            END AS stock,
             v.variant_description AS description,
             COALESCE(NULLIF(v.variant_image, ''), p.image) AS image,
             CASE WHEN p.is_archived = 1 OR v.is_archived = 1 THEN 1 ELSE 0 END AS is_archived,
@@ -843,10 +865,17 @@ if ($current_view === 'shared_stock') {
             'Variant' AS item_type,
             p.id AS parent_sort_id,
             1 AS is_variant_order,
+            sis.id AS shared_source_id,
+            sis.source_name AS shared_source_name,
+            sis.base_unit AS shared_base_unit,
+            sis.physical_stock AS shared_physical_stock,
+            siv.conversion_qty AS shared_conversion_qty,
             0 AS active_variants_count,
             0 AS archived_variants_count
         FROM product_variants v
         JOIN products p ON v.product_id = p.id
+        LEFT JOIN shared_inventory_variants siv ON siv.variant_id = v.id
+        LEFT JOIN shared_inventory_sources sis ON sis.id = siv.source_id AND sis.is_active = 1
     ";
 
     $where_clauses = [];
@@ -880,13 +909,11 @@ if ($current_view === 'shared_stock') {
     if ($search !== '') {
         $where_clauses[] = "(
             inv.item_name ILIKE :search_name
-            OR inv.parent_name ILIKE :search_parent
             OR inv.category ILIKE :search_cat
             OR CAST(inv.id AS TEXT) = :search_exact
         )";
         $search_param = '%' . $search . '%';
         $params[':search_name'] = $search_param;
-        $params[':search_parent'] = $search_param;
         $params[':search_cat'] = $search_param;
         $params[':search_exact'] = $search;
     }
@@ -907,52 +934,25 @@ if ($current_view === 'shared_stock') {
     }
 
     try {
-        $count_sql = "SELECT COUNT(*) FROM ($base_union_sql) AS inv WHERE $where_sql";
-        $count_stmt = $pdo->prepare($count_sql);
-        $count_stmt->execute($params);
-        $total_items = (int) $count_stmt->fetchColumn();
-
-        $total_pages = max(1, (int) ceil($total_items / $per_page));
-        $page = max(1, min($page, $total_pages));
-        $offset = ($page - 1) * $per_page;
-
         $items_sql = "
             SELECT inv.*
             FROM ($base_union_sql) AS inv
             WHERE $where_sql
             $order_sql
-            LIMIT :limit OFFSET :offset
         ";
 
         $stmt = $pdo->prepare($items_sql);
         foreach ($params as $k => $v) {
             $stmt->bindValue($k, $v);
         }
-        $stmt->bindValue(':limit', $per_page, PDO::PARAM_INT);
-        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
         $stmt->execute();
         $inventory_items = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $total_items = count($inventory_items);
 
     } catch (PDOException $e) {
         error_log("Unified inventory query error: " . $e->getMessage());
         $inventory_items = [];
         $total_items = 0;
-        $total_pages = 1;
-    }
-}
-
-if (!function_exists('getQueryUrl')) {
-    function getQueryUrl($params_to_update = [])
-    {
-        $current = $_GET;
-        foreach ($params_to_update as $k => $v) {
-            if ($v === null || $v === '') {
-                unset($current[$k]);
-            } else {
-                $current[$k] = $v;
-            }
-        }
-        return 'products.php?' . http_build_query($current);
     }
 }
 ?>
@@ -2274,12 +2274,14 @@ if (!function_exists('getQueryUrl')) {
                                         $archived_vars_cnt = (int) ($row['archived_variants_count'] ?? 0);
 
                                         $img_src = getProductImageSrc($row['image']);
-                                        $display_name = $is_variant
-                                            ? formatUnifiedVariantDisplayName((string)$row['parent_name'], (string)$row['item_name'])
-                                            : trim((string)$row['item_name']);
+                                        $display_name = collapseDuplicateVariantPrefix((string)$row['item_name']);
+                                        $has_shared_source = !empty($row['shared_source_id']);
 
-                                        // Stock & Status display (flat per-item stock)
+                                        // Stock & Status display (flat per-item stock, live synced when shared)
                                         $stock_display = '<span class="fw-bold ' . ($is_archived === 1 ? 'text-muted' : 'text-dark') . '">' . $item_stock . '</span>';
+                                        if ($has_shared_source) {
+                                            $stock_display .= '<div><span class="badge bg-info-subtle text-info border border-info-subtle" style="font-size: 0.68rem;" title="Stock automatically calculated from Shared Stock: ' . htmlspecialchars((string)$row['shared_source_name'], ENT_QUOTES, 'UTF-8') . '"><i class="bi bi-link-45deg"></i> Shared</span></div>';
+                                        }
                                         if ($is_archived === 1) {
                                             if ($is_variant && $parent_is_archived === 1) {
                                                 $status_badge = '<span class="badge bg-danger text-white px-2 py-1 rounded" title="Parent main product is archived"><i class="bi bi-archive-fill me-1"></i> Archived (Parent)</span>';
@@ -2353,7 +2355,12 @@ if (!function_exists('getQueryUrl')) {
                                                                 'price' => (float)$row['price'],
                                                                 'stock' => $item_stock,
                                                                 'description' => $row['description'] ?? '',
-                                                                'image_url' => $img_src
+                                                                'image_url' => $img_src,
+                                                                'shared_source_id' => !empty($row['shared_source_id']) ? (int)$row['shared_source_id'] : 0,
+                                                                'shared_source_name' => (string)($row['shared_source_name'] ?? ''),
+                                                                'shared_base_unit' => (string)($row['shared_base_unit'] ?? ''),
+                                                                'shared_physical_stock' => (float)($row['shared_physical_stock'] ?? 0),
+                                                                'shared_conversion_qty' => (float)($row['shared_conversion_qty'] ?? 0)
                                                             ])); ?>)" 
                                                             title="Edit Variant">
                                                             <i class="bi bi-pencil-fill"></i>
@@ -2374,7 +2381,12 @@ if (!function_exists('getQueryUrl')) {
                                                                 'price' => (float)$row['price'],
                                                                 'stock' => $item_stock,
                                                                 'description' => $row['description'] ?? '',
-                                                                'image_url' => $img_src
+                                                                'image_url' => $img_src,
+                                                                'shared_source_id' => !empty($row['shared_source_id']) ? (int)$row['shared_source_id'] : 0,
+                                                                'shared_source_name' => (string)($row['shared_source_name'] ?? ''),
+                                                                'shared_base_unit' => (string)($row['shared_base_unit'] ?? ''),
+                                                                'shared_physical_stock' => (float)($row['shared_physical_stock'] ?? 0),
+                                                                'shared_conversion_qty' => (float)($row['shared_conversion_qty'] ?? 0)
                                                             ])); ?>)" 
                                                             title="Edit Main Product">
                                                             <i class="bi bi-pencil-fill"></i>
@@ -2411,45 +2423,15 @@ if (!function_exists('getQueryUrl')) {
                     </div>
                 </div>
 
-                <!-- Pagination Footer -->
+                <!-- Single-Page Count Summary -->
                 <div class="d-flex justify-content-between align-items-center mt-4 flex-wrap gap-3">
                     <div class="text-muted small">
                         <?php if ($total_items > 0): ?>
-                            Showing <span class="fw-semibold text-dark"><?= $offset + 1; ?></span> to 
-                            <span class="fw-semibold text-dark"><?= min($offset + $per_page, $total_items); ?></span> of 
-                            <span class="fw-semibold text-dark"><?= $total_items; ?></span> items
+                            Showing all <span class="fw-semibold text-dark"><?= $total_items; ?></span> <?= ($status_filter === 'archived') ? 'archived' : 'active'; ?> item<?= $total_items === 1 ? '' : 's'; ?>
                         <?php else: ?>
-                            Showing 0 to 0 of 0 items
+                            Showing 0 items
                         <?php endif; ?>
                     </div>
-
-                    <?php if ($total_pages > 1): ?>
-                        <nav aria-label="Inventory Pagination">
-                            <ul class="pagination pagination-sm mb-0">
-                                <li class="page-item <?= ($page <= 1) ? 'disabled' : ''; ?>">
-                                    <a class="page-link" href="<?= getQueryUrl(['page' => $page - 1]); ?>" aria-label="Previous">
-                                        <span aria-hidden="true">&laquo; Prev</span>
-                                    </a>
-                                </li>
-
-                                <?php 
-                                $start_p = max(1, $page - 2);
-                                $end_p = min($total_pages, $page + 2);
-                                for ($i = $start_p; $i <= $end_p; $i++): 
-                                ?>
-                                    <li class="page-item <?= ($i === $page) ? 'active' : ''; ?>">
-                                        <a class="page-link" href="<?= getQueryUrl(['page' => $i]); ?>"><?= $i; ?></a>
-                                    </li>
-                                <?php endfor; ?>
-
-                                <li class="page-item <?= ($page >= $total_pages) ? 'disabled' : ''; ?>">
-                                    <a class="page-link" href="<?= getQueryUrl(['page' => $page + 1]); ?>" aria-label="Next">
-                                        <span aria-hidden="true">Next &raquo;</span>
-                                    </a>
-                                </li>
-                            </ul>
-                        </nav>
-                    <?php endif; ?>
                 </div>
 
             <?php endif; ?>
@@ -2784,6 +2766,11 @@ if (!function_exists('getQueryUrl')) {
                             <div class="mb-3">
                                 <label class="form-label fw-semibold">Main Stock Level <span class="text-danger">*</span></label>
                                 <input type="number" name="stock" id="editProd_stock" min="0" class="form-control" required>
+                                <div id="editProd_sharedStockNotice" class="alert alert-info py-2 px-3 mt-2 mb-0 small d-none">
+                                    <i class="bi bi-lock-fill me-1"></i>
+                                    <span id="editProd_sharedStockText">Stock is locked because it is derived from Shared Stock.</span>
+                                    <a href="products.php?view=shared_stock" class="fw-semibold text-decoration-underline ms-1">Adjust in Shared Stock</a>
+                                </div>
                             </div>
 
                             <div class="mb-3">
@@ -2840,6 +2827,11 @@ if (!function_exists('getQueryUrl')) {
                             <div class="mb-3">
                                 <label class="form-label fw-semibold">Available Stock <span class="text-danger">*</span></label>
                                 <input type="number" name="stock" id="editVar_stock" min="0" class="form-control" required>
+                                <div id="editVar_sharedStockNotice" class="alert alert-info py-2 px-3 mt-2 mb-0 small d-none">
+                                    <i class="bi bi-lock-fill me-1"></i>
+                                    <span id="editVar_sharedStockText">Stock is locked because it is derived from Shared Stock.</span>
+                                    <a href="products.php?view=shared_stock" class="fw-semibold text-decoration-underline ms-1">Adjust in Shared Stock</a>
+                                </div>
                             </div>
 
                             <div class="row g-2 mb-3">
@@ -3189,6 +3181,33 @@ if (!function_exists('getQueryUrl')) {
             modal.show();
         }
 
+        function applySharedStockLockOnModal(stockInputId, noticeId, textId, itemData) {
+            const stockInput = document.getElementById(stockInputId);
+            const noticeEl = document.getElementById(noticeId);
+            const textEl = document.getElementById(textId);
+            if (!stockInput || !noticeEl) return;
+
+            const sourceId = parseInt(itemData.shared_source_id || 0, 10);
+            if (sourceId > 0) {
+                stockInput.readOnly = true;
+                stockInput.classList.add('bg-light', 'text-muted');
+                stockInput.setAttribute('tabindex', '-1');
+                if (textEl) {
+                    const srcName = itemData.shared_source_name || 'Shared Source';
+                    const phys = Number(itemData.shared_physical_stock || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                    const conv = Number(itemData.shared_conversion_qty || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                    const unit = itemData.shared_base_unit || 'unit';
+                    textEl.textContent = `Stock is locked and auto-calculated from Shared Stock "${srcName}" (Physical: ${phys} ${unit}, Conversion: ${conv} ${unit}/unit).`;
+                }
+                noticeEl.classList.remove('d-none');
+            } else {
+                stockInput.readOnly = false;
+                stockInput.classList.remove('bg-light', 'text-muted');
+                stockInput.removeAttribute('tabindex');
+                noticeEl.classList.add('d-none');
+            }
+        }
+
         // Open Edit Product Modal
         function openEditProductModal(prodData) {
             document.getElementById('editProd_id').value = prodData.id;
@@ -3198,6 +3217,7 @@ if (!function_exists('getQueryUrl')) {
             document.getElementById('editProd_price').value = parseFloat(prodData.price || 0).toFixed(2);
             document.getElementById('editProd_stock').value = parseInt(prodData.stock || 0);
             document.getElementById('editProd_desc').value = prodData.description || '';
+            applySharedStockLockOnModal('editProd_stock', 'editProd_sharedStockNotice', 'editProd_sharedStockText', prodData);
             checkModalDuplicateName('edit_product');
             const modal = new bootstrap.Modal(document.getElementById('editProductModal'));
             modal.show();
@@ -3213,6 +3233,7 @@ if (!function_exists('getQueryUrl')) {
             document.getElementById('editVar_price').value = parseFloat(varData.price || 0).toFixed(2);
             document.getElementById('editVar_stock').value = parseInt(varData.stock || 0);
             document.getElementById('editVar_desc').value = varData.description || '';
+            applySharedStockLockOnModal('editVar_stock', 'editVar_sharedStockNotice', 'editVar_sharedStockText', varData);
             checkModalDuplicateName('edit_variant');
             const modal = new bootstrap.Modal(document.getElementById('editVariantModal'));
             modal.show();

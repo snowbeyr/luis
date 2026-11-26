@@ -1423,10 +1423,10 @@ $buyNowEditUrl = ($buyNowFirstItem && !empty($buyNowFirstItem['id'])) ? ('produc
                     </div>
                     <div class="col-12">
                         <button type="submit" name="review_order" id="submitBtn" class="btn btn-primary w-100 py-2 mb-2 fw-semibold" <?= (!empty($checkout_draft['terms_accepted']) && !$min_order_unmet && $liveHydration['can_checkout']) ? '' : 'disabled'; ?>>
-                            <i class="bi bi-clipboard2-check me-1"></i> Place Order
+                            <i></i> Place Order
                         </button>
                         <button type="button" class="btn btn-outline-secondary w-100" onclick="window.location.href='<?= $checkout_source === 'buynow' ? 'dashboard.php' : 'cart.php'; ?>';">
-                            <i class="bi bi-arrow-left me-1"></i> <?= $checkout_source === 'buynow' ? 'Cancel' : 'Back to Edit Cart'; ?>
+                            <i></i> <?= $checkout_source === 'buynow' ? 'Cancel' : 'Back to Edit Cart'; ?>
                         </button>
                     </div>
                 </div>

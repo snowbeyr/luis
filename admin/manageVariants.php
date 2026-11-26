@@ -2,6 +2,7 @@
 session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../config/image.php';
+require_once __DIR__ . '/../includes/shared_inventory_functions.php';
 require_once __DIR__ . '/../includes/inventory_helpers.php';
 
 if (file_exists(__DIR__ . '/../config/google_drive.php')) {
@@ -231,6 +232,11 @@ if (isset($_POST['update_variant'])) {
     }
 
     $v_name = collapseDuplicateVariantPrefix((string)$v_name);
+    $linked_shared_var = getLinkedSourceInfo($pdo, (int)$product_id, (int)$v_id);
+    if ($linked_shared_var) {
+        $v_stock = calculateSellableUnits($linked_shared_var['physical_stock'], $linked_shared_var['conversion_qty']);
+    }
+
     $existingVariantDup = checkInventoryItemNameExists($pdo, $v_name, 'variant', (int)$v_id, (int)$product_id);
     if ($existingVariantDup !== null) {
         $_SESSION['error_message'] = "Error: $existingVariantDup";
@@ -537,8 +543,17 @@ $variants_res = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                                 ₱<?php echo number_format((float) $v['price'], 2); ?>
                                             </td>
 
+                                            <?php
+                                            $v_shared = getLinkedSourceInfo($pdo, (int)$product_id, (int)$v['id']);
+                                            $v_display_stock = $v_shared
+                                                ? calculateSellableUnits($v_shared['physical_stock'], $v_shared['conversion_qty'])
+                                                : (int)$v['stock'];
+                                            ?>
                                             <td class="fw-bold">
-                                                <?php echo (int) $v['stock']; ?>
+                                                <?php echo $v_display_stock; ?>
+                                                <?php if ($v_shared): ?>
+                                                    <div><span class="badge bg-info-subtle text-info border border-info-subtle" style="font-size: 0.68rem;">Shared</span></div>
+                                                <?php endif; ?>
                                             </td>
 
                                             <td class="text-center">
@@ -550,7 +565,8 @@ $variants_res = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                                         data-desc="<?php echo htmlspecialchars($v['variant_description'] ?? '', ENT_QUOTES, 'UTF-8'); ?>"
                                                         data-cost="<?php echo htmlspecialchars((string) $v['cost_price'], ENT_QUOTES, 'UTF-8'); ?>"
                                                         data-price="<?php echo htmlspecialchars((string) $v['price'], ENT_QUOTES, 'UTF-8'); ?>"
-                                                        data-stock="<?php echo (int) $v['stock']; ?>">
+                                                        data-stock="<?php echo $v_display_stock; ?>"
+                                                        data-shared-source="<?php echo $v_shared ? htmlspecialchars((string)$v_shared['source_name'], ENT_QUOTES, 'UTF-8') : ''; ?>">
                                                         <i class="bi bi-pencil-square"></i>
                                                     </button>
 
@@ -620,6 +636,10 @@ $variants_res = $stmt->fetchAll(PDO::FETCH_ASSOC);
                         <div class="mb-2">
                             <label class="form-label small fw-bold">Current Available Stock</label>
                             <input type="number" name="edit_stock" id="edit_stock" class="form-control" required>
+                            <div id="edit_shared_stock_notice" class="alert alert-info py-1.5 px-2 mt-1 mb-0 small d-none">
+                                <i class="bi bi-lock-fill me-1"></i>
+                                <span id="edit_shared_stock_text"></span>
+                            </div>
                         </div>
 
                         <div class="mb-1">
@@ -646,7 +666,21 @@ $variants_res = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 document.getElementById('edit_variant_description').value = this.getAttribute('data-desc');
                 document.getElementById('edit_cost_price').value = this.getAttribute('data-cost');
                 document.getElementById('edit_price').value = this.getAttribute('data-price');
-                document.getElementById('edit_stock').value = this.getAttribute('data-stock');
+                const stockEl = document.getElementById('edit_stock');
+                const sharedSrc = this.getAttribute('data-shared-source') || '';
+                const sharedNotice = document.getElementById('edit_shared_stock_notice');
+                const sharedText = document.getElementById('edit_shared_stock_text');
+                stockEl.value = this.getAttribute('data-stock');
+                if (sharedSrc) {
+                    stockEl.readOnly = true;
+                    stockEl.classList.add('bg-light', 'text-muted');
+                    if (sharedText) sharedText.textContent = 'Stock is locked and synced from Shared Stock "' + sharedSrc + '". Update via Shared Stock.';
+                    if (sharedNotice) sharedNotice.classList.remove('d-none');
+                } else {
+                    stockEl.readOnly = false;
+                    stockEl.classList.remove('bg-light', 'text-muted');
+                    if (sharedNotice) sharedNotice.classList.add('d-none');
+                }
 
                 var editModal = new bootstrap.Modal(document.getElementById('editVariantModal'));
                 editModal.show();

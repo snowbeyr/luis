@@ -4,6 +4,7 @@ session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../config/google_drive.php';
 require_once __DIR__ . '/../config/image.php';
+require_once __DIR__ . '/../includes/shared_inventory_functions.php';
 
 if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
     header("Location: ../login.php");
@@ -27,6 +28,11 @@ if (!$row) {
     die("Product not found.");
 }
 
+$linkedSharedSource = getLinkedSourceInfo($pdo, (int)$product_id, null);
+$derivedSharedStock = $linkedSharedSource
+    ? calculateSellableUnits($linkedSharedSource['physical_stock'], $linkedSharedSource['conversion_qty'])
+    : null;
+
 if (isset($_POST['update'])) {
 
     $name = trim($_POST['product_name']);
@@ -37,7 +43,7 @@ if (isset($_POST['update'])) {
     if ($unit === '') {
         $unit = 'pcs';
     }
-    $stock = $_POST['stock'];
+    $stock = $linkedSharedSource ? $derivedSharedStock : $_POST['stock'];
     $description = trim($_POST['product_description']);
 
     $image_path = $row['image'];
@@ -242,8 +248,18 @@ if (isset($_POST['update'])) {
                     </div>
 
                     <label class="form-label fw-bold">Stock Quantity</label>
-                    <input type="number" name="stock" min="0" class="form-control mb-3"
-                        value="<?php echo htmlspecialchars($row['stock'] ?? '0'); ?>" required>
+                    <input type="number" name="stock" min="0" class="form-control mb-2 <?php echo $linkedSharedSource ? 'bg-light text-muted' : ''; ?>"
+                        value="<?php echo htmlspecialchars((string)($linkedSharedSource ? $derivedSharedStock : ($row['stock'] ?? '0'))); ?>"
+                        <?php echo $linkedSharedSource ? 'readonly tabindex="-1"' : 'required'; ?>>
+                    <?php if ($linkedSharedSource): ?>
+                        <div class="alert alert-info py-2 px-3 mb-3 small">
+                            <i class="bi bi-lock-fill me-1"></i>
+                            Stock is locked and synced from Shared Stock <strong><?php echo htmlspecialchars((string)$linkedSharedSource['source_name'], ENT_QUOTES, 'UTF-8'); ?></strong>.
+                            <a href="products.php?view=shared_stock" class="fw-semibold text-decoration-underline ms-1">Adjust in Shared Stock</a>
+                        </div>
+                    <?php else: ?>
+                        <div class="mb-2"></div>
+                    <?php endif; ?>
 
                     <label class="form-label fw-bold">Product Description</label>
                     <textarea name="product_description" class="form-control mb-3" rows="5"
