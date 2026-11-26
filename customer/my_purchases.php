@@ -1070,7 +1070,7 @@ foreach ($allOrders as $o) {
                                     <strong class="text-dark">Order #<?php echo $order['id']; ?></strong>
                                     <span class="text-muted small">•</span>
                                     <span class="text-muted small">
-                                        <i class="bi bi-clock me-1"></i><?php echo date('M d, Y h:i A', strtotime($order['order_date'])); ?>
+                                        <i class="bi bi-clock me-1"></i><?php echo htmlspecialchars((string)($order['order_date_display'] ?? date('M d, Y h:i A', strtotime($order['order_date']))), ENT_QUOTES, 'UTF-8'); ?>
                                     </span>
                                 </div>
                                 <span class="badge <?php echo $badgeClass; ?> px-3 py-2 rounded-pill small">
@@ -1408,9 +1408,11 @@ foreach ($allOrders as $o) {
 
             // Header info
             document.getElementById('mdlOrderId').textContent = order.id;
-            if (order.order_date) {
-                const d = new Date(order.order_date.replace(' ', 'T'));
-                const dateStr = !isNaN(d.getTime()) ? d.toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit'}) : order.order_date;
+            if (order.order_date_display) {
+                document.getElementById('mdlOrderSubtitle').textContent = `Placed on ${order.order_date_display}`;
+            } else if (order.order_date) {
+                const d = new Date(order.order_date.replace(' ', 'T') + 'Z');
+                const dateStr = !isNaN(d.getTime()) ? d.toLocaleDateString('en-US', {timeZone: 'Asia/Manila', month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit'}) : order.order_date;
                 document.getElementById('mdlOrderSubtitle').textContent = `Placed on ${dateStr}`;
             } else {
                 document.getElementById('mdlOrderSubtitle').textContent = '';
@@ -1725,7 +1727,7 @@ foreach ($allOrders as $o) {
                 </div>
 
                 <p class="small mb-1"><b>Order ID:</b> #${order.id}</p>
-                <p class="small mb-1"><b>Date:</b> ${order.order_date}</p>
+                <p class="small mb-1"><b>Date:</b> ${order.order_date_display || order.order_date}</p>
                 <p class="small mb-1"><b>Customer:</b> ${customerName}</p>
                 <p class="small mb-1"><b>Contact:</b> ${order.contact_number || 'N/A'}</p>
                 <p class="small mb-1"><b>Address:</b> ${order.full_address || 'N/A'}</p>

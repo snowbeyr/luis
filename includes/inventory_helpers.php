@@ -444,7 +444,7 @@ if (!function_exists('getOrderStepTimestampColumn')) {
 
 if (!function_exists('formatTimelineStepDateTime')) {
     /**
-     * Formats a DB timestamp string into compact date + time lines for stepper display.
+     * Converts a PostgreSQL UTC timestamp string into Asia/Manila (+08:00) date + time strings.
      */
     function formatTimelineStepDateTime(?string $rawTs): ?array
     {
@@ -452,15 +452,24 @@ if (!function_exists('formatTimelineStepDateTime')) {
         if ($raw === '') {
             return null;
         }
-        $ts = strtotime($raw);
-        if ($ts === false) {
+        try {
+            $utcTz = new DateTimeZone('UTC');
+            $manilaTz = new DateTimeZone('Asia/Manila');
+            // Respect explicit timezone offsets if present; otherwise treat naive PG timestamps as UTC
+            $hasExplicitOffset = (bool)preg_match('/(?:Z|[+-]\d{2}(?::?\d{2})?)$/i', $raw);
+            $dt = $hasExplicitOffset
+                ? new DateTimeImmutable($raw)
+                : new DateTimeImmutable($raw, $utcTz);
+            $manilaDt = $dt->setTimezone($manilaTz);
+            return [
+                'raw' => $manilaDt->format('Y-m-d H:i:s'),
+                'date' => $manilaDt->format('M d, Y'),
+                'time' => $manilaDt->format('h:i A'),
+                'full' => $manilaDt->format('M d, Y h:i A'),
+            ];
+        } catch (Throwable $e) {
             return null;
         }
-        return [
-            'raw' => $raw,
-            'date' => date('M d, Y', $ts),
-            'time' => date('h:i A', $ts),
-        ];
     }
 }
 
@@ -530,14 +539,20 @@ if (!function_exists('hydrateOrderTimelineTimestamps')) {
 
             // Auto-completed orders before completed_at column existed: fallback to delivered_at + 72h if no audit row
             if ($status === 'completed' && empty($completedRaw) && !empty($deliveredRaw)) {
-                $delTs = strtotime($deliveredRaw);
-                if ($delTs !== false) {
-                    $completedRaw = date('Y-m-d H:i:s', $delTs + (72 * 3600));
+                $delInfo = formatTimelineStepDateTime($deliveredRaw);
+                if ($delInfo !== null) {
+                    try {
+                        $manilaTz = new DateTimeZone('Asia/Manila');
+                        $compDt = (new DateTimeImmutable($delInfo['raw'], $manilaTz))->modify('+72 hours');
+                        $completedRaw = $compDt->format('Y-m-d H:i:sP');
+                    } catch (Throwable $e) {}
                 }
             }
 
+            $placedInfo = formatTimelineStepDateTime($placedRaw);
+            $order['order_date_display'] = $placedInfo ? $placedInfo['full'] : ($placedRaw ?? '');
             $order['timeline'] = [
-                'placed' => formatTimelineStepDateTime($placedRaw),
+                'placed' => $placedInfo,
                 'confirmed' => formatTimelineStepDateTime($confirmedRaw),
                 'preparing' => formatTimelineStepDateTime($preparingRaw),
                 'shipping' => formatTimelineStepDateTime($shippingRaw),
