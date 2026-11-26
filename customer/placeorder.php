@@ -351,9 +351,10 @@ function resolveCheckoutCustomerEmail(PDO $pdo, int $loggedInUserId, string $cus
 }
 
 // -------------------------------------------------------------------------
-// STEP 1 HANDLER: PLACE ORDER -> VALIDATE & STAGE FOR REVIEW PAGE (NO DB WRITE)
+// STEP 1 HANDLER: PLACE ORDER -> VALIDATE & STAGE FOR FLOATING REVIEW (NO DB WRITE)
 // -------------------------------------------------------------------------
-if (isset($_POST['review_order'])) {
+if (isset($_POST['review_order']) || isset($_POST['review_ajax'])) {
+    $isAjaxReview = !empty($_POST['review_ajax']);
     $existingDraft = $_SESSION['checkout_draft'][$draft_scope] ?? [];
 
     $fullname = trim((string)($_POST['fullname'] ?? ''));
@@ -375,7 +376,7 @@ if (isset($_POST['review_order'])) {
         'sent_to' => $_POST['sent_to'] ?? ($existingDraft['sent_to'] ?? ''),
     ];
 
-    // Save entered form fields immediately so any validation error preserves customer edits
+    // Save entered form fields immediately so any error or Back-to-Edit preserves customer edits
     $_SESSION['checkout_draft'][$draft_scope] = [
         'ready_for_review' => false,
         'saved_address_id' => $saved_address_id,
@@ -398,7 +399,17 @@ if (isset($_POST['review_order'])) {
         'confirm_token' => $existingDraft['confirm_token'] ?? bin2hex(random_bytes(32)),
     ];
 
-    $redirectCheckoutError = function (string $title, string $message, string $type = 'danger') use ($checkout_qs): void {
+    $respondReviewError = function (string $title, string $message, string $type = 'danger') use ($isAjaxReview, $checkout_qs): void {
+        if ($isAjaxReview) {
+            header('Content-Type: application/json; charset=UTF-8');
+            echo json_encode([
+                'ok' => false,
+                'title' => $title,
+                'message' => $message,
+                'type' => $type,
+            ]);
+            exit();
+        }
         $_SESSION['app_modal'] = [
             'title' => $title,
             'message' => $message,
@@ -409,19 +420,19 @@ if (isset($_POST['review_order'])) {
     };
 
     if ($checkout_source !== 'buynow' && $grand_total < 3000) {
-        $redirectCheckoutError('Minimum Order Not Met', 'Minimum order requirement of ₱3,000.00 is required for delivery checkout. Please add more items in your cart.', 'warning');
+        $respondReviewError('Minimum Order Not Met', 'Minimum order requirement of ₱3,000.00 is required for delivery checkout. Please add more items in your cart.', 'warning');
     }
 
     if (!$liveHydration['can_checkout']) {
-        $redirectCheckoutError('Stock or Item Unavailable', $checkout_issues[0] ?? 'Some items in your cart are unavailable or exceed available stock. Please update your cart.');
+        $respondReviewError('Stock or Item Unavailable', $checkout_issues[0] ?? 'Some items in your cart are unavailable or exceed available stock. Please update your cart.');
     }
 
     if ($fullname === '' || $surname === '' || $full_address === '' || $landmark === '') {
-        $redirectCheckoutError('Incomplete Information', 'Please complete all required customer and delivery address fields.', 'warning');
+        $respondReviewError('Incomplete Information', 'Please complete all required customer and delivery address fields.', 'warning');
     }
 
     if (!preg_match('/^09\d{9}$/', $contact_number)) {
-        $redirectCheckoutError('Invalid Contact Number', "Contact number must start with '09' and contain 11 digits total.", 'warning');
+        $respondReviewError('Invalid Contact Number', "Contact number must start with '09' and contain 11 digits total.", 'warning');
     }
 
     $payCheck = validateCheckoutPaymentDetails(
@@ -436,10 +447,12 @@ if (isset($_POST['review_order'])) {
     );
 
     if (!$payCheck['ok']) {
-        $redirectCheckoutError($payCheck['title'], $payCheck['message'], $payCheck['modal_type'] ?? 'danger');
+        $respondReviewError($payCheck['title'], $payCheck['message'], $payCheck['modal_type'] ?? 'danger');
     }
 
-    // Store fully validated draft and transition to Review Order page
+    $confirmToken = bin2hex(random_bytes(32));
+
+    // Stage fully validated draft for Review modal & final submission
     $_SESSION['checkout_draft'][$draft_scope] = [
         'ready_for_review' => true,
         'saved_address_id' => $saved_address_id,
@@ -459,9 +472,68 @@ if (isset($_POST['review_order'])) {
         'sent_to' => $payCheck['sent_to'],
         'temp_proof_path' => $payCheck['temp_proof_path'],
         'terms_accepted' => true,
-        'confirm_token' => bin2hex(random_bytes(32)),
+        'confirm_token' => $confirmToken,
         'staged_at' => time(),
     ];
+
+    if ($isAjaxReview) {
+        $schemeLabel = ($grand_total >= 5000 && $payCheck['payment_scheme'] === '50_percent')
+            ? '50% Downpayment'
+            : 'Full Payment';
+        $amountDueNow = ($grand_total >= 5000 && $payCheck['payment_scheme'] === '50_percent')
+            ? round($grand_total * 0.5, 2)
+            : round($grand_total, 2);
+
+        $reviewItemsPayload = [];
+        foreach ($items_to_process as $it) {
+            $reviewItemsPayload[] = [
+                'id' => (int)$it['id'],
+                'product_title' => (string)$it['product_title'],
+                'variant_name' => $it['variant_name'],
+                'unit' => (string)$it['unit'],
+                'qty' => (int)$it['qty'],
+                'price' => (float)$it['price'],
+                'subtotal' => (float)$it['subtotal'],
+                'available_stock' => (int)$it['available_stock'],
+                'is_active' => (bool)$it['is_active'],
+                'image_src' => getCheckoutItemImageSrc($it['image'] ?? ''),
+            ];
+        }
+
+        header('Content-Type: application/json; charset=UTF-8');
+        echo json_encode([
+            'ok' => true,
+            'confirm_token' => $confirmToken,
+            'can_finalize' => ($liveHydration['can_checkout'] && !($checkout_source !== 'buynow' && $grand_total < 3000)),
+            'items' => $reviewItemsPayload,
+            'total_qty' => $total_qty,
+            'grand_total' => $grand_total,
+            'price_changes' => $price_changes,
+            'issues' => $checkout_issues,
+            'customer' => [
+                'full_name' => trim($fullname . ' ' . $surname),
+                'contact_number' => $contact_number,
+                'tel_no' => $tel_no ?: '',
+                'email' => $email,
+            ],
+            'delivery' => [
+                'mode' => 'Standard Delivery',
+                'full_address' => $full_address,
+                'landmark' => $landmark,
+            ],
+            'payment' => [
+                'method' => $payCheck['payment_method'],
+                'scheme' => $payCheck['payment_scheme'],
+                'scheme_label' => $schemeLabel,
+                'amount_due' => $amountDueNow,
+                'paid_amount' => (float)$payCheck['paid_amount'],
+                'ref_no' => (string)($payCheck['ref_no'] ?? ''),
+                'receiptdt' => (string)($payCheck['receiptdt'] ?? ''),
+                'temp_proof_src' => !empty($payCheck['temp_proof_path']) ? ('../uploads/proofs/tmp/' . basename((string)$payCheck['temp_proof_path'])) : '',
+            ],
+        ]);
+        exit();
+    }
 
     header("Location: placeorder.php" . $checkout_review_qs);
     exit();
@@ -497,13 +569,13 @@ if (isset($_POST['confirm_place_order'])) {
         exit();
     }
 
-    $redirectReviewError = function (string $title, string $message, string $type = 'danger') use ($checkout_review_qs): void {
+    $redirectReviewError = function (string $title, string $message, string $type = 'danger') use ($checkout_qs): void {
         $_SESSION['app_modal'] = [
             'title' => $title,
             'message' => $message,
             'type' => $type,
         ];
-        header("Location: placeorder.php" . $checkout_review_qs);
+        header("Location: placeorder.php" . $checkout_qs);
         exit();
     };
 
@@ -719,53 +791,17 @@ if (isset($_POST['confirm_place_order'])) {
 }
 
 // -------------------------------------------------------------------------
-// DETERMINE CURRENT VIEW STEP (Checkout Form vs Review Order)
+// CHECKOUT FORM PRE-FILL & STATE FLAGS
 // -------------------------------------------------------------------------
 $checkout_draft = $_SESSION['checkout_draft'][$draft_scope] ?? [];
-$is_review_step = (isset($_GET['step']) && $_GET['step'] === 'review');
-
-if ($is_review_step && (empty($checkout_draft) || empty($checkout_draft['ready_for_review']))) {
-    $_SESSION['app_modal'] = [
-        'title' => 'Review Session Unavailable',
-        'message' => 'Please complete your delivery and payment details first before reviewing your order.',
-        'type' => 'info',
-    ];
-    header("Location: placeorder.php" . $checkout_qs);
-    exit();
-}
-
-// Check if draft is present for pre-filling Checkout form
 $has_saved_draft = !empty($checkout_draft);
 $staged_proof_rel = (!empty($checkout_draft['temp_proof_path']) && file_exists(__DIR__ . '/../uploads/proofs/tmp/' . basename((string)$checkout_draft['temp_proof_path'])))
     ? ('uploads/proofs/tmp/' . basename((string)$checkout_draft['temp_proof_path']))
     : '';
-
-// On Review step, also verify live payment validity against latest DB prices
-$review_payment_error = '';
-if ($is_review_step) {
-    $livePayVerify = validateCheckoutPaymentDetails(
-        $pdo,
-        (string)($checkout_draft['payment_method'] ?? ''),
-        (string)($checkout_draft['payment_scheme'] ?? 'full_payment'),
-        $grand_total,
-        [
-            'ref_no' => $checkout_draft['ref_no'] ?? '',
-            'paid_amount' => $checkout_draft['paid_amount'] ?? 0,
-            'receiptdt' => $checkout_draft['receiptdt'] ?? '',
-            'receipt_iso' => $checkout_draft['receipt_iso'] ?? '',
-            'sent_to' => $checkout_draft['sent_to'] ?? '',
-        ],
-        $staged_proof_rel ?: null,
-        null,
-        false
-    );
-    if (!$livePayVerify['ok']) {
-        $review_payment_error = $livePayVerify['message'];
-    }
-}
-
 $min_order_unmet = ($checkout_source !== 'buynow' && $grand_total < 3000);
-$can_finalize_review = $is_review_step && $liveHydration['can_checkout'] && !$min_order_unmet && $review_payment_error === '';
+$open_review_on_load = (isset($_GET['step']) && $_GET['step'] === 'review' && !empty($checkout_draft['ready_for_review']));
+$buyNowFirstItem = !empty($items_to_process) ? reset($items_to_process) : null;
+$buyNowEditUrl = ($buyNowFirstItem && !empty($buyNowFirstItem['id'])) ? ('productDescription.php?id=' . (int)$buyNowFirstItem['id']) : 'dashboard.php';
 
 ?>
 <!DOCTYPE html>
@@ -773,7 +809,7 @@ $can_finalize_review = $is_review_step && $liveHydration['can_checkout'] && !$mi
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?= $is_review_step ? 'Review & Confirm Order' : 'Checkout'; ?> | Hardware System</title>
+    <title>Checkout | Hardware System</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
     
@@ -1021,286 +1057,27 @@ $can_finalize_review = $is_review_step && $liveHydration['can_checkout'] && !$mi
             color: #ffffff;
         }
         .review-receipt-thumb {
-            max-width: 110px;
-            max-height: 110px;
+            max-width: 96px;
+            max-height: 96px;
             object-fit: cover;
             border-radius: 8px;
             border: 1px solid #cbd5e1;
             cursor: zoom-in;
         }
+        #reviewOrderModal .modal-content {
+            border-radius: 16px;
+            overflow: hidden;
+        }
+        #reviewOrderModal .modal-header {
+            background: #051c3c;
+            color: #ffffff;
+        }
+        #receiptPreviewModal {
+            z-index: 1070;
+        }
     </style>
 </head>
 <body>
-
-<?php if ($is_review_step): ?>
-    <?php
-        $revMethod = (string)($checkout_draft['payment_method'] ?? '');
-        $revScheme = (string)($checkout_draft['payment_scheme'] ?? 'full_payment');
-        $revSchemeLabel = ($grand_total >= 5000 && $revScheme === '50_percent') ? '50% Downpayment' : 'Full Payment';
-        $revAmountDue = ($grand_total >= 5000 && $revScheme === '50_percent') ? round($grand_total * 0.5, 2) : round($grand_total, 2);
-        $buyNowFirstItem = !empty($items_to_process) ? reset($items_to_process) : null;
-        $buyNowEditUrl = ($buyNowFirstItem && !empty($buyNowFirstItem['id'])) ? ('productDescription.php?id=' . (int)$buyNowFirstItem['id']) : 'dashboard.php';
-    ?>
-    <div class="container py-4 py-md-5" style="max-width: 1080px;">
-        <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
-            <div>
-                <h3 class="fw-bold text-dark mb-1"><i class="bi bi-clipboard2-check text-primary me-2"></i>Review &amp; Confirm Your Order</h3>
-                <p class="text-muted small mb-0">Please double-check every item, unit, quantity, delivery address, and payment detail before placing your order.</p>
-            </div>
-            <div class="checkout-stepper">
-                <span class="step-pill done"><i class="bi bi-check-circle-fill"></i> <?= $checkout_source === 'buynow' ? 'Item Selected' : 'Cart'; ?></span>
-                <span class="text-muted"><i class="bi bi-chevron-right"></i></span>
-                <span class="step-pill done"><i class="bi bi-check-circle-fill"></i> Checkout Details</span>
-                <span class="text-muted"><i class="bi bi-chevron-right"></i></span>
-                <span class="step-pill active"><i class="bi bi-3-circle-fill"></i> Review Order</span>
-            </div>
-        </div>
-
-        <?php if (!empty($price_changes)): ?>
-            <div class="alert alert-info border-info shadow-sm mb-3">
-                <div class="fw-bold mb-1"><i class="bi bi-info-circle-fill me-1"></i> Latest Catalog Prices Applied</div>
-                <ul class="mb-0 small ps-3">
-                    <?php foreach ($price_changes as $pc): ?>
-                        <li><?= htmlspecialchars($pc, ENT_QUOTES, 'UTF-8'); ?></li>
-                    <?php endforeach; ?>
-                </ul>
-            </div>
-        <?php endif; ?>
-
-        <?php if ($min_order_unmet || !empty($checkout_issues) || $review_payment_error !== ''): ?>
-            <div class="alert alert-danger border-danger shadow-sm mb-4">
-                <div class="fw-bold mb-1"><i class="bi bi-exclamation-octagon-fill me-1"></i> Cannot Finalize Order Yet</div>
-                <ul class="mb-2 small ps-3">
-                    <?php if ($min_order_unmet): ?>
-                        <li>Order total (₱<?= number_format($grand_total, 2); ?>) is below the ₱3,000.00 minimum requirement for delivery checkout.</li>
-                    <?php endif; ?>
-                    <?php foreach ($checkout_issues as $iss): ?>
-                        <li><?= htmlspecialchars($iss, ENT_QUOTES, 'UTF-8'); ?></li>
-                    <?php endforeach; ?>
-                    <?php if ($review_payment_error !== ''): ?>
-                        <li><?= htmlspecialchars($review_payment_error, ENT_QUOTES, 'UTF-8'); ?></li>
-                    <?php endif; ?>
-                </ul>
-                <div class="d-flex flex-wrap gap-2">
-                    <?php if ($checkout_source !== 'buynow'): ?>
-                        <a href="cart.php" class="btn btn-sm btn-danger"><i class="bi bi-cart me-1"></i> Back to Edit Cart</a>
-                    <?php else: ?>
-                        <a href="<?= htmlspecialchars($buyNowEditUrl, ENT_QUOTES, 'UTF-8'); ?>" class="btn btn-sm btn-danger"><i class="bi bi-arrow-left me-1"></i> Change Item / Quantity</a>
-                    <?php endif; ?>
-                    <a href="placeorder.php<?= htmlspecialchars($checkout_qs, ENT_QUOTES, 'UTF-8'); ?>" class="btn btn-sm btn-outline-danger"><i class="bi bi-pencil-square me-1"></i> Edit Checkout Details</a>
-                </div>
-            </div>
-        <?php endif; ?>
-
-        <div class="row g-4">
-            <!-- LEFT: ITEMS SUMMARY -->
-            <div class="col-12 col-lg-7">
-                <div class="card border-0 shadow-sm h-100">
-                    <div class="card-header bg-white border-bottom py-3 d-flex justify-content-between align-items-center">
-                        <h5 class="fw-bold mb-0 text-dark"><i class="bi bi-box-seam text-primary me-2"></i>Order Items Summary</h5>
-                        <span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill px-3 py-1">
-                            Total Qty: <?= $total_qty; ?> item<?= $total_qty === 1 ? '' : 's'; ?>
-                        </span>
-                    </div>
-                    <div class="card-body p-0">
-                        <div class="table-responsive">
-                            <table class="table align-middle mb-0">
-                                <thead class="table-light small text-uppercase text-muted">
-                                    <tr>
-                                        <th class="ps-3">Product &amp; Variant</th>
-                                        <th>Unit</th>
-                                        <th class="text-center">Qty</th>
-                                        <th class="text-end">Unit Price</th>
-                                        <th class="text-end pe-3">Subtotal</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($items_to_process as $item):
-                                        $revImg = getCheckoutItemImageSrc($item['image'] ?? '');
-                                    ?>
-                                        <tr>
-                                            <td class="ps-3">
-                                                <div class="d-flex align-items-center gap-2">
-                                                    <img src="<?= htmlspecialchars($revImg, ENT_QUOTES, 'UTF-8'); ?>"
-                                                         alt="<?= htmlspecialchars($item['display_name'], ENT_QUOTES, 'UTF-8'); ?>"
-                                                         class="rounded border flex-shrink-0"
-                                                         style="width: 48px; height: 48px; object-fit: cover;"
-                                                         onerror="this.onerror=null; this.src='../assets/images/no-image.png';">
-                                                    <div>
-                                                        <div class="fw-bold text-dark small"><?= htmlspecialchars($item['product_title'], ENT_QUOTES, 'UTF-8'); ?></div>
-                                                        <?php if (!empty($item['variant_name'])): ?>
-                                                            <span class="badge bg-light text-dark border mt-1" style="font-size: 0.72rem;">
-                                                                Variant: <?= htmlspecialchars($item['variant_name'], ENT_QUOTES, 'UTF-8'); ?>
-                                                            </span>
-                                                        <?php endif; ?>
-                                                        <?php if ($item['qty'] > $item['available_stock'] || !$item['is_active']): ?>
-                                                            <div class="text-danger fw-semibold mt-1" style="font-size: 0.75rem;">
-                                                                <i class="bi bi-exclamation-circle"></i> Available: <?= (int)$item['available_stock']; ?>
-                                                            </div>
-                                                        <?php endif; ?>
-                                                    </div>
-                                                </div>
-                                            </td>
-                                            <td><span class="badge bg-secondary-subtle text-dark border" style="font-size: 0.75rem;"><?= htmlspecialchars($item['unit'], ENT_QUOTES, 'UTF-8'); ?></span></td>
-                                            <td class="text-center fw-bold"><?= (int)$item['qty']; ?></td>
-                                            <td class="text-end small">₱<?= number_format((float)$item['price'], 2); ?></td>
-                                            <td class="text-end fw-bold text-primary pe-3">₱<?= number_format((float)$item['subtotal'], 2); ?></td>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                    <div class="card-footer bg-light border-top p-3">
-                        <div class="d-flex justify-content-between align-items-center small text-muted mb-1">
-                            <span>Total Quantity of Items</span>
-                            <span class="fw-bold text-dark"><?= $total_qty; ?></span>
-                        </div>
-                        <div class="d-flex justify-content-between align-items-center small text-muted mb-1">
-                            <span>Payment Scheme</span>
-                            <span class="fw-bold text-dark"><?= htmlspecialchars($revSchemeLabel, ENT_QUOTES, 'UTF-8'); ?></span>
-                        </div>
-                        <div class="d-flex justify-content-between align-items-center fs-5 fw-bold text-dark pt-2 border-top mt-2">
-                            <span>Final Order Total</span>
-                            <span class="text-primary">₱<?= number_format($grand_total, 2); ?></span>
-                        </div>
-                        <?php if ($grand_total >= 5000 && $revScheme === '50_percent'): ?>
-                            <div class="d-flex justify-content-between align-items-center small fw-bold text-success mt-1">
-                                <span>Amount Paid / Due Now (50% Downpayment)</span>
-                                <span>₱<?= number_format($revAmountDue, 2); ?></span>
-                            </div>
-                        <?php endif; ?>
-                    </div>
-                </div>
-            </div>
-
-            <!-- RIGHT: CUSTOMER, DELIVERY, PAYMENT + CONFIRMATION -->
-            <div class="col-12 col-lg-5">
-                <div class="card border-0 shadow-sm mb-3">
-                    <div class="card-header bg-white border-bottom py-3">
-                        <h5 class="fw-bold mb-0 text-dark"><i class="bi bi-person-lines-fill text-primary me-2"></i>Customer, Delivery &amp; Payment</h5>
-                    </div>
-                    <div class="card-body small">
-                        <div class="mb-3 pb-3 border-bottom">
-                            <div class="text-uppercase text-muted fw-bold mb-1" style="font-size: 0.72rem;">Customer Information</div>
-                            <div class="fw-bold text-dark fs-6"><?= htmlspecialchars(($checkout_draft['fullname'] ?? '') . ' ' . ($checkout_draft['surname'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></div>
-                            <div class="text-secondary">Mobile: <strong><?= htmlspecialchars((string)($checkout_draft['contact_number'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></strong></div>
-                            <?php if (!empty($checkout_draft['tel_no'])): ?>
-                                <div class="text-secondary">Telephone: <?= htmlspecialchars((string)$checkout_draft['tel_no'], ENT_QUOTES, 'UTF-8'); ?></div>
-                            <?php endif; ?>
-                            <?php if (!empty($checkout_draft['email'])): ?>
-                                <div class="text-secondary">Email: <?= htmlspecialchars((string)$checkout_draft['email'], ENT_QUOTES, 'UTF-8'); ?></div>
-                            <?php endif; ?>
-                        </div>
-
-                        <div class="mb-3 pb-3 border-bottom">
-                            <div class="text-uppercase text-muted fw-bold mb-1" style="font-size: 0.72rem;">Delivery Information</div>
-                            <div><span class="badge bg-info-subtle text-info border border-info-subtle mb-1">Standard Delivery</span></div>
-                            <div class="text-dark fw-medium"><?= htmlspecialchars((string)($checkout_draft['full_address'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></div>
-                            <div class="text-muted mt-1">Landmark: <strong><?= htmlspecialchars((string)($checkout_draft['landmark'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></strong></div>
-                        </div>
-
-                        <div>
-                            <div class="text-uppercase text-muted fw-bold mb-1" style="font-size: 0.72rem;">Payment Details</div>
-                            <div class="d-flex justify-content-between align-items-center mb-1">
-                                <span class="text-secondary">Method:</span>
-                                <span class="fw-bold text-dark"><?= htmlspecialchars($revMethod, ENT_QUOTES, 'UTF-8'); ?></span>
-                            </div>
-                            <div class="d-flex justify-content-between align-items-center mb-1">
-                                <span class="text-secondary">Payment Scheme:</span>
-                                <span class="fw-semibold text-dark"><?= htmlspecialchars($revSchemeLabel, ENT_QUOTES, 'UTF-8'); ?></span>
-                            </div>
-                            <?php if (in_array($revMethod, ['GCash', 'Maya'], true)): ?>
-                                <div class="d-flex justify-content-between align-items-center mb-1">
-                                    <span class="text-secondary">Paid Amount:</span>
-                                    <span class="fw-bold text-success">₱<?= number_format((float)($checkout_draft['paid_amount'] ?? 0), 2); ?></span>
-                                </div>
-                                <div class="d-flex justify-content-between align-items-center mb-1">
-                                    <span class="text-secondary">Reference No.:</span>
-                                    <span class="fw-bold font-monospace"><?= htmlspecialchars((string)($checkout_draft['ref_no'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></span>
-                                </div>
-                                <?php if (!empty($checkout_draft['receiptdt'])): ?>
-                                    <div class="d-flex justify-content-between align-items-center mb-1">
-                                        <span class="text-secondary">Receipt Date:</span>
-                                        <span><?= htmlspecialchars((string)$checkout_draft['receiptdt'], ENT_QUOTES, 'UTF-8'); ?></span>
-                                    </div>
-                                <?php endif; ?>
-                                <?php if ($staged_proof_rel !== ''): ?>
-                                    <div class="mt-2 pt-2 border-top d-flex align-items-center gap-3">
-                                        <img src="../<?= htmlspecialchars($staged_proof_rel, ENT_QUOTES, 'UTF-8'); ?>"
-                                             alt="Payment Receipt Proof"
-                                             class="review-receipt-thumb"
-                                             onclick="openReceiptPreviewModal(this.src)"
-                                             onerror="this.style.display='none';">
-                                        <div class="text-muted">
-                                            <div class="fw-semibold text-success"><i class="bi bi-patch-check-fill me-1"></i>Receipt Verified</div>
-                                            <div>Click thumbnail to enlarge</div>
-                                        </div>
-                                    </div>
-                                <?php endif; ?>
-                            <?php else: ?>
-                                <div class="d-flex justify-content-between align-items-center">
-                                    <span class="text-secondary">Payable Upon Delivery:</span>
-                                    <span class="fw-bold text-dark">₱<?= number_format($grand_total, 2); ?></span>
-                                </div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- ORDER CONFIRMATION REMINDER -->
-                <div class="alert alert-warning border-warning shadow-sm mb-3" role="alert">
-                    <div class="d-flex align-items-start gap-2">
-                        <i class="bi bi-exclamation-triangle-fill fs-5 text-warning-emphasis flex-shrink-0 mt-0.5"></i>
-                        <div class="small">
-                            <div class="fw-bold text-dark mb-1">Order Confirmation Reminder</div>
-                            <p class="mb-0 text-dark">
-                                Are you sure these are the items you want to purchase? Please review your order carefully. Once you place your order, you will no longer be able to edit the items, quantities, or order details. If you make a mistake after placing your order, you will need to submit a cancellation request and place a new order.
-                            </p>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- FINAL CONFIRMATION FORM -->
-                <form method="POST" action="<?= htmlspecialchars($_SERVER['PHP_SELF']) . htmlspecialchars($checkout_qs, ENT_QUOTES, 'UTF-8'); ?>" id="finalConfirmForm">
-                    <input type="hidden" name="confirm_token" value="<?= htmlspecialchars((string)($checkout_draft['confirm_token'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>">
-
-                    <div class="card border-0 shadow-sm p-3">
-                        <div class="form-check mb-3">
-                            <input class="form-check-input" type="checkbox" name="confirm_order_checkbox" value="1" id="finalConfirmCheckbox" <?= $can_finalize_review ? '' : 'disabled'; ?>>
-                            <label class="form-check-label small fw-semibold text-dark" for="finalConfirmCheckbox">
-                                I have reviewed my order and confirmed that all items, quantities, and details are correct.
-                            </label>
-                        </div>
-
-                        <button type="submit" name="confirm_place_order" id="finalSubmitBtn" class="btn btn-success btn-lg w-100 fw-semibold mb-2" disabled>
-                            <i class="bi bi-check2-circle me-1"></i> Confirm and Place Order
-                        </button>
-
-                        <div class="d-flex flex-column flex-sm-row gap-2">
-                            <?php if ($checkout_source !== 'buynow'): ?>
-                                <a href="cart.php" class="btn btn-outline-secondary w-100 fw-semibold">
-                                    <i class="bi bi-cart me-1"></i> Back to Edit Cart
-                                </a>
-                                <a href="placeorder.php" class="btn btn-outline-primary w-100 fw-semibold">
-                                    <i class="bi bi-pencil-square me-1"></i> Edit Checkout Details
-                                </a>
-                            <?php else: ?>
-                                <a href="<?= htmlspecialchars($buyNowEditUrl, ENT_QUOTES, 'UTF-8'); ?>" class="btn btn-outline-secondary w-100 fw-semibold">
-                                    <i class="bi bi-cart me-1"></i> Back to Edit Cart
-                                </a>
-                                <a href="placeorder.php?from=buynow" class="btn btn-outline-primary w-100 fw-semibold">
-                                    <i class="bi bi-pencil-square me-1"></i> Edit Checkout Details
-                                </a>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-                </form>
-            </div>
-        </div>
-    </div>
-
-<?php else: ?>
 
 <div class="checkout-wrapper">
     <!-- ORDER SUMMARY PANEL -->
@@ -1657,7 +1434,184 @@ $can_finalize_review = $is_review_step && $liveHydration['can_checkout'] && !$mi
         </div>
     </div>
 </div>
-<?php endif; ?>
+
+<!-- FLOATING REVIEW ORDER & FINAL CONFIRMATION MODAL -->
+<div class="modal fade" id="reviewOrderModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" aria-labelledby="reviewOrderModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content border-0 shadow-lg">
+            <div class="modal-header py-3 border-bottom-0">
+                <div>
+                    <h5 class="modal-title fw-bold mb-0" id="reviewOrderModalLabel">
+                        <i class="bi bi-clipboard2-check me-2"></i>Review &amp; Confirm Your Order
+                    </h5>
+                    <small class="text-white-50">Please check all items, units, quantities, delivery details, and payment information carefully.</small>
+                </div>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+
+            <div class="modal-body p-3 p-md-4 bg-light">
+                <div id="reviewPriceChangesAlert" class="alert alert-info border-info shadow-sm mb-3 d-none">
+                    <div class="fw-bold small mb-1"><i class="bi bi-info-circle-fill me-1"></i> Latest Catalog Prices Applied</div>
+                    <ul id="reviewPriceChangesList" class="mb-0 small ps-3"></ul>
+                </div>
+
+                <div id="reviewIssuesAlert" class="alert alert-danger border-danger shadow-sm mb-3 d-none">
+                    <div class="fw-bold small mb-1"><i class="bi bi-exclamation-octagon-fill me-1"></i> Cannot Finalize Order</div>
+                    <ul id="reviewIssuesList" class="mb-0 small ps-3"></ul>
+                </div>
+
+                <div class="row g-3">
+                    <!-- LEFT: ORDER ITEMS TABLE -->
+                    <div class="col-12 col-lg-7">
+                        <div class="card border-0 shadow-sm h-100">
+                            <div class="card-header bg-white border-bottom py-2.5 d-flex justify-content-between align-items-center">
+                                <span class="fw-bold text-dark"><i class="bi bi-box-seam text-primary me-1"></i> Order Items</span>
+                                <span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill px-2.5 py-1" id="reviewTotalQtyBadge">0 items</span>
+                            </div>
+                            <div class="card-body p-0">
+                                <div class="table-responsive">
+                                    <table class="table align-middle mb-0 small">
+                                        <thead class="table-light text-uppercase text-muted" style="font-size: 0.72rem;">
+                                            <tr>
+                                                <th class="ps-3">Product &amp; Variant</th>
+                                                <th>Unit</th>
+                                                <th class="text-center">Qty</th>
+                                                <th class="text-end">Unit Price</th>
+                                                <th class="text-end pe-3">Subtotal</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="reviewItemsTbody"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="card-footer bg-light border-top p-3 small">
+                                <div class="d-flex justify-content-between text-muted mb-1">
+                                    <span>Total Quantity</span>
+                                    <span class="fw-bold text-dark" id="reviewFooterTotalQty">0</span>
+                                </div>
+                                <div class="d-flex justify-content-between text-muted mb-1">
+                                    <span>Payment Scheme</span>
+                                    <span class="fw-bold text-dark" id="reviewFooterScheme">Full Payment</span>
+                                </div>
+                                <div class="d-flex justify-content-between align-items-center fs-5 fw-bold text-dark pt-2 border-top mt-2">
+                                    <span>Final Order Total</span>
+                                    <span class="text-primary" id="reviewFooterGrandTotal">₱0.00</span>
+                                </div>
+                                <div id="reviewFooterDownpaymentRow" class="d-flex justify-content-between align-items-center fw-bold text-success mt-1 d-none">
+                                    <span>Amount Paid / Due Now (50% Downpayment)</span>
+                                    <span id="reviewFooterAmountDue">₱0.00</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- RIGHT: CUSTOMER, DELIVERY, PAYMENT + CONFIRMATION -->
+                    <div class="col-12 col-lg-5">
+                        <div class="card border-0 shadow-sm mb-3">
+                            <div class="card-header bg-white border-bottom py-2.5 fw-bold text-dark">
+                                <i class="bi bi-person-lines-fill text-primary me-1"></i> Customer, Delivery &amp; Payment
+                            </div>
+                            <div class="card-body small">
+                                <div class="mb-2 pb-2 border-bottom">
+                                    <div class="text-uppercase text-muted fw-bold mb-1" style="font-size: 0.7rem;">Customer Information</div>
+                                    <div class="fw-bold text-dark" id="revCustName"></div>
+                                    <div class="text-secondary">Mobile: <strong id="revCustContact"></strong></div>
+                                    <div class="text-secondary d-none" id="revCustTelWrap">Telephone: <span id="revCustTel"></span></div>
+                                    <div class="text-secondary d-none" id="revCustEmailWrap">Email: <span id="revCustEmail"></span></div>
+                                </div>
+
+                                <div class="mb-2 pb-2 border-bottom">
+                                    <div class="text-uppercase text-muted fw-bold mb-1" style="font-size: 0.7rem;">Delivery Information</div>
+                                    <span class="badge bg-info-subtle text-info border border-info-subtle mb-1">Standard Delivery</span>
+                                    <div class="text-dark fw-medium" id="revDelivAddr"></div>
+                                    <div class="text-muted mt-1">Landmark: <strong id="revDelivLandmark"></strong></div>
+                                </div>
+
+                                <div>
+                                    <div class="text-uppercase text-muted fw-bold mb-1" style="font-size: 0.7rem;">Payment Details</div>
+                                    <div class="d-flex justify-content-between mb-1">
+                                        <span class="text-secondary">Payment Method:</span>
+                                        <span class="fw-bold text-dark" id="revPayMethod"></span>
+                                    </div>
+                                    <div class="d-flex justify-content-between mb-1">
+                                        <span class="text-secondary">Payment Scheme:</span>
+                                        <span class="fw-semibold text-dark" id="revPayScheme"></span>
+                                    </div>
+                                    <div id="revOnlinePayMeta" class="d-none">
+                                        <div class="d-flex justify-content-between mb-1">
+                                            <span class="text-secondary">Paid Amount:</span>
+                                            <span class="fw-bold text-success" id="revPayPaid"></span>
+                                        </div>
+                                        <div class="d-flex justify-content-between mb-1">
+                                            <span class="text-secondary">Reference No.:</span>
+                                            <span class="fw-bold font-monospace" id="revPayRef"></span>
+                                        </div>
+                                        <div class="d-flex justify-content-between mb-1 d-none" id="revPayDtWrap">
+                                            <span class="text-secondary">Receipt Date:</span>
+                                            <span id="revPayDt"></span>
+                                        </div>
+                                        <div id="revProofWrap" class="mt-2 pt-2 border-top d-flex align-items-center gap-2 d-none">
+                                            <img id="revProofThumb" src="" alt="Payment Receipt" class="review-receipt-thumb" onclick="openReceiptPreviewModal(this.src)" onerror="this.style.display='none';">
+                                            <div class="text-muted">
+                                                <div class="fw-semibold text-success"><i class="bi bi-patch-check-fill me-1"></i>Receipt Verified</div>
+                                                <div style="font-size: 0.75rem;">Click receipt to enlarge</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div id="revCodMeta" class="d-flex justify-content-between d-none">
+                                        <span class="text-secondary">Payable Upon Delivery:</span>
+                                        <span class="fw-bold text-dark" id="revCodAmount"></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- ORDER CONFIRMATION REMINDER -->
+                        <div class="alert alert-warning border-warning shadow-sm mb-3 py-2.5" role="alert">
+                            <div class="d-flex align-items-start gap-2">
+                                <i class="bi bi-exclamation-triangle-fill fs-5 text-warning-emphasis flex-shrink-0 mt-0.5"></i>
+                                <div style="font-size: 0.8rem;">
+                                    <div class="fw-bold text-dark mb-1">Order Confirmation Reminder</div>
+                                    <p class="mb-0 text-dark">
+                                        Are you sure these are the items you want to purchase? Please review your order carefully. Once you place your order, you will no longer be able to edit the items, quantities, or order details. If you make a mistake after placing your order, you will need to submit a cancellation request and place a new order.
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- FINAL CONFIRMATION FORM -->
+                        <form method="POST" action="<?= htmlspecialchars($_SERVER['PHP_SELF']) . htmlspecialchars($checkout_qs, ENT_QUOTES, 'UTF-8'); ?>" id="finalConfirmForm">
+                            <input type="hidden" name="confirm_place_order" value="1">
+                            <input type="hidden" name="confirm_token" id="modal_confirm_token" value="">
+
+                            <div class="card border-0 shadow-sm p-3 bg-white">
+                                <div class="form-check mb-3">
+                                    <input class="form-check-input" type="checkbox" name="confirm_order_checkbox" value="1" id="finalConfirmCheckbox">
+                                    <label class="form-check-label small fw-semibold text-dark" for="finalConfirmCheckbox">
+                                        I have reviewed my order and confirmed that all items, quantities, and details are correct.
+                                    </label>
+                                </div>
+
+                                <button type="submit" id="finalSubmitBtn" class="btn btn-success w-100 py-2 fw-semibold mb-2" disabled>
+                                    <i class="bi bi-check2-circle me-1"></i> Confirm and Place Order
+                                </button>
+
+                                <div class="d-flex flex-column flex-sm-row gap-2">
+                                    <a href="<?= htmlspecialchars($checkout_source !== 'buynow' ? 'cart.php' : $buyNowEditUrl, ENT_QUOTES, 'UTF-8'); ?>" class="btn btn-outline-secondary btn-sm w-100 fw-semibold">
+                                        <i class="bi bi-cart me-1"></i> Back to Edit Cart
+                                    </a>
+                                    <button type="button" class="btn btn-outline-primary btn-sm w-100 fw-semibold" data-bs-dismiss="modal">
+                                        <i class="bi bi-pencil-square me-1"></i> Edit Checkout Details
+                                    </button>
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 
 <!-- QR ENLARGE MODAL (LIGHT THEME) -->
 <div class="modal fade" id="qrEnlargeModal" tabindex="-1" aria-hidden="true">
@@ -1703,13 +1657,16 @@ $can_finalize_review = $is_review_step && $liveHydration['can_checkout'] && !$mi
 
 <script>
 const grandTotal = <?php echo json_encode((float)$grand_total); ?>;
+const CHECKOUT_ACTION_URL = <?php echo json_encode($_SERVER['PHP_SELF'] . $checkout_qs, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
 const HAS_CHECKOUT_DRAFT = <?php echo $has_saved_draft ? 'true' : 'false'; ?>;
 const CAN_CHECKOUT_STEP1 = <?php echo (!$min_order_unmet && $liveHydration['can_checkout']) ? 'true' : 'false'; ?>;
-const CAN_FINALIZE_REVIEW = <?php echo $can_finalize_review ? 'true' : 'false'; ?>;
+const OPEN_REVIEW_ON_LOAD = <?php echo $open_review_on_load ? 'true' : 'false'; ?>;
 const HAS_STAGED_PROOF = <?php echo ($staged_proof_rel !== '') ? 'true' : 'false'; ?>;
 const STAGED_PROOF_METHOD = <?php echo json_encode((string)($checkout_draft['payment_method'] ?? ''), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
 const STAGED_PROOF_AMOUNT = <?php echo json_encode((float)($checkout_draft['paid_amount'] ?? 0)); ?>;
 const STAGED_PROOF_REF = <?php echo json_encode((string)($checkout_draft['ref_no'] ?? ''), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
+let currentReviewCanFinalize = false;
+let currentTempObjectUrl = null;
 
 function openReceiptPreviewModal(imgSrc) {
     const imgEl = document.getElementById('receiptPreviewImg');
@@ -2665,6 +2622,166 @@ function selectSavedAddress(addressId) {
     });
 }
 
+function formatPeso(val) {
+    return '₱' + Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function populateAndShowReviewModal(data) {
+    currentReviewCanFinalize = Boolean(data.can_finalize);
+
+    const tokenInput = document.getElementById('modal_confirm_token');
+    if (tokenInput) tokenInput.value = data.confirm_token || '';
+
+    const finalCheckbox = document.getElementById('finalConfirmCheckbox');
+    const finalBtn = document.getElementById('finalSubmitBtn');
+    if (finalCheckbox) {
+        finalCheckbox.checked = false;
+        finalCheckbox.disabled = !currentReviewCanFinalize;
+    }
+    if (finalBtn) {
+        finalBtn.disabled = true;
+        finalBtn.innerHTML = '<i class="bi bi-check2-circle me-1"></i> Confirm and Place Order';
+    }
+
+    // Price change notice
+    const pcAlert = document.getElementById('reviewPriceChangesAlert');
+    const pcList = document.getElementById('reviewPriceChangesList');
+    if (pcAlert && pcList) {
+        if (Array.isArray(data.price_changes) && data.price_changes.length > 0) {
+            pcList.innerHTML = data.price_changes.map(msg => `<li>${escapeOcrHtml(msg)}</li>`).join('');
+            pcAlert.classList.remove('d-none');
+        } else {
+            pcAlert.classList.add('d-none');
+        }
+    }
+
+    // Blocking issues notice
+    const issAlert = document.getElementById('reviewIssuesAlert');
+    const issList = document.getElementById('reviewIssuesList');
+    if (issAlert && issList) {
+        if (Array.isArray(data.issues) && data.issues.length > 0) {
+            issList.innerHTML = data.issues.map(msg => `<li>${escapeOcrHtml(msg)}</li>`).join('');
+            issAlert.classList.remove('d-none');
+        } else {
+            issAlert.classList.add('d-none');
+        }
+    }
+
+    // Items table
+    const tbody = document.getElementById('reviewItemsTbody');
+    if (tbody) {
+        tbody.innerHTML = (data.items || []).map(item => `
+            <tr>
+                <td class="ps-3">
+                    <div class="d-flex align-items-center gap-2">
+                        <img src="${escapeOcrHtml(item.image_src || '../assets/images/no-image.png')}"
+                             alt="${escapeOcrHtml(item.product_title)}"
+                             class="rounded border flex-shrink-0"
+                             style="width: 44px; height: 44px; object-fit: cover;"
+                             onerror="this.onerror=null; this.src='../assets/images/no-image.png';">
+                        <div>
+                            <div class="fw-bold text-dark">${escapeOcrHtml(item.product_title)}</div>
+                            ${item.variant_name ? `<span class="badge bg-light text-dark border mt-1" style="font-size: 0.7rem;">Variant: ${escapeOcrHtml(item.variant_name)}</span>` : ''}
+                        </div>
+                    </div>
+                </td>
+                <td><span class="badge bg-secondary-subtle text-dark border" style="font-size: 0.72rem;">${escapeOcrHtml(item.unit)}</span></td>
+                <td class="text-center fw-bold">${Number(item.qty)}</td>
+                <td class="text-end">${formatPeso(item.price)}</td>
+                <td class="text-end fw-bold text-primary pe-3">${formatPeso(item.subtotal)}</td>
+            </tr>
+        `).join('');
+    }
+
+    const totalQty = Number(data.total_qty || 0);
+    const qtyBadge = document.getElementById('reviewTotalQtyBadge');
+    if (qtyBadge) qtyBadge.textContent = `Total Qty: ${totalQty} item${totalQty === 1 ? '' : 's'}`;
+    const footerQty = document.getElementById('reviewFooterTotalQty');
+    if (footerQty) footerQty.textContent = String(totalQty);
+
+    const pay = data.payment || {};
+    const footerScheme = document.getElementById('reviewFooterScheme');
+    if (footerScheme) footerScheme.textContent = pay.scheme_label || 'Full Payment';
+    const footerTotal = document.getElementById('reviewFooterGrandTotal');
+    if (footerTotal) footerTotal.textContent = formatPeso(data.grand_total);
+
+    const downRow = document.getElementById('reviewFooterDownpaymentRow');
+    const downAmt = document.getElementById('reviewFooterAmountDue');
+    if (downRow && downAmt) {
+        if (Number(data.grand_total || 0) >= 5000 && pay.scheme === '50_percent') {
+            downAmt.textContent = formatPeso(pay.amount_due);
+            downRow.classList.remove('d-none');
+        } else {
+            downRow.classList.add('d-none');
+        }
+    }
+
+    // Customer & Delivery info
+    const cust = data.customer || {};
+    const deliv = data.delivery || {};
+    document.getElementById('revCustName').textContent = cust.full_name || '';
+    document.getElementById('revCustContact').textContent = cust.contact_number || '';
+    const telWrap = document.getElementById('revCustTelWrap');
+    if (telWrap) {
+        telWrap.classList.toggle('d-none', !cust.tel_no);
+        if (cust.tel_no) document.getElementById('revCustTel').textContent = cust.tel_no;
+    }
+    const emailWrap = document.getElementById('revCustEmailWrap');
+    if (emailWrap) {
+        emailWrap.classList.toggle('d-none', !cust.email);
+        if (cust.email) document.getElementById('revCustEmail').textContent = cust.email;
+    }
+
+    document.getElementById('revDelivAddr').textContent = deliv.full_address || '';
+    document.getElementById('revDelivLandmark').textContent = deliv.landmark || '';
+
+    // Payment details
+    document.getElementById('revPayMethod').textContent = pay.method || '';
+    document.getElementById('revPayScheme').textContent = pay.scheme_label || 'Full Payment';
+    const onlineMeta = document.getElementById('revOnlinePayMeta');
+    const codMeta = document.getElementById('revCodMeta');
+    if (pay.method === 'GCash' || pay.method === 'Maya') {
+        if (onlineMeta) onlineMeta.classList.remove('d-none');
+        if (codMeta) codMeta.classList.add('d-none');
+        document.getElementById('revPayPaid').textContent = formatPeso(pay.paid_amount);
+        document.getElementById('revPayRef').textContent = pay.ref_no || '-';
+
+        const dtWrap = document.getElementById('revPayDtWrap');
+        if (dtWrap) {
+            dtWrap.classList.toggle('d-none', !pay.receiptdt);
+            if (pay.receiptdt) document.getElementById('revPayDt').textContent = pay.receiptdt;
+        }
+
+        const proofWrap = document.getElementById('revProofWrap');
+        const proofThumb = document.getElementById('revProofThumb');
+        const proofInput = document.getElementById('proof_of_payment_input');
+        let previewUrl = pay.temp_proof_src || '';
+        if (proofInput && proofInput.files && proofInput.files[0]) {
+            if (currentTempObjectUrl) URL.revokeObjectURL(currentTempObjectUrl);
+            currentTempObjectUrl = URL.createObjectURL(proofInput.files[0]);
+            previewUrl = currentTempObjectUrl;
+        }
+        if (proofWrap && proofThumb) {
+            if (previewUrl) {
+                proofThumb.src = previewUrl;
+                proofThumb.style.display = '';
+                proofWrap.classList.remove('d-none');
+            } else {
+                proofWrap.classList.add('d-none');
+            }
+        }
+    } else {
+        if (onlineMeta) onlineMeta.classList.add('d-none');
+        if (codMeta) codMeta.classList.remove('d-none');
+        document.getElementById('revCodAmount').textContent = formatPeso(data.grand_total);
+    }
+
+    const modalEl = document.getElementById('reviewOrderModal');
+    if (modalEl) {
+        bootstrap.Modal.getOrCreateInstance(modalEl).show();
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     if (document.getElementById('checkoutStepForm')) {
         updatePaymentDisplay();
@@ -2683,26 +2800,35 @@ document.addEventListener('DOMContentLoaded', function() {
     const finalBtn = document.getElementById('finalSubmitBtn');
     const finalForm = document.getElementById('finalConfirmForm');
     if (finalCheckbox && finalBtn) {
-        finalBtn.disabled = !(finalCheckbox.checked && CAN_FINALIZE_REVIEW);
+        finalBtn.disabled = !(finalCheckbox.checked && currentReviewCanFinalize);
         finalCheckbox.addEventListener('change', function() {
-            finalBtn.disabled = !(finalCheckbox.checked && CAN_FINALIZE_REVIEW);
+            finalBtn.disabled = !(finalCheckbox.checked && currentReviewCanFinalize);
         });
     }
     if (finalForm && finalBtn) {
         let isSubmittingFinal = false;
         finalForm.addEventListener('submit', function(e) {
-            if (isSubmittingFinal || !finalCheckbox || !finalCheckbox.checked || !CAN_FINALIZE_REVIEW) {
+            if (isSubmittingFinal || !finalCheckbox || !finalCheckbox.checked || !currentReviewCanFinalize) {
                 e.preventDefault();
                 return false;
             }
             isSubmittingFinal = true;
+            // Hidden input name="confirm_place_order" stays submitted even when button is disabled for double-click lock
             finalBtn.disabled = true;
             finalBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Placing Order...';
         });
     }
+
+    if (OPEN_REVIEW_ON_LOAD) {
+        document.getElementById('checkoutStepForm')?.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+    }
 });
 
-document.getElementById('checkoutStepForm')?.addEventListener('submit', function(e) {
+let isPreparingReview = false;
+document.getElementById('checkoutStepForm')?.addEventListener('submit', async function(e) {
+    e.preventDefault();
+    if (isPreparingReview) return false;
+
     const selectedRadio = document.querySelector('input[name="payment_method"]:checked');
     if (selectedRadio && (selectedRadio.value === 'GCash' || selectedRadio.value === 'Maya')) {
         const proofInput = document.getElementById('proof_of_payment_input');
@@ -2710,7 +2836,6 @@ document.getElementById('checkoutStepForm')?.addEventListener('submit', function
         const reusingStaged = canReuseStagedProofForSelection();
 
         if (!hasNewFile && !reusingStaged) {
-            e.preventDefault();
             showAppAlert("Please upload your proof of payment receipt before proceeding to review your order.", {
                 title: 'Payment Proof Required',
                 type: 'warning',
@@ -2722,7 +2847,6 @@ document.getElementById('checkoutStepForm')?.addEventListener('submit', function
         }
 
         if (ocrValidationState.scanning) {
-            e.preventDefault();
             showAppAlert("Your payment receipt is still being verified. Please wait a moment before proceeding.", {
                 title: 'Verification In Progress',
                 type: 'info'
@@ -2731,7 +2855,6 @@ document.getElementById('checkoutStepForm')?.addEventListener('submit', function
         }
 
         if (!ocrValidationState.passed) {
-            e.preventDefault();
             showAppAlert(
                 ocrValidationState.reasonMessage || "Your payment receipt did not pass verification. Please upload a valid receipt screenshot.",
                 {
@@ -2748,7 +2871,6 @@ document.getElementById('checkoutStepForm')?.addEventListener('submit', function
 
     const contact = document.querySelector('input[name="contact_number"]').value;
     if (!contact.startsWith('09') || contact.length !== 11) {
-        e.preventDefault();
         showAppAlert("Contact number must start with '09' and contain 11 digits total.", {
             title: 'Invalid Contact Number',
             type: 'warning',
@@ -2758,6 +2880,45 @@ document.getElementById('checkoutStepForm')?.addEventListener('submit', function
         });
         return false;
     }
+
+    const submitBtn = document.getElementById('submitBtn');
+    const origBtnHtml = submitBtn ? submitBtn.innerHTML : '';
+    isPreparingReview = true;
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Loading Review...';
+    }
+
+    try {
+        const formData = new FormData(this);
+        formData.append('review_ajax', '1');
+        const resp = await fetch(CHECKOUT_ACTION_URL, {
+            method: 'POST',
+            body: formData
+        });
+        const data = await resp.json();
+        if (!data || !data.ok) {
+            showAppAlert((data && data.message) ? data.message : 'Unable to prepare your order review. Please check your details.', {
+                title: (data && data.title) ? data.title : 'Checkout Validation Error',
+                type: (data && data.type) ? data.type : 'danger'
+            });
+            return false;
+        }
+        populateAndShowReviewModal(data);
+    } catch (err) {
+        console.error('Prepare review error:', err);
+        showAppAlert('Unable to connect to the server to review your order. Please try again.', {
+            title: 'Network Error',
+            type: 'danger'
+        });
+    } finally {
+        isPreparingReview = false;
+        if (submitBtn) {
+            submitBtn.innerHTML = origBtnHtml;
+            toggleSubmitButton();
+        }
+    }
+    return false;
 });
 </script>
 <?php require_once __DIR__ . '/../includes/app_modal.php'; ?>
