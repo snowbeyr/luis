@@ -12,8 +12,10 @@ if (isset($_POST['complete_order'])) {
     if ($order['status'] == 'pending') {
         mysqli_begin_transaction($conn);
         try {
-            //Gawing 'completed' ang status
-            mysqli_query($conn, "UPDATE orders SET status = 'completed' WHERE id = '$order_id'");
+            //Gawing 'completed' ang status at i-record ang completed_at timestamp
+            require_once __DIR__ . '/../includes/inventory_helpers.php';
+            ensureOrderTimelineColumns($pdo);
+            mysqli_query($conn, "UPDATE orders SET status = 'completed', completed_at = COALESCE(completed_at, NOW()) WHERE id = '$order_id'");
 
             //Kunin ang lahat ng items sa order na iyon
             $items = mysqli_query($conn, "SELECT product_id, qty FROM order_items WHERE order_id = '$order_id'");

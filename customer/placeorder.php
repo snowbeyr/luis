@@ -1521,8 +1521,7 @@ $buyNowEditUrl = ($buyNowFirstItem && !empty($buyNowFirstItem['id'])) ? ('produc
                                 </div>
 
                                 <div class="mb-2 pb-2 border-bottom">
-                                    <div class="text-uppercase text-muted fw-bold mb-1" style="font-size: 0.7rem;">Delivery Information</div>
-                                    <span class="badge bg-info-subtle text-info border border-info-subtle mb-1">Standard Delivery</span>
+                                    <div class="text-uppercase text-muted fw-bold mb-1" style="font-size: 0.7rem;">Delivery Information</div>   
                                     <div class="text-dark fw-medium" id="revDelivAddr"></div>
                                     <div class="text-muted mt-1">Landmark: <strong id="revDelivLandmark"></strong></div>
                                 </div>

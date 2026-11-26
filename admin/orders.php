@@ -5,6 +5,7 @@ require_once __DIR__ . '/../config/google_drive.php';
 require_once __DIR__ . '/../config/image.php';
 require_once __DIR__ . '/../config/email.php';
 require_once __DIR__ . '/../includes/shared_inventory_functions.php';
+require_once __DIR__ . '/../includes/inventory_helpers.php';
 
 if (!isset($_SESSION['role']) || $_SESSION['role'] != "admin") {
     header("Location: ../login.php");
@@ -14,18 +15,15 @@ if (!isset($_SESSION['role']) || $_SESSION['role'] != "admin") {
 $admin_name = isset($_SESSION['username']) ? $_SESSION['username'] : "Admin";
 $admin_id = $_SESSION['user_id'] ?? ($_SESSION['id'] ?? ($_SESSION['admin_id'] ?? 0));
 
-// Ensure delivered_at column exists in orders table and run 72-hour auto-completion
-try {
-    $pdo->exec("ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP NULL");
-} catch (Throwable $e) {
-    error_log("Ensure delivered_at column error: " . $e->getMessage());
-}
+// Ensure delivered_at & timeline timestamp columns exist on orders table and run 72-hour auto-completion
+ensureOrderTimelineColumns($pdo);
 
 try {
     // 72-hour (3 days) Auto-Complete: Automatically mark delivered orders as completed if older than 72 hours
     $autoCompleteOrdersStmt = $pdo->prepare("
         UPDATE orders 
-        SET status = 'completed' 
+        SET status = 'completed',
+            completed_at = COALESCE(completed_at, NOW())
         WHERE LOWER(TRIM(status)) = 'delivered' 
           AND delivered_at IS NOT NULL 
           AND delivered_at <= (NOW() - INTERVAL '72 hours')
@@ -436,7 +434,7 @@ if (isset($_POST['update_status'])) {
     }
 
     if ($new_status == 'approved' && $old_status != 'approved') {
-        $stmt = $pdo->prepare("UPDATE orders SET status = ?, approved_by = ? WHERE id = ?");
+        $stmt = $pdo->prepare("UPDATE orders SET status = ?, approved_by = ?, approved_at = COALESCE(approved_at, NOW()) WHERE id = ?");
         $stmt->execute([$new_status, $admin_id, $order_id]);
         
         // I-log sa Audit Trail
@@ -453,8 +451,9 @@ if (isset($_POST['update_status'])) {
         // I-log sa Audit Trail
         logAdminAction($pdo, $admin_id, $admin_name, 'admin', 'Order Declined', "Declined Order #$order_id. Reason: $decline_reason");
     } else {
-        if ($new_status === 'delivered') {
-            $stmt = $pdo->prepare("UPDATE orders SET status = ?, delivered_at = NOW() WHERE id = ?");
+        $tsCol = getOrderStepTimestampColumn((string)$new_status);
+        if ($tsCol !== null) {
+            $stmt = $pdo->prepare("UPDATE orders SET status = ?, {$tsCol} = NOW() WHERE id = ?");
             $stmt->execute([$new_status, $order_id]);
         } else {
             $stmt = $pdo->prepare("UPDATE orders SET status = ? WHERE id = ?");

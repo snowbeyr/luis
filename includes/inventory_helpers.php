@@ -397,3 +397,154 @@ if (!function_exists('hydrateCheckoutItemsWithLiveDb')) {
         ];
     }
 }
+
+if (!function_exists('ensureOrderTimelineColumns')) {
+    /**
+     * Ensures per-step status timestamp columns exist on the orders table.
+     */
+    function ensureOrderTimelineColumns(PDO $pdo): void
+    {
+        static $checked = false;
+        if ($checked) {
+            return;
+        }
+        try {
+            $pdo->exec("
+                ALTER TABLE orders
+                ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP NULL,
+                ADD COLUMN IF NOT EXISTS preparing_at TIMESTAMP NULL,
+                ADD COLUMN IF NOT EXISTS out_for_delivery_at TIMESTAMP NULL,
+                ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP NULL,
+                ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP NULL
+            ");
+            $checked = true;
+        } catch (Throwable $e) {
+            error_log('ensureOrderTimelineColumns error: ' . $e->getMessage());
+        }
+    }
+}
+
+if (!function_exists('getOrderStepTimestampColumn')) {
+    /**
+     * Maps normalized order status to its corresponding timestamp column on orders.
+     */
+    function getOrderStepTimestampColumn(string $status): ?string
+    {
+        $st = strtolower(trim($status));
+        $map = [
+            'approved' => 'approved_at',
+            'preparing' => 'preparing_at',
+            'out_for_delivery' => 'out_for_delivery_at',
+            'delivered' => 'delivered_at',
+            'completed' => 'completed_at',
+        ];
+        return $map[$st] ?? null;
+    }
+}
+
+if (!function_exists('formatTimelineStepDateTime')) {
+    /**
+     * Formats a DB timestamp string into compact date + time lines for stepper display.
+     */
+    function formatTimelineStepDateTime(?string $rawTs): ?array
+    {
+        $raw = trim((string)($rawTs ?? ''));
+        if ($raw === '') {
+            return null;
+        }
+        $ts = strtotime($raw);
+        if ($ts === false) {
+            return null;
+        }
+        return [
+            'raw' => $raw,
+            'date' => date('M d, Y', $ts),
+            'time' => date('h:i A', $ts),
+        ];
+    }
+}
+
+if (!function_exists('hydrateOrderTimelineTimestamps')) {
+    /**
+     * Populates formatted timeline timestamps for Placed, Approved, Preparing, Out for Delivery,
+     * Delivered, and Completed steps using order columns with audit_log fallback for historical orders.
+     */
+    function hydrateOrderTimelineTimestamps(PDO $pdo, array &$orders): void
+    {
+        if (empty($orders)) {
+            return;
+        }
+
+        ensureOrderTimelineColumns($pdo);
+
+        // Fetch relevant audit_log entries once for historical backfill where columns are still NULL
+        $auditMap = [];
+        try {
+            $orderIds = array_map(fn($o) => (int)$o['id'], $orders);
+            $idLookup = array_flip($orderIds);
+
+            $stmt = $pdo->query("
+                SELECT action, details, \"timestamp\"
+                FROM audit_log
+                WHERE action IN ('Order Approved', 'Order Preparing', 'Order Out for Delivery', 'Order Delivered', 'Order Completed', 'Order Received')
+                ORDER BY id ASC
+            ");
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                if (preg_match('/Order\s+#(\d+)/i', (string)($row['details'] ?? ''), $m)) {
+                    $oid = (int)$m[1];
+                    if (!isset($idLookup[$oid])) {
+                        continue;
+                    }
+                    $act = strtolower(trim((string)$row['action']));
+                    $stepKey = null;
+                    if ($act === 'order approved') {
+                        $stepKey = 'confirmed';
+                    } elseif ($act === 'order preparing') {
+                        $stepKey = 'preparing';
+                    } elseif ($act === 'order out for delivery') {
+                        $stepKey = 'shipping';
+                    } elseif ($act === 'order delivered') {
+                        $stepKey = 'delivered';
+                    } elseif ($act === 'order completed' || $act === 'order received') {
+                        $stepKey = 'completed';
+                    }
+                    if ($stepKey !== null && empty($auditMap[$oid][$stepKey])) {
+                        $auditMap[$oid][$stepKey] = (string)$row['timestamp'];
+                    }
+                }
+            }
+        } catch (Throwable $e) {
+            error_log('hydrateOrderTimelineTimestamps audit fallback error: ' . $e->getMessage());
+        }
+
+        foreach ($orders as &$order) {
+            $oid = (int)$order['id'];
+            $status = strtolower(trim((string)($order['status'] ?? 'pending')));
+
+            $placedRaw = !empty($order['order_date']) ? (string)$order['order_date'] : null;
+            $confirmedRaw = !empty($order['approved_at']) ? (string)$order['approved_at'] : ($auditMap[$oid]['confirmed'] ?? null);
+            $preparingRaw = !empty($order['preparing_at']) ? (string)$order['preparing_at'] : ($auditMap[$oid]['preparing'] ?? null);
+            $shippingRaw = !empty($order['out_for_delivery_at']) ? (string)$order['out_for_delivery_at'] : ($auditMap[$oid]['shipping'] ?? null);
+            $deliveredRaw = !empty($order['delivered_at']) ? (string)$order['delivered_at'] : ($auditMap[$oid]['delivered'] ?? null);
+            $completedRaw = !empty($order['completed_at']) ? (string)$order['completed_at'] : ($auditMap[$oid]['completed'] ?? null);
+
+            // Auto-completed orders before completed_at column existed: fallback to delivered_at + 72h if no audit row
+            if ($status === 'completed' && empty($completedRaw) && !empty($deliveredRaw)) {
+                $delTs = strtotime($deliveredRaw);
+                if ($delTs !== false) {
+                    $completedRaw = date('Y-m-d H:i:s', $delTs + (72 * 3600));
+                }
+            }
+
+            $order['timeline'] = [
+                'placed' => formatTimelineStepDateTime($placedRaw),
+                'confirmed' => formatTimelineStepDateTime($confirmedRaw),
+                'preparing' => formatTimelineStepDateTime($preparingRaw),
+                'shipping' => formatTimelineStepDateTime($shippingRaw),
+                'delivered' => formatTimelineStepDateTime($deliveredRaw),
+                'completed' => formatTimelineStepDateTime($completedRaw),
+            ];
+        }
+        unset($order);
+    }
+}

@@ -2,6 +2,7 @@
 session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../config/image.php';
+require_once __DIR__ . '/../includes/inventory_helpers.php';
 
 if (empty($_SESSION['user_id'])) {
     header("Location: ../login.php?auth=1");
@@ -30,18 +31,15 @@ $customerEmail = trim((string) ($currentUser['email'] ?? ''));
 $customerName  = trim((string) ($currentUser['fullname'] ?? $currentUser['username']));
 $profileImage  = $currentUser['profile_image'] ?? '';
 
-// Ensure delivered_at column exists in orders table
-try {
-    $pdo->exec("ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP NULL");
-} catch (Throwable $e) {
-    error_log("My Purchases ensure delivered_at error: " . $e->getMessage());
-}
+// Ensure delivered_at & timeline timestamp columns exist in orders table
+ensureOrderTimelineColumns($pdo);
 
 // 72-hour (3 days) Auto-Complete: Automatically mark delivered orders as completed if older than 72 hours
 try {
     $autoCompleteOrdersStmt = $pdo->prepare("
         UPDATE orders 
-        SET status = 'completed' 
+        SET status = 'completed',
+            completed_at = COALESCE(completed_at, NOW())
         WHERE LOWER(TRIM(status)) = 'delivered' 
           AND delivered_at IS NOT NULL 
           AND delivered_at <= (NOW() - INTERVAL '72 hours')
@@ -70,7 +68,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         if ($orderToConfirm) {
             $currSt = strtolower(trim((string)($orderToConfirm['status'] ?? '')));
             if ($currSt === 'delivered') {
-                $updStmt = $pdo->prepare("UPDATE orders SET status = 'completed' WHERE id = ?");
+                $updStmt = $pdo->prepare("UPDATE orders SET status = 'completed', completed_at = COALESCE(completed_at, NOW()) WHERE id = ?");
                 $updStmt->execute([$confirmOrderId]);
 
                 try {
@@ -125,6 +123,7 @@ try {
     ");
     $order_stmt->execute([':email' => $customerEmail]);
     $allOrders = $order_stmt->fetchAll(PDO::FETCH_ASSOC);
+    hydrateOrderTimelineTimestamps($pdo, $allOrders);
 
     // Fetch exchange/return requests by customer email
     $req_stmt = $pdo->prepare("
@@ -673,6 +672,30 @@ foreach ($allOrders as $o) {
         .stepper-step.active .stepper-label {
             color: #051c3c;
             font-weight: 700;
+        }
+
+        .stepper-time {
+            font-size: 0.66rem;
+            color: #64748b;
+            text-align: center;
+            line-height: 1.25;
+            margin-top: 4px;
+            min-height: 22px;
+        }
+
+        .stepper-step.completed .stepper-time,
+        .stepper-step.active .stepper-time {
+            color: #475569;
+            font-weight: 500;
+        }
+
+        @media (max-width: 576px) {
+            .stepper-label {
+                font-size: 0.66rem;
+            }
+            .stepper-time {
+                font-size: 0.58rem;
+            }
         }
 
         .stepper-track {
@@ -1226,26 +1249,32 @@ foreach ($allOrders as $o) {
                             <div class="stepper-step" id="step-placed">
                                 <div class="stepper-icon"><i class="bi bi-bag"></i></div>
                                 <div class="stepper-label">Order Placed</div>
+                                <div class="stepper-time" id="step-time-placed"></div>
                             </div>
                             <div class="stepper-step" id="step-confirmed">
                                 <div class="stepper-icon"><i class="bi bi-patch-check"></i></div>
                                 <div class="stepper-label">Approved</div>
+                                <div class="stepper-time" id="step-time-confirmed"></div>
                             </div>
                             <div class="stepper-step" id="step-preparing">
                                 <div class="stepper-icon"><i class="bi bi-box-seam"></i></div>
                                 <div class="stepper-label">Preparing</div>
+                                <div class="stepper-time" id="step-time-preparing"></div>
                             </div>
                             <div class="stepper-step" id="step-shipping">
                                 <div class="stepper-icon"><i class="bi bi-truck"></i></div>
                                 <div class="stepper-label">Out for Delivery</div>
+                                <div class="stepper-time" id="step-time-shipping"></div>
                             </div>
                             <div class="stepper-step" id="step-delivered">
                                 <div class="stepper-icon"><i class="bi bi-box-seam"></i></div>
                                 <div class="stepper-label">Delivered</div>
+                                <div class="stepper-time" id="step-time-delivered"></div>
                             </div>
                             <div class="stepper-step" id="step-completed">
                                 <div class="stepper-icon"><i class="bi bi-check2-circle"></i></div>
                                 <div class="stepper-label">Completed</div>
+                                <div class="stepper-time" id="step-time-completed"></div>
                             </div>
                         </div>
                         <div id="mdlStatusAlert" class="text-center small py-2 px-3 rounded-3 mt-2 fw-semibold"></div>
@@ -1393,10 +1422,13 @@ foreach ($allOrders as $o) {
             steps.forEach(s => {
                 const el = document.getElementById('step-' + s);
                 if (el) el.className = 'stepper-step';
+                const timeEl = document.getElementById('step-time-' + s);
+                if (timeEl) timeEl.innerHTML = '';
             });
             
             const stepperFill = document.getElementById('mdlStepperFill');
             const alertBox = document.getElementById('mdlStatusAlert');
+            let reachedSteps = ['placed'];
 
             if (status === 'completed') {
                 stepperFill.style.width = '100%';
@@ -1404,6 +1436,7 @@ foreach ($allOrders as $o) {
                     const el = document.getElementById('step-' + s);
                     if (el) el.classList.add('completed');
                 });
+                reachedSteps = [...steps];
                 alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-success-subtle text-success border border-success-subtle';
                 alertBox.innerHTML = '<i class="bi bi-check-circle-fill me-1"></i> Order successfully delivered and completed!';
             } else if (status === 'delivered') {
@@ -1414,6 +1447,7 @@ foreach ($allOrders as $o) {
                 });
                 const elDelivered = document.getElementById('step-delivered');
                 if (elDelivered) elDelivered.classList.add('active');
+                reachedSteps = ['placed', 'confirmed', 'preparing', 'shipping', 'delivered'];
                 alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-primary-subtle text-primary border border-primary-subtle';
                 alertBox.innerHTML = '<i class="bi bi-box-seam me-1"></i> Your package has been delivered! Please inspect items and click "Order Received".';
             } else if (status === 'out_for_delivery') {
@@ -1424,6 +1458,7 @@ foreach ($allOrders as $o) {
                 });
                 const elShipping = document.getElementById('step-shipping');
                 if (elShipping) elShipping.classList.add('active');
+                reachedSteps = ['placed', 'confirmed', 'preparing', 'shipping'];
                 alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-info-subtle text-primary border border-info-subtle';
                 alertBox.innerHTML = '<i class="bi bi-truck me-1"></i> Your parcel is out for delivery! Please keep your lines open.';
             } else if (status === 'preparing') {
@@ -1434,6 +1469,7 @@ foreach ($allOrders as $o) {
                 });
                 const elPrep = document.getElementById('step-preparing');
                 if (elPrep) elPrep.classList.add('active');
+                reachedSteps = ['placed', 'confirmed', 'preparing'];
                 alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-warning-subtle text-warning-emphasis border border-warning-subtle';
                 alertBox.innerHTML = '<i class="bi bi-box-seam me-1"></i> The hardware store is currently preparing your ordered items.';
             } else if (status === 'approved') {
@@ -1442,12 +1478,14 @@ foreach ($allOrders as $o) {
                 if (elPlaced) elPlaced.classList.add('completed');
                 const elConfirmed = document.getElementById('step-confirmed');
                 if (elConfirmed) elConfirmed.classList.add('active');
+                reachedSteps = ['placed', 'confirmed'];
                 alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-warning-subtle text-warning-emphasis border border-warning-subtle';
                 alertBox.innerHTML = '<i class="bi bi-check2 me-1"></i> Order approved! Scheduled for preparation.';
             } else if (status === 'cancelled' || status === 'canceled' || status === 'declined') {
                 stepperFill.style.width = '0%';
                 const elPlaced = document.getElementById('step-placed');
                 if (elPlaced) elPlaced.classList.add('active');
+                reachedSteps = ['placed'];
                 const displayStatus = (status === 'canceled') ? 'CANCELLED' : status.toUpperCase();
                 alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-danger-subtle text-danger border border-danger-subtle';
                 alertBox.innerHTML = `<i class="bi bi-x-circle-fill me-1"></i> This order was ${displayStatus}.`;
@@ -1456,9 +1494,25 @@ foreach ($allOrders as $o) {
                 stepperFill.style.width = '4%';
                 const elPlaced = document.getElementById('step-placed');
                 if (elPlaced) elPlaced.classList.add('active');
+                reachedSteps = ['placed'];
                 alertBox.className = 'text-center small py-2 px-3 rounded-3 mt-2 fw-semibold bg-light text-secondary border';
                 alertBox.innerHTML = '<i class="bi bi-clock-history me-1"></i> Order placed. Waiting for store confirmation.';
             }
+
+            // Render per-step timestamps beneath reached steps
+            const timeline = order.timeline || {};
+            reachedSteps.forEach(s => {
+                const timeEl = document.getElementById('step-time-' + s);
+                const info = timeline[s];
+                if (timeEl && info && info.date && info.time) {
+                    const dateNode = document.createElement('div');
+                    dateNode.textContent = info.date;
+                    const hourNode = document.createElement('div');
+                    hourNode.textContent = info.time;
+                    timeEl.appendChild(dateNode);
+                    timeEl.appendChild(hourNode);
+                }
+            });
 
             // Customer Delivery Address
             const fullName = `${order.fullname || ''} ${order.surname || ''}`.trim() || 'Customer';

@@ -64,12 +64,16 @@ if (isset($_GET['id']) && isset($_GET['status'])) {
     // =========================
     // UPDATE ORDER STATUS
     // =========================
+    require_once __DIR__ . '/../includes/inventory_helpers.php';
+    ensureOrderTimelineColumns($pdo);
+
     if ($new_status == 'approved') {
 
         $update_query = "
             UPDATE orders 
             SET status = '$new_status',
-                approved_by = $admin_id 
+                approved_by = $admin_id,
+                approved_at = COALESCE(approved_at, NOW())
             WHERE id = $id
         ";
 
@@ -84,9 +88,12 @@ if (isset($_GET['id']) && isset($_GET['status'])) {
 
     } else {
 
+        $tsCol = getOrderStepTimestampColumn((string)$new_status);
+        $tsSet = ($tsCol !== null) ? ", $tsCol = NOW()" : "";
         $update_query = "
             UPDATE orders 
-            SET status = '$new_status' 
+            SET status = '$new_status'
+                $tsSet
             WHERE id = $id
         ";
     }
