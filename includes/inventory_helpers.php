@@ -1001,11 +1001,13 @@ if (!function_exists('finalizeOrderCancellation')) {
                 ':oid' => $orderId,
             ]);
 
+            $reqFinalStatus = !empty($payInfo['requires_refund']) ? 'Approved' : 'Completed';
+
             if ($requestId !== null) {
                 $autoFlag = $mode === 'automatic' ? 1 : 0;
                 $upReq = $pdo->prepare("
                     UPDATE customer_requests
-                    SET status = 'Approved',
+                    SET status = :req_status,
                         cancellation_mode = :cmode,
                         auto_approved = :auto_flag,
                         processed_by = :pby,
@@ -1017,6 +1019,7 @@ if (!function_exists('finalizeOrderCancellation')) {
                     WHERE id = :rid
                 ");
                 $upReq->execute([
+                    ':req_status' => $reqFinalStatus,
                     ':cmode' => $mode,
                     ':auto_flag' => $autoFlag,
                     ':pby' => $adminId,
@@ -1058,6 +1061,7 @@ if (!function_exists('finalizeOrderCancellation')) {
                 'order_id' => $orderId,
                 'previous_status' => $prevStatus,
                 'mode' => $mode,
+                'request_status' => $reqFinalStatus,
                 'requires_refund' => $payInfo['requires_refund'],
                 'refund_status' => $payInfo['refund_status'],
                 'inventory_restored' => $restoreResult,
@@ -1176,7 +1180,7 @@ if (!function_exists('processCustomerTicketAction')) {
                             <br>
                             <h4>Best regards,<br>R. Taipan Construction Supply and Services, OPC</h4>
                         ",
-                        'email_status' => 'Approved',
+                        'email_status' => $cancelMeta['request_status'] ?? 'Approved',
                     ];
                 } elseif ($status === 'Declined') {
                     $upReq = $pdo->prepare("
@@ -1301,7 +1305,10 @@ if (!function_exists('processCustomerTicketAction')) {
             }
 
             if ($requestType === 'cancel' && $status === 'Approved') {
-                return ['success' => true, 'message' => "✅ Cancellation request #{$reqId} approved. Order #{$orderId} is now CANCELLED and inventory has been restored.", 'pane' => $paneTarget];
+                $finalCancelMsg = !empty($cancelMeta['requires_refund'])
+                    ? "✅ Cancellation request #{$reqId} approved. Order #{$orderId} is now CANCELLED (Pending Refund) and inventory has been restored."
+                    : "✅ Cancellation request #{$reqId} approved and marked Completed (COD). Order #{$orderId} is now CANCELLED and inventory has been restored.";
+                return ['success' => true, 'message' => $finalCancelMsg, 'pane' => $paneTarget];
             }
             if ($requestType === 'cancel' && $status === 'Declined') {
                 return ['success' => true, 'message' => "ℹ️ Cancellation request #{$reqId} declined. Order #{$orderId} remains in PREPARING status.", 'pane' => $paneTarget];

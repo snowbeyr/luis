@@ -453,11 +453,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
 
                     if (in_array($v_status, ['pending', 'approved'], true)) {
                         // POLICY A & B: Placed/Pending & Approved -> AUTOMATIC CANCELLATION
+                        // COD orders become Completed immediately; GCash/Maya stay Approved until Refund Payment is submitted
+                        $autoReqStatus = !empty($payInfo['requires_refund']) ? 'Approved' : 'Completed';
                         $stmt_ins = $pdo->prepare("
                             INSERT INTO customer_requests
                             (order_number, account, customer_id, request_type, reason, details, item_to_replace, product_image, status, cancellation_mode, auto_approved, processed_at, refund_status, email_status)
                             VALUES
-                            (:order_id, :email, :cust_id, 'cancel', :reason, :details, NULL, :product_image, 'Approved', 'automatic', 1, NOW(), :refund_status, 'Approved')
+                            (:order_id, :email, :cust_id, 'cancel', :reason, :details, NULL, :product_image, :req_status, 'automatic', 1, NOW(), :refund_status, :email_status)
                             RETURNING id
                         ");
                         $stmt_ins->execute([
@@ -467,7 +469,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
                             ':reason' => $reason,
                             ':details' => $user_comments,
                             ':product_image' => $filename,
+                            ':req_status' => $autoReqStatus,
                             ':refund_status' => $payInfo['refund_status'],
+                            ':email_status' => $autoReqStatus,
                         ]);
                         $newReqId = (int)$stmt_ins->fetchColumn();
 

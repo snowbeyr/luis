@@ -791,19 +791,6 @@ body{
         <h4 class="mb-0 fs-5 fw-bold text-dark">📦 Orders Management</h4>
     </div>
 
-    <?php if (!empty($pendingCancellations)): ?>
-        <div class="alert alert-danger shadow-sm border-danger-subtle d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2 mb-3">
-            <div>
-                <i class="bi bi-exclamation-octagon-fill me-2"></i>
-                <strong>Pending Cancellation Request Alert:</strong>
-                <?php echo count($pendingCancellations); ?> order(s) (<?php echo '#' . implode(', #', array_keys($pendingCancellations)); ?>) have a pending cancellation request. Status updates for affected orders are locked until Admin approves or declines in Customer Service Requests.
-            </div>
-            <a href="ItemsRequest.php#cancel-pane" class="btn btn-danger btn-sm fw-semibold text-nowrap">
-                <i class="bi bi-arrow-right-circle me-1"></i> Review Cancellation Requests
-            </a>
-        </div>
-    <?php endif; ?>
-
     <div class="table-responsive bg-white p-3 rounded shadow-sm">
         <table class="table table-hover align-middle">
             <thead class="table-light">
