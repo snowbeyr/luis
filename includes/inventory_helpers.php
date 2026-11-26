@@ -202,3 +202,198 @@ if (!function_exists('formatSharedConversionRate')) {
         return $lhs . ' = ' . $rhs;
     }
 }
+
+if (!function_exists('hydrateCheckoutItemsWithLiveDb')) {
+    /**
+     * Re-fetches live product/variant records, prices, units, and stock (including shared sources)
+     * for checkout items. Used before Review, on Review render, and inside Final Confirmation tx.
+     */
+    function hydrateCheckoutItemsWithLiveDb(PDO $pdo, array $rawItems, bool $lockForUpdate = false): array
+    {
+        $hydrated = [];
+        $issues = [];
+        $priceChanges = [];
+        $grandTotal = 0.0;
+        $totalQty = 0;
+
+        $sharedDemand = [];
+        $sharedSourcesSeen = [];
+        $lockClause = $lockForUpdate ? ' FOR UPDATE' : '';
+
+        $prodStmt = $pdo->prepare(
+            "SELECT id, product_name, price, image, stock, is_archived, unit FROM products WHERE id = :id LIMIT 1" . $lockClause
+        );
+        $varStmt = $pdo->prepare(
+            "SELECT id, product_id, variant_name, price, stock, variant_image, unit, is_archived FROM product_variants WHERE id = :vid AND product_id = :pid LIMIT 1" . $lockClause
+        );
+        $srcLockStmt = $lockForUpdate
+            ? $pdo->prepare("SELECT id, source_name, base_unit, physical_stock, is_active FROM shared_inventory_sources WHERE id = :sid LIMIT 1 FOR UPDATE")
+            : null;
+
+        foreach ($rawItems as $cartKey => $item) {
+            $productId = (int)($item['id'] ?? 0);
+            $variantId = !empty($item['variant_id']) ? (int)$item['variant_id'] : null;
+            $qty = max(1, (int)($item['qty'] ?? 1));
+            $sessionPrice = isset($item['price']) ? (float)$item['price'] : 0.0;
+            $fallbackName = trim((string)($item['name'] ?? 'Product'));
+
+            if ($productId <= 0) {
+                $issues[] = "Invalid product entry ('" . htmlspecialchars($fallbackName, ENT_QUOTES, 'UTF-8') . "') in cart.";
+                continue;
+            }
+
+            $prodStmt->execute([':id' => $productId]);
+            $prodRow = $prodStmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$prodRow) {
+                $issues[] = "'{$fallbackName}' is no longer available in the catalog.";
+                continue;
+            }
+
+            $productTitle = trim((string)$prodRow['product_name']);
+            $isProdArchived = ((int)($prodRow['is_archived'] ?? 0) === 1);
+
+            $liveVariantName = null;
+            $livePrice = (float)$prodRow['price'];
+            $liveImage = (string)($prodRow['image'] ?? '');
+            $liveUnit = trim((string)($prodRow['unit'] ?? ''));
+            $liveStock = (int)($prodRow['stock'] ?? 0);
+            $isItemActive = !$isProdArchived;
+            $displayLabel = $productTitle;
+
+            if ($variantId !== null) {
+                $varStmt->execute([':vid' => $variantId, ':pid' => $productId]);
+                $varRow = $varStmt->fetch(PDO::FETCH_ASSOC);
+
+                if (!$varRow) {
+                    $issues[] = "The selected variant for '{$productTitle}' is no longer available.";
+                    $isItemActive = false;
+                } else {
+                    $liveVariantName = trim((string)$varRow['variant_name']);
+                    $livePrice = (float)$varRow['price'];
+                    if (!empty($varRow['variant_image'])) {
+                        $liveImage = (string)$varRow['variant_image'];
+                    }
+                    $varUnit = trim((string)($varRow['unit'] ?? ''));
+                    if ($varUnit !== '') {
+                        $liveUnit = $varUnit;
+                    }
+                    $liveStock = (int)($varRow['stock'] ?? 0);
+                    $isVarArchived = ((int)($varRow['is_archived'] ?? 0) === 1);
+                    if ($isProdArchived || $isVarArchived) {
+                        $isItemActive = false;
+                    }
+                    $displayLabel = formatUnifiedVariantDisplayName($productTitle, $liveVariantName);
+                }
+            }
+
+            if (!$isItemActive) {
+                $issues[] = "'{$displayLabel}' is currently unavailable or archived. Please remove it from your cart.";
+            }
+
+            // Shared Inventory lookup & conversion check
+            $linkedSource = false;
+            if (function_exists('getLinkedSourceInfo')) {
+                $linkedSource = getLinkedSourceInfo($pdo, $productId, $variantId);
+            }
+            $conversionQty = null;
+            $baseUnit = '';
+            $sharedSourceId = null;
+
+            if ($linkedSource) {
+                $sharedSourceId = (int)$linkedSource['source_id'];
+                if ($srcLockStmt) {
+                    $srcLockStmt->execute([':sid' => $sharedSourceId]);
+                    $lockedSrc = $srcLockStmt->fetch(PDO::FETCH_ASSOC);
+                    if (!$lockedSrc || (int)$lockedSrc['is_active'] !== 1) {
+                        $issues[] = "Bulk inventory source for '{$displayLabel}' is currently inactive.";
+                        $liveStock = 0;
+                    } else {
+                        $linkedSource['physical_stock'] = $lockedSrc['physical_stock'];
+                    }
+                }
+                $conversionQty = (float)$linkedSource['conversion_qty'];
+                $baseUnit = trim((string)$linkedSource['base_unit']);
+                if (!empty($linkedSource['selling_unit_label'])) {
+                    $liveUnit = trim((string)$linkedSource['selling_unit_label']);
+                }
+                $liveStock = function_exists('calculateSellableUnits')
+                    ? calculateSellableUnits($linkedSource['physical_stock'], $conversionQty)
+                    : 0;
+
+                if ($conversionQty <= 0) {
+                    $issues[] = "Stock conversion rule for '{$displayLabel}' is not configured properly.";
+                } else {
+                    if (!isset($sharedDemand[$sharedSourceId])) {
+                        $sharedDemand[$sharedSourceId] = 0.0;
+                        $sharedSourcesSeen[$sharedSourceId] = [
+                            'source_name' => (string)$linkedSource['source_name'],
+                            'base_unit' => $baseUnit,
+                            'physical_stock' => (float)$linkedSource['physical_stock'],
+                        ];
+                    }
+                    $sharedDemand[$sharedSourceId] += ($qty * $conversionQty);
+                }
+            }
+
+            if ($liveUnit === '') {
+                $liveUnit = 'Piece';
+            }
+
+            if ($isItemActive) {
+                if ($liveStock <= 0) {
+                    $issues[] = "'{$displayLabel}' is currently out of stock.";
+                } elseif ($qty > $liveStock) {
+                    $issues[] = "Insufficient stock for '{$displayLabel}': requested {$qty}, only {$liveStock} available.";
+                }
+            }
+
+            if (abs($livePrice - $sessionPrice) > 0.009) {
+                $priceChanges[] = "Price updated for '{$displayLabel}': ₱" . number_format($sessionPrice, 2) . " → ₱" . number_format($livePrice, 2);
+            }
+
+            $subtotal = round($livePrice * $qty, 2);
+            $grandTotal += $subtotal;
+            $totalQty += $qty;
+
+            $hydrated[$cartKey] = [
+                'cart_key' => $cartKey,
+                'id' => $productId,
+                'product_title' => $productTitle,
+                'name' => ($variantId !== null && $liveVariantName !== null) ? $liveVariantName : $productTitle,
+                'variant_id' => $variantId,
+                'variant_name' => $liveVariantName,
+                'display_name' => $displayLabel,
+                'unit' => $liveUnit,
+                'price' => $livePrice,
+                'qty' => $qty,
+                'subtotal' => $subtotal,
+                'image' => $liveImage,
+                'available_stock' => $liveStock,
+                'is_active' => $isItemActive,
+                'shared_source_id' => $sharedSourceId,
+                'conversion_qty' => $conversionQty,
+                'base_unit' => $baseUnit,
+            ];
+        }
+
+        // Validate aggregate shared bulk stock across all items in the same order
+        foreach ($sharedDemand as $sid => $neededBaseQty) {
+            $srcInfo = $sharedSourcesSeen[$sid];
+            if ($neededBaseQty > $srcInfo['physical_stock'] + 0.0001) {
+                $issues[] = "Insufficient combined bulk stock for '{$srcInfo['source_name']}': your order requires "
+                    . number_format($neededBaseQty, 2) . " {$srcInfo['base_unit']}, but only "
+                    . number_format($srcInfo['physical_stock'], 2) . " {$srcInfo['base_unit']} is available.";
+            }
+        }
+
+        return [
+            'items' => $hydrated,
+            'grand_total' => round($grandTotal, 2),
+            'total_qty' => $totalQty,
+            'issues' => array_values(array_unique($issues)),
+            'price_changes' => array_values(array_unique($priceChanges)),
+            'can_checkout' => empty($issues) && !empty($hydrated),
+        ];
+    }
+}

@@ -4,6 +4,7 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../config/google_drive.php';
 require_once __DIR__ . '/../config/image.php';
 require_once __DIR__ . '/../includes/shared_inventory_functions.php';
+require_once __DIR__ . '/../includes/inventory_helpers.php';
 
 // Helper function para sa Checkout Item Image resolution
 function getCheckoutItemImageSrc($image_value) {
@@ -63,282 +64,555 @@ if ($customerEmail === '' && !empty($_SESSION['email'])) {
 }
 
 $checkout_source = isset($_GET['from']) ? $_GET['from'] : 'cart';
-$items_to_process = [];
+$draft_scope = ($checkout_source === 'buynow') ? 'buynow' : 'cart';
+$checkout_qs = ($checkout_source === 'buynow') ? '?from=buynow' : '';
+$checkout_review_qs = ($checkout_source === 'buynow') ? '?from=buynow&step=review' : '?step=review';
 
-if ($checkout_source == 'buynow' && isset($_SESSION['buy_now'])) {
-    $items_to_process = $_SESSION['buy_now'];
+$raw_items_to_process = [];
+if ($checkout_source == 'buynow' && isset($_SESSION['buy_now']) && !empty($_SESSION['buy_now'])) {
+    $raw_items_to_process = $_SESSION['buy_now'];
 } elseif (isset($_SESSION['cart']) && !empty($_SESSION['cart'])) {
-    $items_to_process = $_SESSION['cart'];
+    $raw_items_to_process = $_SESSION['cart'];
 } else {
     header("Location: dashboard.php");
     exit();
 }
 
-$grand_total = 0;
-$total_qty = 0;
-foreach ($items_to_process as $item) {
-    $grand_total += (float)$item['price'] * (int)$item['qty'];
-    $total_qty += (int)$item['qty'];
+// Re-hydrate live product/variant details, units, prices, and stock directly from DB
+$liveHydration = hydrateCheckoutItemsWithLiveDb($pdo, $raw_items_to_process, false);
+$items_to_process = $liveHydration['items'];
+$grand_total = (float)$liveHydration['grand_total'];
+$total_qty = (int)$liveHydration['total_qty'];
+$checkout_issues = $liveHydration['issues'];
+$price_changes = $liveHydration['price_changes'];
+
+if (!isset($_SESSION['checkout_draft']) || !is_array($_SESSION['checkout_draft'])) {
+    $_SESSION['checkout_draft'] = [];
+}
+if (!isset($_SESSION['checkout_consumed_tokens']) || !is_array($_SESSION['checkout_consumed_tokens'])) {
+    $_SESSION['checkout_consumed_tokens'] = [];
 }
 
-if (isset($_POST['place_order'])) {
-    $payment_method = trim($_POST['payment_method'] ?? '');
-    $payment_scheme = trim($_POST['payment_scheme'] ?? 'full_payment');
+/**
+ * Normalizes a Philippine mobile number for official recipient verification.
+ */
+function normalizeCheckoutPhoneDigits(string $raw): string {
+    $digits = (string)preg_replace('/\D+/', '', $raw);
+    if (strlen($digits) === 12 && strpos($digits, '639') === 0) {
+        return '0' . substr($digits, 2);
+    }
+    if (strlen($digits) === 10 && strpos($digits, '9') === 0) {
+        return '0' . $digits;
+    }
+    return $digits;
+}
+
+/**
+ * Shared validation for payment method, scheme, OCR fields, and receipt screenshot.
+ * Used identically on both Step 1 (Review staging) and Step 2 (Final confirmation).
+ */
+function validateCheckoutPaymentDetails(
+    PDO $pdo,
+    string $payment_method,
+    string $payment_scheme,
+    float $grand_total,
+    array $meta,
+    ?string $stagedProofPath,
+    ?array $uploadedFile,
+    bool $stageNewUploadToTmp = false
+): array {
+    $allowedMethods = ['Cash on Delivery (COD)', 'GCash', 'Maya'];
+    if (!in_array($payment_method, $allowedMethods, true)) {
+        return ['ok' => false, 'title' => 'Payment Method Required', 'message' => 'Please select a valid mode of payment.'];
+    }
 
     if ($grand_total >= 5000 && $payment_method === 'Cash on Delivery (COD)') {
-        $_SESSION['app_modal'] = [
+        return [
+            'ok' => false,
             'title' => 'Payment Method Unavailable',
             'message' => 'Cash on Delivery (COD) is unavailable for orders ₱5,000.00 and above. Please choose GCash or Maya.',
-            'type' => 'warning'
+            'modal_type' => 'warning'
         ];
-        header("Location: placeorder.php" . ($checkout_source === 'buynow' ? '?from=buynow' : ''));
-        exit();
     }
 
-    $fullname = trim($_POST['fullname']);
-    $surname = trim($_POST['surname']);
-    $contact_number = trim($_POST['contact_number']);
-    $tel_no = !empty($_POST['tel_no']) ? trim($_POST['tel_no']) : null;
-    
-    // Automatic: Kukunin ang email ng customer na ginamit sa pag-login
-    $email = !empty($customerEmail) ? $customerEmail : trim($_POST['email'] ?? '');
-    if (empty($email) && $loggedInUserId > 0) {
-        try {
-            $stmt_u = $pdo->prepare("SELECT email FROM users WHERE id = ? LIMIT 1");
-            $stmt_u->execute([$loggedInUserId]);
-            $email = trim((string) $stmt_u->fetchColumn());
-        } catch (Throwable $e) {}
-    }
-    if (empty($email) && !empty($_SESSION['email'])) {
-        $email = trim((string) $_SESSION['email']);
-    }
-
-    $full_address = trim($_POST['full_address']);
-    $landmark = trim($_POST['landmark']);
-    
-    $cart_json = json_encode($items_to_process);
-
-    $proof_of_payment = null;
-    
-    // Retrieve OCR Extracted Values
-    $ref_no_raw = !empty($_POST['ref_no']) ? trim((string) $_POST['ref_no']) : '';
-    $ref_norm = strtoupper((string) preg_replace('/[^A-Za-z0-9]/', '', $ref_no_raw));
-    $ref_no = $ref_norm !== '' ? substr($ref_norm, 0, 50) : null;
-    $receiptdt = !empty($_POST['receiptdt']) ? trim((string) $_POST['receiptdt']) : null;
-    $receipt_iso_post = !empty($_POST['receipt_iso']) ? trim((string) $_POST['receipt_iso']) : '';
-    $sent_to_raw = !empty($_POST['sent_to']) ? trim((string) $_POST['sent_to']) : '';
-    $sent_to = $sent_to_raw !== '' ? $sent_to_raw : null;
-    $detected_paid_amount = !empty($_POST['paid_amount']) ? (float)$_POST['paid_amount'] : 0.0;
-
-    $redirectOrderError = function (string $title, string $message) use ($checkout_source): void {
-        $_SESSION['app_modal'] = [
-            'title' => $title,
-            'message' => $message,
-            'type' => 'danger',
-        ];
-        header("Location: placeorder.php" . ($checkout_source === 'buynow' ? '?from=buynow' : ''));
-        exit();
-    };
-
-    // ONLINE PAYMENTS STRICT VALIDATION (GCash / Maya)
-    if (in_array($payment_method, ['GCash', 'Maya'], true)) {
-        // 1. Ensure customer uploaded a valid image proof of payment
-        if (
-            empty($_FILES['proof_of_payment']['name']) ||
-            !isset($_FILES['proof_of_payment']['error']) ||
-            $_FILES['proof_of_payment']['error'] !== UPLOAD_ERR_OK ||
-            empty($_FILES['proof_of_payment']['tmp_name']) ||
-            !file_exists($_FILES['proof_of_payment']['tmp_name'])
-        ) {
-            $redirectOrderError('Payment Proof Required', 'Please upload your proof of payment receipt screenshot before submitting.');
+    if ($grand_total >= 5000) {
+        if (!in_array($payment_scheme, ['50_percent', 'full_payment'], true)) {
+            $payment_scheme = '50_percent';
         }
+    } else {
+        $payment_scheme = 'full_payment';
+    }
 
-        $allowed_types = ['image/jpeg', 'image/png', 'image/jpg', 'image/webp'];
-        $file_mime_check = mime_content_type($_FILES['proof_of_payment']['tmp_name']);
+    if (!in_array($payment_method, ['GCash', 'Maya'], true)) {
+        return [
+            'ok' => true,
+            'payment_method' => $payment_method,
+            'payment_scheme' => $payment_scheme,
+            'paid_amount' => 0.0,
+            'ref_no' => null,
+            'receiptdt' => null,
+            'receipt_iso' => '',
+            'sent_to' => null,
+            'temp_proof_path' => $stagedProofPath
+        ];
+    }
+
+    // 1. Verify receipt image (either fresh upload or safely staged temp upload)
+    $allowed_types = ['image/jpeg', 'image/png', 'image/jpg', 'image/webp'];
+    $hasFreshUpload = is_array($uploadedFile)
+        && !empty($uploadedFile['name'])
+        && isset($uploadedFile['error'])
+        && (int)$uploadedFile['error'] === UPLOAD_ERR_OK
+        && !empty($uploadedFile['tmp_name'])
+        && file_exists($uploadedFile['tmp_name']);
+
+    $resolvedTempProof = null;
+    if ($hasFreshUpload) {
+        $file_mime_check = mime_content_type($uploadedFile['tmp_name']);
         if (!in_array($file_mime_check, $allowed_types, true)) {
-            $redirectOrderError('Invalid File Format', 'Please upload a valid receipt image (JPEG, PNG, or WebP).');
+            return ['ok' => false, 'title' => 'Invalid File Format', 'message' => 'Please upload a valid receipt image (JPEG, PNG, or WebP).'];
         }
-
-        // 2. Enforce exact payment amount (reject both underpayment and overpayment)
-        $expected_amount = ($grand_total >= 5000 && $payment_scheme === '50_percent')
-            ? round($grand_total * 0.5, 2)
-            : round($grand_total, 2);
-
-        if ($detected_paid_amount <= 0 || abs($detected_paid_amount - $expected_amount) > 0.05) {
-            $redirectOrderError(
-                'Invalid Payment Amount',
-                'The receipt payment amount must exactly match the required amount of ₱' . number_format($expected_amount, 2) . '. Underpayments and overpayments cannot proceed.'
-            );
-        }
-
-        // 3. Enforce strict recipient number matching the selected payment method
-        $expected_recipient = ($payment_method === 'GCash') ? '09073595023' : '09682770376';
-        $sent_digits = preg_replace('/\D+/', '', $sent_to_raw);
-        if (is_string($sent_digits)) {
-            if (strlen($sent_digits) === 12 && strpos($sent_digits, '639') === 0) {
-                $sent_digits = '0' . substr($sent_digits, 2);
-            } elseif (strlen($sent_digits) === 10 && strpos($sent_digits, '9') === 0) {
-                $sent_digits = '0' . $sent_digits;
+        if ($stageNewUploadToTmp) {
+            $tmpDir = __DIR__ . '/../uploads/proofs/tmp/';
+            if (!is_dir($tmpDir)) {
+                mkdir($tmpDir, 0775, true);
             }
-        } else {
-            $sent_digits = '';
-        }
-
-        if ($sent_digits !== $expected_recipient) {
-            $redirectOrderError(
-                'Incorrect Recipient Number',
-                'You selected ' . $payment_method . '. Payment must be sent strictly to our official ' . $payment_method . ' number (' . $expected_recipient . ').'
-            );
-        }
-        $sent_to = $sent_digits;
-
-        // 4. Enforce receipt date/time is within today (Asia/Manila) and not in the future
-        $manilaTz = new DateTimeZone('Asia/Manila');
-        $nowManila = new DateTimeImmutable('now', $manilaTz);
-        $parsedReceiptDt = null;
-        $receiptHasTime = false;
-
-        foreach ([$receipt_iso_post, (string) ($receiptdt ?? '')] as $dtCandidate) {
-            $dtCandidate = trim($dtCandidate);
-            if ($dtCandidate === '') {
-                continue;
+            $ext = strtolower(pathinfo($uploadedFile['name'], PATHINFO_EXTENSION));
+            if (!in_array($ext, ['jpg', 'jpeg', 'png', 'webp'], true)) {
+                $ext = 'jpg';
             }
-            $cleanedDt = preg_replace('/(\d+)(st|nd|rd|th)\b/i', '$1', $dtCandidate);
-            $cleanedDt = preg_replace('/\s+/', ' ', str_replace(['•', '|'], ' ', (string) $cleanedDt));
-            if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $cleanedDt)) {
-                $tmpDt = DateTimeImmutable::createFromFormat('!Y-m-d', $cleanedDt, $manilaTz);
-                if ($tmpDt instanceof DateTimeImmutable) {
-                    $parsedReceiptDt = $tmpDt;
-                    $receiptHasTime = false;
-                    break;
+            $stagedFilename = 'staged_' . time() . '_' . bin2hex(random_bytes(6)) . '.' . $ext;
+            $destPath = $tmpDir . $stagedFilename;
+            if (!move_uploaded_file($uploadedFile['tmp_name'], $destPath)) {
+                return ['ok' => false, 'title' => 'Upload Error', 'message' => 'Unable to process your payment screenshot right now. Please try again.'];
+            }
+            if (!empty($stagedProofPath) && strpos($stagedProofPath, 'uploads/proofs/tmp/') === 0) {
+                $oldAbs = __DIR__ . '/../uploads/proofs/tmp/' . basename($stagedProofPath);
+                if (file_exists($oldAbs)) {
+                    @unlink($oldAbs);
                 }
             }
-            $tmpDt = date_create_immutable($cleanedDt, $manilaTz);
+            $resolvedTempProof = 'uploads/proofs/tmp/' . $stagedFilename;
+        }
+    } elseif (!empty($stagedProofPath) && strpos($stagedProofPath, 'uploads/proofs/tmp/') === 0) {
+        $stagedAbs = __DIR__ . '/../uploads/proofs/tmp/' . basename($stagedProofPath);
+        if (file_exists($stagedAbs)) {
+            $file_mime_check = mime_content_type($stagedAbs);
+            if (in_array($file_mime_check, $allowed_types, true)) {
+                $resolvedTempProof = 'uploads/proofs/tmp/' . basename($stagedProofPath);
+            }
+        }
+    }
+
+    if ($resolvedTempProof === null && $stageNewUploadToTmp) {
+        return ['ok' => false, 'title' => 'Payment Proof Required', 'message' => 'Please upload your proof of payment receipt screenshot before proceeding.'];
+    }
+    if ($resolvedTempProof === null && !$stageNewUploadToTmp) {
+        return ['ok' => false, 'title' => 'Payment Proof Required', 'message' => 'Your uploaded payment receipt could not be found. Please go back and upload your receipt again.'];
+    }
+
+    // 2. Enforce exact payment amount
+    $expected_amount = ($grand_total >= 5000 && $payment_scheme === '50_percent')
+        ? round($grand_total * 0.5, 2)
+        : round($grand_total, 2);
+    $detected_paid_amount = isset($meta['paid_amount']) ? (float)$meta['paid_amount'] : 0.0;
+
+    if ($detected_paid_amount <= 0 || abs($detected_paid_amount - $expected_amount) > 0.05) {
+        return [
+            'ok' => false,
+            'title' => 'Invalid Payment Amount',
+            'message' => 'The receipt payment amount must exactly match the required amount of ₱' . number_format($expected_amount, 2) . '. Underpayments and overpayments cannot proceed.'
+        ];
+    }
+
+    // 3. Enforce strict recipient number matching selected payment method
+    $expected_recipient = ($payment_method === 'GCash') ? '09073595023' : '09682770376';
+    $sent_digits = normalizeCheckoutPhoneDigits((string)($meta['sent_to'] ?? ''));
+    if ($sent_digits !== $expected_recipient) {
+        return [
+            'ok' => false,
+            'title' => 'Incorrect Recipient Number',
+            'message' => 'You selected ' . $payment_method . '. Payment must be sent strictly to our official ' . $payment_method . ' number (' . $expected_recipient . ').'
+        ];
+    }
+
+    // 4. Enforce receipt date/time is within today (Asia/Manila) and not future-dated
+    $manilaTz = new DateTimeZone('Asia/Manila');
+    $nowManila = new DateTimeImmutable('now', $manilaTz);
+    $parsedReceiptDt = null;
+    $receiptHasTime = false;
+    $receiptdt = !empty($meta['receiptdt']) ? trim((string)$meta['receiptdt']) : null;
+    $receipt_iso_post = !empty($meta['receipt_iso']) ? trim((string)$meta['receipt_iso']) : '';
+
+    foreach ([$receipt_iso_post, (string)($receiptdt ?? '')] as $dtCandidate) {
+        $dtCandidate = trim($dtCandidate);
+        if ($dtCandidate === '') {
+            continue;
+        }
+        $cleanedDt = preg_replace('/(\d+)(st|nd|rd|th)\b/i', '$1', $dtCandidate);
+        $cleanedDt = preg_replace('/\s+/', ' ', str_replace(['•', '|'], ' ', (string)$cleanedDt));
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $cleanedDt)) {
+            $tmpDt = DateTimeImmutable::createFromFormat('!Y-m-d', $cleanedDt, $manilaTz);
             if ($tmpDt instanceof DateTimeImmutable) {
                 $parsedReceiptDt = $tmpDt;
-                $receiptHasTime = (bool) preg_match('/\d{1,2}:\d{2}/', $cleanedDt);
+                $receiptHasTime = false;
                 break;
             }
         }
-
-        if (
-            !($parsedReceiptDt instanceof DateTimeImmutable) ||
-            $parsedReceiptDt->format('Y-m-d') !== $nowManila->format('Y-m-d') ||
-            ($receiptHasTime && $parsedReceiptDt->getTimestamp() > ($nowManila->getTimestamp() + 300))
-        ) {
-            $redirectOrderError(
-                'Invalid Receipt Date & Time',
-                'Your payment receipt must show today\'s date (' . $nowManila->format('M d, Y') . ') in Philippine time and must not be an older or future-dated transaction.'
-            );
+        $tmpDt = date_create_immutable($cleanedDt, $manilaTz);
+        if ($tmpDt instanceof DateTimeImmutable) {
+            $parsedReceiptDt = $tmpDt;
+            $receiptHasTime = (bool)preg_match('/\d{1,2}:\d{2}/', $cleanedDt);
+            break;
         }
+    }
 
-        // 5. Enforce valid & unique reference number (block duplicates across all order statuses)
-        $ref_digits_only = preg_replace('/\D+/', '', $ref_norm);
-        $is_phone_ref = ($ref_digits_only === $ref_norm) && (
-            (strlen($ref_digits_only) === 11 && strpos($ref_digits_only, '09') === 0) ||
-            (strlen($ref_digits_only) === 12 && strpos($ref_digits_only, '639') === 0)
+    if (
+        !($parsedReceiptDt instanceof DateTimeImmutable) ||
+        $parsedReceiptDt->format('Y-m-d') !== $nowManila->format('Y-m-d') ||
+        ($receiptHasTime && $parsedReceiptDt->getTimestamp() > ($nowManila->getTimestamp() + 300))
+    ) {
+        return [
+            'ok' => false,
+            'title' => 'Invalid Receipt Date & Time',
+            'message' => 'Your payment receipt must show today\'s date (' . $nowManila->format('M d, Y') . ') in Philippine time and must not be an older or future-dated transaction.'
+        ];
+    }
+
+    // 5. Enforce valid & unique reference number
+    $ref_raw = !empty($meta['ref_no']) ? trim((string)$meta['ref_no']) : '';
+    $ref_norm = strtoupper((string)preg_replace('/[^A-Za-z0-9]/', '', $ref_raw));
+    $ref_no = $ref_norm !== '' ? substr($ref_norm, 0, 50) : null;
+    $ref_digits_only = (string)preg_replace('/\D+/', '', $ref_norm);
+    $is_phone_ref = ($ref_digits_only === $ref_norm) && (
+        (strlen($ref_digits_only) === 11 && strpos($ref_digits_only, '09') === 0) ||
+        (strlen($ref_digits_only) === 12 && strpos($ref_digits_only, '639') === 0)
+    );
+    if ($ref_norm === '' || strlen($ref_norm) < 6 || ctype_alpha($ref_norm) || $is_phone_ref) {
+        return [
+            'ok' => false,
+            'title' => 'Missing Reference Number',
+            'message' => 'A valid transaction reference number could not be verified from your receipt. Please upload a clearer receipt screenshot.'
+        ];
+    }
+
+    try {
+        $dupStmt = $pdo->prepare(
+            "SELECT 1 FROM orders
+             WHERE UPPER(REGEXP_REPLACE(COALESCE(ref_no, ''), '[^A-Za-z0-9]', '', 'g')) = :ref_norm
+             LIMIT 1"
         );
-        if ($ref_norm === '' || strlen($ref_norm) < 6 || ctype_alpha($ref_norm) || $is_phone_ref) {
-            $redirectOrderError(
-                'Missing Reference Number',
-                'A valid transaction reference number could not be verified from your receipt. Please upload a clearer receipt screenshot.'
-            );
+        $dupStmt->execute([':ref_norm' => $ref_norm]);
+        if ($dupStmt->fetchColumn()) {
+            return [
+                'ok' => false,
+                'title' => 'Duplicate Reference Number',
+                'message' => 'This reference number has already been used in a previous order. Please upload a new valid payment receipt.'
+            ];
         }
+    } catch (PDOException $e) {
+        error_log("Duplicate ref check error: " . $e->getMessage());
+        return [
+            'ok' => false,
+            'title' => 'Verification Error',
+            'message' => 'Unable to verify your payment reference number right now. Please try again.'
+        ];
+    }
 
+    return [
+        'ok' => true,
+        'payment_method' => $payment_method,
+        'payment_scheme' => $payment_scheme,
+        'paid_amount' => $detected_paid_amount,
+        'ref_no' => $ref_no,
+        'receiptdt' => $receiptdt,
+        'receipt_iso' => $receipt_iso_post,
+        'sent_to' => $sent_digits,
+        'temp_proof_path' => $resolvedTempProof
+    ];
+}
+
+/**
+ * Helper to resolve effective customer email.
+ */
+function resolveCheckoutCustomerEmail(PDO $pdo, int $loggedInUserId, string $customerEmail, string $postedEmail = ''): string {
+    $email = $customerEmail !== '' ? $customerEmail : trim($postedEmail);
+    if ($email === '' && $loggedInUserId > 0) {
         try {
-            $dupStmt = $pdo->prepare(
-                "SELECT 1 FROM orders
-                 WHERE UPPER(REGEXP_REPLACE(COALESCE(ref_no, ''), '[^A-Za-z0-9]', '', 'g')) = :ref_norm
-                 LIMIT 1"
-            );
-            $dupStmt->execute([':ref_norm' => $ref_norm]);
-            if ($dupStmt->fetchColumn()) {
-                $redirectOrderError(
-                    'Duplicate Reference Number',
-                    'This reference number has already been used in a previous order. Please upload a new valid payment receipt.'
-                );
-            }
-        } catch (PDOException $e) {
-            error_log("Duplicate ref check error: " . $e->getMessage());
-            $redirectOrderError('Verification Error', 'Unable to verify your payment reference number right now. Please try again.');
-        }
+            $stmt_u = $pdo->prepare("SELECT email FROM users WHERE id = ? LIMIT 1");
+            $stmt_u->execute([$loggedInUserId]);
+            $email = trim((string)$stmt_u->fetchColumn());
+        } catch (Throwable $e) {}
+    }
+    if ($email === '' && !empty($_SESSION['email'])) {
+        $email = trim((string)$_SESSION['email']);
+    }
+    return $email;
+}
 
-        $paid_amount = $detected_paid_amount;
-    } else {
-        $paid_amount = 0;
-        $ref_no = null;
-        $receiptdt = null;
-        $sent_to = null;
+// -------------------------------------------------------------------------
+// STEP 1 HANDLER: PLACE ORDER -> VALIDATE & STAGE FOR REVIEW PAGE (NO DB WRITE)
+// -------------------------------------------------------------------------
+if (isset($_POST['review_order'])) {
+    $existingDraft = $_SESSION['checkout_draft'][$draft_scope] ?? [];
+
+    $fullname = trim((string)($_POST['fullname'] ?? ''));
+    $surname = trim((string)($_POST['surname'] ?? ''));
+    $contact_number = trim((string)($_POST['contact_number'] ?? ''));
+    $tel_no = !empty($_POST['tel_no']) ? trim((string)$_POST['tel_no']) : null;
+    $email = resolveCheckoutCustomerEmail($pdo, $loggedInUserId, $customerEmail, (string)($_POST['email'] ?? ''));
+    $full_address = trim((string)($_POST['full_address'] ?? ''));
+    $landmark = trim((string)($_POST['landmark'] ?? ''));
+    $saved_address_id = !empty($_POST['saved_address_id']) ? (int)$_POST['saved_address_id'] : null;
+    $payment_method = trim((string)($_POST['payment_method'] ?? ''));
+    $payment_scheme = trim((string)($_POST['payment_scheme'] ?? 'full_payment'));
+
+    $paymentMeta = [
+        'ref_no' => $_POST['ref_no'] ?? ($existingDraft['ref_no'] ?? ''),
+        'paid_amount' => $_POST['paid_amount'] ?? ($existingDraft['paid_amount'] ?? ''),
+        'receiptdt' => $_POST['receiptdt'] ?? ($existingDraft['receiptdt'] ?? ''),
+        'receipt_iso' => $_POST['receipt_iso'] ?? ($existingDraft['receipt_iso'] ?? ''),
+        'sent_to' => $_POST['sent_to'] ?? ($existingDraft['sent_to'] ?? ''),
+    ];
+
+    // Save entered form fields immediately so any validation error preserves customer edits
+    $_SESSION['checkout_draft'][$draft_scope] = [
+        'ready_for_review' => false,
+        'saved_address_id' => $saved_address_id,
+        'fullname' => $fullname,
+        'surname' => $surname,
+        'contact_number' => $contact_number,
+        'tel_no' => $tel_no,
+        'email' => $email,
+        'full_address' => $full_address,
+        'landmark' => $landmark,
+        'payment_method' => $payment_method,
+        'payment_scheme' => $payment_scheme,
+        'ref_no' => trim((string)$paymentMeta['ref_no']),
+        'paid_amount' => trim((string)$paymentMeta['paid_amount']),
+        'receiptdt' => trim((string)$paymentMeta['receiptdt']),
+        'receipt_iso' => trim((string)$paymentMeta['receipt_iso']),
+        'sent_to' => trim((string)$paymentMeta['sent_to']),
+        'temp_proof_path' => $existingDraft['temp_proof_path'] ?? null,
+        'terms_accepted' => true,
+        'confirm_token' => $existingDraft['confirm_token'] ?? bin2hex(random_bytes(32)),
+    ];
+
+    $redirectCheckoutError = function (string $title, string $message, string $type = 'danger') use ($checkout_qs): void {
+        $_SESSION['app_modal'] = [
+            'title' => $title,
+            'message' => $message,
+            'type' => $type,
+        ];
+        header("Location: placeorder.php" . $checkout_qs);
+        exit();
+    };
+
+    if ($checkout_source !== 'buynow' && $grand_total < 3000) {
+        $redirectCheckoutError('Minimum Order Not Met', 'Minimum order requirement of ₱3,000.00 is required for delivery checkout. Please add more items in your cart.', 'warning');
     }
 
-    // UPLOAD CUSTOMER PROOF OF PAYMENT DIRECTLY TO GOOGLE DRIVE / LOCAL FOLDER
-    if (in_array($payment_method, ['GCash', 'Maya'])) {
-        if (isset($_FILES['proof_of_payment']) && $_FILES['proof_of_payment']['error'] === UPLOAD_ERR_OK) {
-            $tmp = $_FILES['proof_of_payment']['tmp_name'];
-            $file_name = $_FILES['proof_of_payment']['name'];
-            
-            if (!empty($tmp) && file_exists($tmp)) {
-                $allowed_types = ['image/jpeg', 'image/png', 'image/jpg', 'image/webp'];
-                $file_mime_check = mime_content_type($tmp);
-
-                if (in_array($file_mime_check, $allowed_types)) {
-                    $ext = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
-                    $new_filename = "proof_" . time() . "_" . rand(1000, 9999) . "." . $ext;
-
-                    // Dedicated Folder ID para sa Customer Receipt
-                    $customerFolderId = "1K63T1f7Z2JucT5lgyBuNobLIRJZFYNno";
-
-                    try {
-                        if (function_exists('uploadProductImageToDrive')) {
-                            $file_id = uploadProductImageToDrive($tmp, $new_filename, $customerFolderId);
-                            if (!empty($file_id)) {
-                                $proof_of_payment = "https://drive.google.com/uc?export=view&id=" . $file_id;
-                            }
-                        }
-                    } catch (Throwable $e) {
-                        error_log("CUSTOMER PROOF GOOGLE DRIVE UPLOAD ERROR: " . $e->getMessage());
-                    }
-
-                    // Fallback to local uploads kung sakaling mag-fail ang Drive API
-                    if (empty($proof_of_payment)) {
-                        $target_dir = "../uploads/proofs/";
-                        if (!is_dir($target_dir)) mkdir($target_dir, 0777, true);
-                        
-                        if (move_uploaded_file($tmp, $target_dir . $new_filename)) {
-                            $proof_of_payment = "uploads/proofs/" . $new_filename;
-                        }
-                    }
-                }
-            }
-        }
+    if (!$liveHydration['can_checkout']) {
+        $redirectCheckoutError('Stock or Item Unavailable', $checkout_issues[0] ?? 'Some items in your cart are unavailable or exceed available stock. Please update your cart.');
     }
+
+    if ($fullname === '' || $surname === '' || $full_address === '' || $landmark === '') {
+        $redirectCheckoutError('Incomplete Information', 'Please complete all required customer and delivery address fields.', 'warning');
+    }
+
+    if (!preg_match('/^09\d{9}$/', $contact_number)) {
+        $redirectCheckoutError('Invalid Contact Number', "Contact number must start with '09' and contain 11 digits total.", 'warning');
+    }
+
+    $payCheck = validateCheckoutPaymentDetails(
+        $pdo,
+        $payment_method,
+        $payment_scheme,
+        $grand_total,
+        $paymentMeta,
+        $existingDraft['temp_proof_path'] ?? null,
+        $_FILES['proof_of_payment'] ?? null,
+        true
+    );
+
+    if (!$payCheck['ok']) {
+        $redirectCheckoutError($payCheck['title'], $payCheck['message'], $payCheck['modal_type'] ?? 'danger');
+    }
+
+    // Store fully validated draft and transition to Review Order page
+    $_SESSION['checkout_draft'][$draft_scope] = [
+        'ready_for_review' => true,
+        'saved_address_id' => $saved_address_id,
+        'fullname' => $fullname,
+        'surname' => $surname,
+        'contact_number' => $contact_number,
+        'tel_no' => $tel_no,
+        'email' => $email,
+        'full_address' => $full_address,
+        'landmark' => $landmark,
+        'payment_method' => $payCheck['payment_method'],
+        'payment_scheme' => $payCheck['payment_scheme'],
+        'paid_amount' => $payCheck['paid_amount'],
+        'ref_no' => $payCheck['ref_no'],
+        'receiptdt' => $payCheck['receiptdt'],
+        'receipt_iso' => $payCheck['receipt_iso'],
+        'sent_to' => $payCheck['sent_to'],
+        'temp_proof_path' => $payCheck['temp_proof_path'],
+        'terms_accepted' => true,
+        'confirm_token' => bin2hex(random_bytes(32)),
+        'staged_at' => time(),
+    ];
+
+    header("Location: placeorder.php" . $checkout_review_qs);
+    exit();
+}
+
+// -------------------------------------------------------------------------
+// STEP 2 HANDLER: FINAL CONFIRM & PLACE ORDER (ATOMIC DB VALIDATION + INSERT)
+// -------------------------------------------------------------------------
+if (isset($_POST['confirm_place_order'])) {
+    $postedToken = trim((string)($_POST['confirm_token'] ?? ''));
+
+    // Duplicate / double-click / refresh submission guard
+    if ($postedToken !== '' && isset($_SESSION['checkout_consumed_tokens'][$postedToken])) {
+        $alreadyOrderId = (int)$_SESSION['checkout_consumed_tokens'][$postedToken];
+        $_SESSION['message'] = "<b>Order Placed Successfully! </b><br>Your Order Number is: <span class='text-primary fw-bold'>#$alreadyOrderId</span>";
+        header("Location: dashboard.php");
+        exit();
+    }
+
+    $draft = $_SESSION['checkout_draft'][$draft_scope] ?? null;
+    if (
+        !is_array($draft)
+        || empty($draft['ready_for_review'])
+        || empty($draft['confirm_token'])
+        || !hash_equals((string)$draft['confirm_token'], $postedToken)
+    ) {
+        $_SESSION['app_modal'] = [
+            'title' => 'Session Expired or Duplicate Submission',
+            'message' => 'Please review your order details again before placing your order.',
+            'type' => 'warning',
+        ];
+        header("Location: placeorder.php" . $checkout_qs);
+        exit();
+    }
+
+    $redirectReviewError = function (string $title, string $message, string $type = 'danger') use ($checkout_review_qs): void {
+        $_SESSION['app_modal'] = [
+            'title' => $title,
+            'message' => $message,
+            'type' => $type,
+        ];
+        header("Location: placeorder.php" . $checkout_review_qs);
+        exit();
+    };
+
+    if (empty($_POST['confirm_order_checkbox'])) {
+        $redirectReviewError('Confirmation Required', 'Please check the confirmation box verifying that all items, quantities, and order details are correct.', 'warning');
+    }
+
+    $fullname = trim((string)($draft['fullname'] ?? ''));
+    $surname = trim((string)($draft['surname'] ?? ''));
+    $contact_number = trim((string)($draft['contact_number'] ?? ''));
+    $tel_no = !empty($draft['tel_no']) ? trim((string)$draft['tel_no']) : null;
+    $email = resolveCheckoutCustomerEmail($pdo, $loggedInUserId, $customerEmail, (string)($draft['email'] ?? ''));
+    $full_address = trim((string)($draft['full_address'] ?? ''));
+    $landmark = trim((string)($draft['landmark'] ?? ''));
+    $payment_method = trim((string)($draft['payment_method'] ?? ''));
+    $payment_scheme = trim((string)($draft['payment_scheme'] ?? 'full_payment'));
+
+    if ($fullname === '' || $surname === '' || !preg_match('/^09\d{9}$/', $contact_number) || $full_address === '' || $landmark === '') {
+        $redirectReviewError('Invalid Checkout Details', 'Customer or delivery details are incomplete. Please edit your checkout information.');
+    }
+
+    $proof_of_payment = null;
+    $stagedTempRelPath = !empty($draft['temp_proof_path']) ? (string)$draft['temp_proof_path'] : null;
 
     try {
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $pdo->beginTransaction();
 
-        if (in_array($payment_method, ['GCash', 'Maya'], true) && $ref_no !== null) {
-            $dupTxStmt = $pdo->prepare(
-                "SELECT 1 FROM orders
-                 WHERE UPPER(REGEXP_REPLACE(COALESCE(ref_no, ''), '[^A-Za-z0-9]', '', 'g')) = :ref_norm
-                 LIMIT 1"
-            );
-            $dupTxStmt->execute([':ref_norm' => $ref_no]);
-            if ($dupTxStmt->fetchColumn()) {
-                $pdo->rollBack();
-                $redirectOrderError(
-                    'Duplicate Reference Number',
-                    'This reference number has already been used in a previous order. Please upload a new valid payment receipt.'
-                );
+        // Re-validate ALL items, prices, active flags, stock, and shared conversion rules with DB row locks
+        $lockedHydration = hydrateCheckoutItemsWithLiveDb($pdo, $raw_items_to_process, true);
+        $lockedItems = $lockedHydration['items'];
+        $lockedGrandTotal = (float)$lockedHydration['grand_total'];
+
+        if ($checkout_source !== 'buynow' && $lockedGrandTotal < 3000) {
+            $pdo->rollBack();
+            $redirectReviewError('Minimum Order Not Met', 'Updated order total (₱' . number_format($lockedGrandTotal, 2) . ') is below the ₱3,000.00 minimum requirement. Please return to your cart.', 'warning');
+        }
+
+        if (!$lockedHydration['can_checkout']) {
+            $pdo->rollBack();
+            $redirectReviewError('Stock Changed During Review', $lockedHydration['issues'][0] ?? 'Stock availability or item status changed. Please return to your cart.');
+        }
+
+        // Re-validate payment against latest locked grand total & duplicate reference number inside transaction
+        $payCheck = validateCheckoutPaymentDetails(
+            $pdo,
+            $payment_method,
+            $payment_scheme,
+            $lockedGrandTotal,
+            [
+                'ref_no' => $draft['ref_no'] ?? '',
+                'paid_amount' => $draft['paid_amount'] ?? 0,
+                'receiptdt' => $draft['receiptdt'] ?? '',
+                'receipt_iso' => $draft['receipt_iso'] ?? '',
+                'sent_to' => $draft['sent_to'] ?? '',
+            ],
+            $stagedTempRelPath,
+            null,
+            false
+        );
+
+        if (!$payCheck['ok']) {
+            $pdo->rollBack();
+            $redirectReviewError($payCheck['title'], $payCheck['message'], $payCheck['modal_type'] ?? 'danger');
+        }
+
+        // Persist receipt proof to Google Drive / permanent local uploads folder ONLY upon final confirmation
+        if (in_array($payCheck['payment_method'], ['GCash', 'Maya'], true) && !empty($payCheck['temp_proof_path'])) {
+            $stagedFilenameSafe = basename($payCheck['temp_proof_path']);
+            $stagedAbsPath = __DIR__ . '/../uploads/proofs/tmp/' . $stagedFilenameSafe;
+            if (file_exists($stagedAbsPath)) {
+                $ext = strtolower(pathinfo($stagedFilenameSafe, PATHINFO_EXTENSION)) ?: 'jpg';
+                $new_filename = "proof_" . time() . "_" . rand(1000, 9999) . "." . $ext;
+                $customerFolderId = "1K63T1f7Z2JucT5lgyBuNobLIRJZFYNno";
+
+                try {
+                    if (function_exists('uploadProductImageToDrive')) {
+                        $file_id = uploadProductImageToDrive($stagedAbsPath, $new_filename, $customerFolderId);
+                        if (!empty($file_id)) {
+                            $proof_of_payment = "https://drive.google.com/uc?export=view&id=" . $file_id;
+                        }
+                    }
+                } catch (Throwable $e) {
+                    error_log("CUSTOMER PROOF GOOGLE DRIVE UPLOAD ERROR: " . $e->getMessage());
+                }
+
+                if (empty($proof_of_payment)) {
+                    $target_dir = __DIR__ . "/../uploads/proofs/";
+                    if (!is_dir($target_dir)) {
+                        mkdir($target_dir, 0775, true);
+                    }
+                    $permDest = $target_dir . $new_filename;
+                    if (@rename($stagedAbsPath, $permDest) || (@copy($stagedAbsPath, $permDest) && @unlink($stagedAbsPath))) {
+                        $proof_of_payment = "uploads/proofs/" . $new_filename;
+                    }
+                } elseif (file_exists($stagedAbsPath)) {
+                    @unlink($stagedAbsPath);
+                }
             }
         }
+
+        $cart_json = json_encode(array_values($lockedItems));
 
         // Insert order into database
         $order_query = "INSERT INTO orders 
             (fullname, surname, contact_number, tel_no, email, full_address, landmark, total_amount, paid_amount, cart, payment_method, payment_scheme, ref_no, proof_of_payment, receiptdt, sent_to, order_date, status) 
             VALUES 
             (:fullname, :surname, :contact_number, :tel_no, :email, :full_address, :landmark, :total_amount, :paid_amount, :cart, :payment_method, :payment_scheme, :ref_no, :proof_of_payment, :receiptdt, :sent_to, CURRENT_TIMESTAMP, 'pending')";
-        
+
         $stmt = $pdo->prepare($order_query);
         $stmt->execute([
             ':fullname' => $fullname,
@@ -348,28 +622,28 @@ if (isset($_POST['place_order'])) {
             ':email' => $email,
             ':full_address' => $full_address,
             ':landmark' => $landmark,
-            ':total_amount' => $grand_total,
-            ':paid_amount' => $paid_amount,
+            ':total_amount' => $lockedGrandTotal,
+            ':paid_amount' => $payCheck['paid_amount'],
             ':cart' => $cart_json,
-            ':payment_method' => $payment_method,
-            ':payment_scheme' => $payment_scheme,
-            ':ref_no' => $ref_no,
+            ':payment_method' => $payCheck['payment_method'],
+            ':payment_scheme' => $payCheck['payment_scheme'],
+            ':ref_no' => $payCheck['ref_no'],
             ':proof_of_payment' => $proof_of_payment,
-            ':receiptdt' => $receiptdt,
-            ':sent_to' => $sent_to
+            ':receiptdt' => $payCheck['receiptdt'],
+            ':sent_to' => $payCheck['sent_to']
         ]);
 
         $order_id = $pdo->lastInsertId();
 
-        // Insert order items & update stock
-        foreach ($items_to_process as $item) {
+        // Insert order items & atomically deduct stock
+        foreach ($lockedItems as $item) {
             $qty = (int)$item['qty'];
             $price = (float)$item['price'];
             $product_id = (int)$item['id'];
-            $name = $item['name'];
+            $name = (string)$item['name'];
             $v_id = !empty($item['variant_id']) ? (int)$item['variant_id'] : null;
-            $v_name = !empty($item['variant_name']) ? $item['variant_name'] : null;
-            $subtotal = $price * $qty;
+            $v_name = !empty($item['variant_name']) ? (string)$item['variant_name'] : null;
+            $subtotal = round($price * $qty, 2);
 
             $item_stmt = $pdo->prepare("INSERT INTO order_items (order_id, product_id, product_name, variant_id, variant_name, price, qty, subtotal) 
                                         VALUES (:order_id, :product_id, :product_name, :variant_id, :variant_name, :price, :qty, :subtotal)");
@@ -404,22 +678,32 @@ if (isset($_POST['place_order'])) {
                 }
             } else {
                 if ($v_id !== null) {
-                    $stock_stmt = $pdo->prepare("UPDATE product_variants SET stock = GREATEST(stock - :qty, 0) WHERE id = :v_id");
-                    $stock_stmt->execute([':qty' => $qty, ':v_id' => $v_id]);
+                    $stock_stmt = $pdo->prepare("UPDATE product_variants SET stock = stock - :qty WHERE id = :v_id AND stock >= :qty_chk");
+                    $stock_stmt->execute([':qty' => $qty, ':v_id' => $v_id, ':qty_chk' => $qty]);
                 } else {
-                    $stock_stmt = $pdo->prepare("UPDATE products SET stock = GREATEST(stock - :qty, 0) WHERE id = :product_id");
-                    $stock_stmt->execute([':qty' => $qty, ':product_id' => $product_id]);
+                    $stock_stmt = $pdo->prepare("UPDATE products SET stock = stock - :qty WHERE id = :product_id AND stock >= :qty_chk");
+                    $stock_stmt->execute([':qty' => $qty, ':product_id' => $product_id, ':qty_chk' => $qty]);
+                }
+                if ($stock_stmt->rowCount() !== 1) {
+                    throw new Exception("Insufficient stock for '{$item['display_name']}'. Please return to your cart and adjust quantities.");
                 }
             }
         }
 
         $pdo->commit();
 
-        if ($checkout_source == 'buynow') { 
-            unset($_SESSION['buy_now']); 
-        } else { 
-            unset($_SESSION['cart']); 
+        // Mark token as consumed so double-click/refresh never creates duplicate orders
+        $_SESSION['checkout_consumed_tokens'][(string)$draft['confirm_token']] = (int)$order_id;
+        if (count($_SESSION['checkout_consumed_tokens']) > 20) {
+            $_SESSION['checkout_consumed_tokens'] = array_slice($_SESSION['checkout_consumed_tokens'], -20, null, true);
         }
+
+        if ($checkout_source == 'buynow') {
+            unset($_SESSION['buy_now']);
+        } else {
+            unset($_SESSION['cart']);
+        }
+        unset($_SESSION['checkout_draft'][$draft_scope]);
 
         $_SESSION['message'] = "<b>Order Placed Successfully! </b><br>Your Order Number is: <span class='text-primary fw-bold'>#$order_id</span>";
         header("Location: dashboard.php");
@@ -430,22 +714,66 @@ if (isset($_POST['place_order'])) {
             $pdo->rollBack();
         }
         error_log("Checkout error: " . $e->getMessage());
-        
-        echo "<div style='color:red; padding:20px; font-family:sans-serif;'>";
-        echo "<h3>Checkout Processing Failed</h3>";
-        echo "<p><b>Error Details:</b> " . htmlspecialchars($e->getMessage()) . "</p>";
-        echo "<p><a href='javascript:history.back()'>Go back and try again</a></p>";
-        echo "</div>";
-        exit();
+        $redirectReviewError('Order Confirmation Failed', $e->getMessage(), 'danger');
     }
 }
+
+// -------------------------------------------------------------------------
+// DETERMINE CURRENT VIEW STEP (Checkout Form vs Review Order)
+// -------------------------------------------------------------------------
+$checkout_draft = $_SESSION['checkout_draft'][$draft_scope] ?? [];
+$is_review_step = (isset($_GET['step']) && $_GET['step'] === 'review');
+
+if ($is_review_step && (empty($checkout_draft) || empty($checkout_draft['ready_for_review']))) {
+    $_SESSION['app_modal'] = [
+        'title' => 'Review Session Unavailable',
+        'message' => 'Please complete your delivery and payment details first before reviewing your order.',
+        'type' => 'info',
+    ];
+    header("Location: placeorder.php" . $checkout_qs);
+    exit();
+}
+
+// Check if draft is present for pre-filling Checkout form
+$has_saved_draft = !empty($checkout_draft);
+$staged_proof_rel = (!empty($checkout_draft['temp_proof_path']) && file_exists(__DIR__ . '/../uploads/proofs/tmp/' . basename((string)$checkout_draft['temp_proof_path'])))
+    ? ('uploads/proofs/tmp/' . basename((string)$checkout_draft['temp_proof_path']))
+    : '';
+
+// On Review step, also verify live payment validity against latest DB prices
+$review_payment_error = '';
+if ($is_review_step) {
+    $livePayVerify = validateCheckoutPaymentDetails(
+        $pdo,
+        (string)($checkout_draft['payment_method'] ?? ''),
+        (string)($checkout_draft['payment_scheme'] ?? 'full_payment'),
+        $grand_total,
+        [
+            'ref_no' => $checkout_draft['ref_no'] ?? '',
+            'paid_amount' => $checkout_draft['paid_amount'] ?? 0,
+            'receiptdt' => $checkout_draft['receiptdt'] ?? '',
+            'receipt_iso' => $checkout_draft['receipt_iso'] ?? '',
+            'sent_to' => $checkout_draft['sent_to'] ?? '',
+        ],
+        $staged_proof_rel ?: null,
+        null,
+        false
+    );
+    if (!$livePayVerify['ok']) {
+        $review_payment_error = $livePayVerify['message'];
+    }
+}
+
+$min_order_unmet = ($checkout_source !== 'buynow' && $grand_total < 3000);
+$can_finalize_review = $is_review_step && $liveHydration['can_checkout'] && !$min_order_unmet && $review_payment_error === '';
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Checkout | Hardware System</title>
+    <title><?= $is_review_step ? 'Review & Confirm Order' : 'Checkout'; ?> | Hardware System</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
     
@@ -661,9 +989,318 @@ if (isset($_POST['place_order'])) {
             color: #0f172a;
             transform: scale(1.1);
         }
+
+        /* Step Progress & Review Order Page */
+        .checkout-stepper {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .step-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 14px;
+            border-radius: 50rem;
+            font-size: 0.82rem;
+            font-weight: 600;
+            border: 1px solid #cbd5e1;
+            background: #ffffff;
+            color: #64748b;
+        }
+        .step-pill.done {
+            background: #ecfdf5;
+            border-color: #a7f3d0;
+            color: #047857;
+        }
+        .step-pill.active {
+            background: #051c3c;
+            border-color: #051c3c;
+            color: #ffffff;
+        }
+        .review-receipt-thumb {
+            max-width: 110px;
+            max-height: 110px;
+            object-fit: cover;
+            border-radius: 8px;
+            border: 1px solid #cbd5e1;
+            cursor: zoom-in;
+        }
     </style>
 </head>
 <body>
+
+<?php if ($is_review_step): ?>
+    <?php
+        $revMethod = (string)($checkout_draft['payment_method'] ?? '');
+        $revScheme = (string)($checkout_draft['payment_scheme'] ?? 'full_payment');
+        $revSchemeLabel = ($grand_total >= 5000 && $revScheme === '50_percent') ? '50% Downpayment' : 'Full Payment';
+        $revAmountDue = ($grand_total >= 5000 && $revScheme === '50_percent') ? round($grand_total * 0.5, 2) : round($grand_total, 2);
+        $buyNowFirstItem = !empty($items_to_process) ? reset($items_to_process) : null;
+        $buyNowEditUrl = ($buyNowFirstItem && !empty($buyNowFirstItem['id'])) ? ('productDescription.php?id=' . (int)$buyNowFirstItem['id']) : 'dashboard.php';
+    ?>
+    <div class="container py-4 py-md-5" style="max-width: 1080px;">
+        <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
+            <div>
+                <h3 class="fw-bold text-dark mb-1"><i class="bi bi-clipboard2-check text-primary me-2"></i>Review &amp; Confirm Your Order</h3>
+                <p class="text-muted small mb-0">Please double-check every item, unit, quantity, delivery address, and payment detail before placing your order.</p>
+            </div>
+            <div class="checkout-stepper">
+                <span class="step-pill done"><i class="bi bi-check-circle-fill"></i> <?= $checkout_source === 'buynow' ? 'Item Selected' : 'Cart'; ?></span>
+                <span class="text-muted"><i class="bi bi-chevron-right"></i></span>
+                <span class="step-pill done"><i class="bi bi-check-circle-fill"></i> Checkout Details</span>
+                <span class="text-muted"><i class="bi bi-chevron-right"></i></span>
+                <span class="step-pill active"><i class="bi bi-3-circle-fill"></i> Review Order</span>
+            </div>
+        </div>
+
+        <?php if (!empty($price_changes)): ?>
+            <div class="alert alert-info border-info shadow-sm mb-3">
+                <div class="fw-bold mb-1"><i class="bi bi-info-circle-fill me-1"></i> Latest Catalog Prices Applied</div>
+                <ul class="mb-0 small ps-3">
+                    <?php foreach ($price_changes as $pc): ?>
+                        <li><?= htmlspecialchars($pc, ENT_QUOTES, 'UTF-8'); ?></li>
+                    <?php endforeach; ?>
+                </ul>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($min_order_unmet || !empty($checkout_issues) || $review_payment_error !== ''): ?>
+            <div class="alert alert-danger border-danger shadow-sm mb-4">
+                <div class="fw-bold mb-1"><i class="bi bi-exclamation-octagon-fill me-1"></i> Cannot Finalize Order Yet</div>
+                <ul class="mb-2 small ps-3">
+                    <?php if ($min_order_unmet): ?>
+                        <li>Order total (₱<?= number_format($grand_total, 2); ?>) is below the ₱3,000.00 minimum requirement for delivery checkout.</li>
+                    <?php endif; ?>
+                    <?php foreach ($checkout_issues as $iss): ?>
+                        <li><?= htmlspecialchars($iss, ENT_QUOTES, 'UTF-8'); ?></li>
+                    <?php endforeach; ?>
+                    <?php if ($review_payment_error !== ''): ?>
+                        <li><?= htmlspecialchars($review_payment_error, ENT_QUOTES, 'UTF-8'); ?></li>
+                    <?php endif; ?>
+                </ul>
+                <div class="d-flex flex-wrap gap-2">
+                    <?php if ($checkout_source !== 'buynow'): ?>
+                        <a href="cart.php" class="btn btn-sm btn-danger"><i class="bi bi-cart me-1"></i> Back to Edit Cart</a>
+                    <?php else: ?>
+                        <a href="<?= htmlspecialchars($buyNowEditUrl, ENT_QUOTES, 'UTF-8'); ?>" class="btn btn-sm btn-danger"><i class="bi bi-arrow-left me-1"></i> Change Item / Quantity</a>
+                    <?php endif; ?>
+                    <a href="placeorder.php<?= htmlspecialchars($checkout_qs, ENT_QUOTES, 'UTF-8'); ?>" class="btn btn-sm btn-outline-danger"><i class="bi bi-pencil-square me-1"></i> Edit Checkout Details</a>
+                </div>
+            </div>
+        <?php endif; ?>
+
+        <div class="row g-4">
+            <!-- LEFT: ITEMS SUMMARY -->
+            <div class="col-12 col-lg-7">
+                <div class="card border-0 shadow-sm h-100">
+                    <div class="card-header bg-white border-bottom py-3 d-flex justify-content-between align-items-center">
+                        <h5 class="fw-bold mb-0 text-dark"><i class="bi bi-box-seam text-primary me-2"></i>Order Items Summary</h5>
+                        <span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill px-3 py-1">
+                            Total Qty: <?= $total_qty; ?> item<?= $total_qty === 1 ? '' : 's'; ?>
+                        </span>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table align-middle mb-0">
+                                <thead class="table-light small text-uppercase text-muted">
+                                    <tr>
+                                        <th class="ps-3">Product &amp; Variant</th>
+                                        <th>Unit</th>
+                                        <th class="text-center">Qty</th>
+                                        <th class="text-end">Unit Price</th>
+                                        <th class="text-end pe-3">Subtotal</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($items_to_process as $item):
+                                        $revImg = getCheckoutItemImageSrc($item['image'] ?? '');
+                                    ?>
+                                        <tr>
+                                            <td class="ps-3">
+                                                <div class="d-flex align-items-center gap-2">
+                                                    <img src="<?= htmlspecialchars($revImg, ENT_QUOTES, 'UTF-8'); ?>"
+                                                         alt="<?= htmlspecialchars($item['display_name'], ENT_QUOTES, 'UTF-8'); ?>"
+                                                         class="rounded border flex-shrink-0"
+                                                         style="width: 48px; height: 48px; object-fit: cover;"
+                                                         onerror="this.onerror=null; this.src='../assets/images/no-image.png';">
+                                                    <div>
+                                                        <div class="fw-bold text-dark small"><?= htmlspecialchars($item['product_title'], ENT_QUOTES, 'UTF-8'); ?></div>
+                                                        <?php if (!empty($item['variant_name'])): ?>
+                                                            <span class="badge bg-light text-dark border mt-1" style="font-size: 0.72rem;">
+                                                                Variant: <?= htmlspecialchars($item['variant_name'], ENT_QUOTES, 'UTF-8'); ?>
+                                                            </span>
+                                                        <?php endif; ?>
+                                                        <?php if ($item['qty'] > $item['available_stock'] || !$item['is_active']): ?>
+                                                            <div class="text-danger fw-semibold mt-1" style="font-size: 0.75rem;">
+                                                                <i class="bi bi-exclamation-circle"></i> Available: <?= (int)$item['available_stock']; ?>
+                                                            </div>
+                                                        <?php endif; ?>
+                                                    </div>
+                                                </div>
+                                            </td>
+                                            <td><span class="badge bg-secondary-subtle text-dark border" style="font-size: 0.75rem;"><?= htmlspecialchars($item['unit'], ENT_QUOTES, 'UTF-8'); ?></span></td>
+                                            <td class="text-center fw-bold"><?= (int)$item['qty']; ?></td>
+                                            <td class="text-end small">₱<?= number_format((float)$item['price'], 2); ?></td>
+                                            <td class="text-end fw-bold text-primary pe-3">₱<?= number_format((float)$item['subtotal'], 2); ?></td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="card-footer bg-light border-top p-3">
+                        <div class="d-flex justify-content-between align-items-center small text-muted mb-1">
+                            <span>Total Quantity of Items</span>
+                            <span class="fw-bold text-dark"><?= $total_qty; ?></span>
+                        </div>
+                        <div class="d-flex justify-content-between align-items-center small text-muted mb-1">
+                            <span>Payment Scheme</span>
+                            <span class="fw-bold text-dark"><?= htmlspecialchars($revSchemeLabel, ENT_QUOTES, 'UTF-8'); ?></span>
+                        </div>
+                        <div class="d-flex justify-content-between align-items-center fs-5 fw-bold text-dark pt-2 border-top mt-2">
+                            <span>Final Order Total</span>
+                            <span class="text-primary">₱<?= number_format($grand_total, 2); ?></span>
+                        </div>
+                        <?php if ($grand_total >= 5000 && $revScheme === '50_percent'): ?>
+                            <div class="d-flex justify-content-between align-items-center small fw-bold text-success mt-1">
+                                <span>Amount Paid / Due Now (50% Downpayment)</span>
+                                <span>₱<?= number_format($revAmountDue, 2); ?></span>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </div>
+
+            <!-- RIGHT: CUSTOMER, DELIVERY, PAYMENT + CONFIRMATION -->
+            <div class="col-12 col-lg-5">
+                <div class="card border-0 shadow-sm mb-3">
+                    <div class="card-header bg-white border-bottom py-3">
+                        <h5 class="fw-bold mb-0 text-dark"><i class="bi bi-person-lines-fill text-primary me-2"></i>Customer, Delivery &amp; Payment</h5>
+                    </div>
+                    <div class="card-body small">
+                        <div class="mb-3 pb-3 border-bottom">
+                            <div class="text-uppercase text-muted fw-bold mb-1" style="font-size: 0.72rem;">Customer Information</div>
+                            <div class="fw-bold text-dark fs-6"><?= htmlspecialchars(($checkout_draft['fullname'] ?? '') . ' ' . ($checkout_draft['surname'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></div>
+                            <div class="text-secondary">Mobile: <strong><?= htmlspecialchars((string)($checkout_draft['contact_number'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></strong></div>
+                            <?php if (!empty($checkout_draft['tel_no'])): ?>
+                                <div class="text-secondary">Telephone: <?= htmlspecialchars((string)$checkout_draft['tel_no'], ENT_QUOTES, 'UTF-8'); ?></div>
+                            <?php endif; ?>
+                            <?php if (!empty($checkout_draft['email'])): ?>
+                                <div class="text-secondary">Email: <?= htmlspecialchars((string)$checkout_draft['email'], ENT_QUOTES, 'UTF-8'); ?></div>
+                            <?php endif; ?>
+                        </div>
+
+                        <div class="mb-3 pb-3 border-bottom">
+                            <div class="text-uppercase text-muted fw-bold mb-1" style="font-size: 0.72rem;">Delivery Information</div>
+                            <div><span class="badge bg-info-subtle text-info border border-info-subtle mb-1">Standard Delivery</span></div>
+                            <div class="text-dark fw-medium"><?= htmlspecialchars((string)($checkout_draft['full_address'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></div>
+                            <div class="text-muted mt-1">Landmark: <strong><?= htmlspecialchars((string)($checkout_draft['landmark'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></strong></div>
+                        </div>
+
+                        <div>
+                            <div class="text-uppercase text-muted fw-bold mb-1" style="font-size: 0.72rem;">Payment Details</div>
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <span class="text-secondary">Method:</span>
+                                <span class="fw-bold text-dark"><?= htmlspecialchars($revMethod, ENT_QUOTES, 'UTF-8'); ?></span>
+                            </div>
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <span class="text-secondary">Payment Scheme:</span>
+                                <span class="fw-semibold text-dark"><?= htmlspecialchars($revSchemeLabel, ENT_QUOTES, 'UTF-8'); ?></span>
+                            </div>
+                            <?php if (in_array($revMethod, ['GCash', 'Maya'], true)): ?>
+                                <div class="d-flex justify-content-between align-items-center mb-1">
+                                    <span class="text-secondary">Paid Amount:</span>
+                                    <span class="fw-bold text-success">₱<?= number_format((float)($checkout_draft['paid_amount'] ?? 0), 2); ?></span>
+                                </div>
+                                <div class="d-flex justify-content-between align-items-center mb-1">
+                                    <span class="text-secondary">Reference No.:</span>
+                                    <span class="fw-bold font-monospace"><?= htmlspecialchars((string)($checkout_draft['ref_no'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></span>
+                                </div>
+                                <?php if (!empty($checkout_draft['receiptdt'])): ?>
+                                    <div class="d-flex justify-content-between align-items-center mb-1">
+                                        <span class="text-secondary">Receipt Date:</span>
+                                        <span><?= htmlspecialchars((string)$checkout_draft['receiptdt'], ENT_QUOTES, 'UTF-8'); ?></span>
+                                    </div>
+                                <?php endif; ?>
+                                <?php if ($staged_proof_rel !== ''): ?>
+                                    <div class="mt-2 pt-2 border-top d-flex align-items-center gap-3">
+                                        <img src="../<?= htmlspecialchars($staged_proof_rel, ENT_QUOTES, 'UTF-8'); ?>"
+                                             alt="Payment Receipt Proof"
+                                             class="review-receipt-thumb"
+                                             onclick="openReceiptPreviewModal(this.src)"
+                                             onerror="this.style.display='none';">
+                                        <div class="text-muted">
+                                            <div class="fw-semibold text-success"><i class="bi bi-patch-check-fill me-1"></i>Receipt Verified</div>
+                                            <div>Click thumbnail to enlarge</div>
+                                        </div>
+                                    </div>
+                                <?php endif; ?>
+                            <?php else: ?>
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span class="text-secondary">Payable Upon Delivery:</span>
+                                    <span class="fw-bold text-dark">₱<?= number_format($grand_total, 2); ?></span>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ORDER CONFIRMATION REMINDER -->
+                <div class="alert alert-warning border-warning shadow-sm mb-3" role="alert">
+                    <div class="d-flex align-items-start gap-2">
+                        <i class="bi bi-exclamation-triangle-fill fs-5 text-warning-emphasis flex-shrink-0 mt-0.5"></i>
+                        <div class="small">
+                            <div class="fw-bold text-dark mb-1">Order Confirmation Reminder</div>
+                            <p class="mb-0 text-dark">
+                                Are you sure these are the items you want to purchase? Please review your order carefully. Once you place your order, you will no longer be able to edit the items, quantities, or order details. If you make a mistake after placing your order, you will need to submit a cancellation request and place a new order.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- FINAL CONFIRMATION FORM -->
+                <form method="POST" action="<?= htmlspecialchars($_SERVER['PHP_SELF']) . htmlspecialchars($checkout_qs, ENT_QUOTES, 'UTF-8'); ?>" id="finalConfirmForm">
+                    <input type="hidden" name="confirm_token" value="<?= htmlspecialchars((string)($checkout_draft['confirm_token'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>">
+
+                    <div class="card border-0 shadow-sm p-3">
+                        <div class="form-check mb-3">
+                            <input class="form-check-input" type="checkbox" name="confirm_order_checkbox" value="1" id="finalConfirmCheckbox" <?= $can_finalize_review ? '' : 'disabled'; ?>>
+                            <label class="form-check-label small fw-semibold text-dark" for="finalConfirmCheckbox">
+                                I have reviewed my order and confirmed that all items, quantities, and details are correct.
+                            </label>
+                        </div>
+
+                        <button type="submit" name="confirm_place_order" id="finalSubmitBtn" class="btn btn-success btn-lg w-100 fw-semibold mb-2" disabled>
+                            <i class="bi bi-check2-circle me-1"></i> Confirm and Place Order
+                        </button>
+
+                        <div class="d-flex flex-column flex-sm-row gap-2">
+                            <?php if ($checkout_source !== 'buynow'): ?>
+                                <a href="cart.php" class="btn btn-outline-secondary w-100 fw-semibold">
+                                    <i class="bi bi-cart me-1"></i> Back to Edit Cart
+                                </a>
+                                <a href="placeorder.php" class="btn btn-outline-primary w-100 fw-semibold">
+                                    <i class="bi bi-pencil-square me-1"></i> Edit Checkout Details
+                                </a>
+                            <?php else: ?>
+                                <a href="<?= htmlspecialchars($buyNowEditUrl, ENT_QUOTES, 'UTF-8'); ?>" class="btn btn-outline-secondary w-100 fw-semibold">
+                                    <i class="bi bi-cart me-1"></i> Back to Edit Cart
+                                </a>
+                                <a href="placeorder.php?from=buynow" class="btn btn-outline-primary w-100 fw-semibold">
+                                    <i class="bi bi-pencil-square me-1"></i> Edit Checkout Details
+                                </a>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+<?php else: ?>
 
 <div class="checkout-wrapper">
     <!-- ORDER SUMMARY PANEL -->
@@ -693,10 +1330,10 @@ if (isset($_POST['place_order'])) {
                             onerror="this.onerror=null; this.src='../assets/images/no-image.png';"
                             loading="lazy">
                         <div class="flex-grow-1 overflow-hidden">
-                            <h6 class="mb-0 fw-bold small text-truncate"><?php echo htmlspecialchars($item['name']); ?></h6>
-                            <small class="text-muted">Qty: <?php echo (int)$item['qty']; ?> × ₱<?php echo number_format((float)$item['price'], 2); ?></small>
+                            <h6 class="mb-0 fw-bold small text-truncate"><?php echo htmlspecialchars($item['display_name']); ?></h6>
+                            <small class="text-muted">Unit: <?php echo htmlspecialchars($item['unit']); ?> · Qty: <?php echo (int)$item['qty']; ?> × ₱<?php echo number_format((float)$item['price'], 2); ?></small>
                         </div>
-                        <div class="text-end fw-bold small ms-2">₱<?php echo number_format((float)$item['price'] * (int)$item['qty'], 2); ?></div>
+                        <div class="text-end fw-bold small ms-2">₱<?php echo number_format((float)$item['subtotal'], 2); ?></div>
                     </div>
                 <?php endforeach; ?>
             </div>
@@ -732,8 +1369,33 @@ if (isset($_POST['place_order'])) {
     <!-- INDEPENDENT SCROLLABLE DELIVERY & PAYMENT FORM -->
     <div class="form-pane custom-scroll">
         <div class="card border-0 shadow-sm p-3 p-md-4 mb-4 mb-md-0">
-            <h4 class="mb-4 text-primary fw-bold"><i class="bi bi-bag-check-fill"></i> Delivery & Payment Details</h4>
-            <form action="<?php echo htmlspecialchars($_SERVER['PHP_SELF']) . (isset($_GET['from']) ? '?from=' . htmlspecialchars($_GET['from']) : ''); ?>" method="POST" enctype="multipart/form-data">
+            <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+                <h4 class="mb-0 text-primary fw-bold"><i class="bi bi-bag-check-fill"></i> Delivery & Payment Details</h4>
+                <span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill px-3 py-1">Step 1 of 2: Checkout</span>
+            </div>
+
+            <?php if ($min_order_unmet || !empty($checkout_issues)): ?>
+                <div class="alert alert-danger py-2 small mb-3">
+                    <div class="fw-bold"><i class="bi bi-exclamation-triangle-fill me-1"></i> Cart Notice</div>
+                    <?php if ($min_order_unmet): ?>
+                        <div>Minimum order requirement of ₱3,000.00 is required for delivery checkout.</div>
+                    <?php endif; ?>
+                    <?php foreach ($checkout_issues as $iss): ?>
+                        <div><?= htmlspecialchars($iss, ENT_QUOTES, 'UTF-8'); ?></div>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
+
+            <?php if (!empty($price_changes)): ?>
+                <div class="alert alert-info py-2 small mb-3">
+                    <div class="fw-bold"><i class="bi bi-info-circle-fill me-1"></i> Catalog Price Update</div>
+                    <?php foreach ($price_changes as $pc): ?>
+                        <div><?= htmlspecialchars($pc, ENT_QUOTES, 'UTF-8'); ?></div>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
+
+            <form action="<?php echo htmlspecialchars($_SERVER['PHP_SELF']) . htmlspecialchars($checkout_qs, ENT_QUOTES, 'UTF-8'); ?>" method="POST" enctype="multipart/form-data" id="checkoutStepForm">
                 
                 <?php if (!empty($saved_addresses)): ?>
                     <div class="mb-4 p-3 bg-light border rounded-3">
@@ -748,14 +1410,18 @@ if (isset($_POST['place_order'])) {
                         <p class="small text-muted mb-2">Select a saved address below to auto-fill your delivery details instantly:</p>
 
                         <div class="d-flex flex-column gap-2" id="savedAddressesContainer">
-                            <?php foreach ($saved_addresses as $sIndex => $sAddr): ?>
-                                <div class="saved-address-card d-flex align-items-start gap-3 <?php echo (!empty($sAddr['is_default']) || $sIndex === 0) ? 'selected' : ''; ?>"
+                            <?php foreach ($saved_addresses as $sIndex => $sAddr):
+                                $isCardSelected = $has_saved_draft
+                                    ? ((int)($checkout_draft['saved_address_id'] ?? 0) === (int)$sAddr['id'])
+                                    : (!empty($sAddr['is_default']) || $sIndex === 0);
+                            ?>
+                                <div class="saved-address-card d-flex align-items-start gap-3 <?php echo $isCardSelected ? 'selected' : ''; ?>"
                                      onclick="selectSavedAddress(<?php echo (int) $sAddr['id']; ?>)">
                                     <div class="form-check mt-1">
                                         <input class="form-check-input saved-address-radio" type="radio" name="saved_address_id" 
                                                id="addr_radio_<?php echo (int) $sAddr['id']; ?>" 
                                                value="<?php echo (int) $sAddr['id']; ?>"
-                                               <?php echo (!empty($sAddr['is_default']) || $sIndex === 0) ? 'checked' : ''; ?>>
+                                               <?php echo $isCardSelected ? 'checked' : ''; ?>>
                                     </div>
                                     <div class="flex-grow-1 small">
                                         <div class="d-flex align-items-center gap-2 flex-wrap">
@@ -797,55 +1463,63 @@ if (isset($_POST['place_order'])) {
                     <div class="col-12 col-sm-6">
                         <label class="form-label">First Name</label>
                         <input type="text" name="fullname" id="input_fullname" class="form-control" 
+                        value="<?= htmlspecialchars((string)($checkout_draft['fullname'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>"
                         pattern="[A-Za-z\s]+" title="Letters only" oninput="this.value = this.value.replace(/[^a-zA-Z\s]/g, '')" required>
                     </div>
                     <div class="col-12 col-sm-6">
                          <label class="form-label">Last Name</label>
                         <input type="text" name="surname" id="input_surname" class="form-control" 
+                        value="<?= htmlspecialchars((string)($checkout_draft['surname'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>"
                         pattern="[A-Za-z\s]+" title="Letters only" oninput="this.value = this.value.replace(/[^a-zA-Z\s]/g, '')" required>
                     </div>
                     <div class="col-12 col-sm-6">
                         <label class="form-label">Contact Number</label>
                         <input type="text" name="contact_number" id="input_contact_number" class="form-control" placeholder="09XXXXXXXXX"
+                        value="<?= htmlspecialchars((string)($checkout_draft['contact_number'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>"
                         maxlength="11" oninput="this.value = this.value.replace(/[^0-9]/g, '')" required>
                     </div>
                     <div class="col-12 col-sm-6">
                        <label class="form-label">Telephone (Optional)</label>
                         <input type="text" name="tel_no" id="input_tel_no" class="form-control" 
+                        value="<?= htmlspecialchars((string)($checkout_draft['tel_no'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>"
                        oninput="this.value = this.value.replace(/[^0-9-]/g, '')">
                     </div>
                     <!-- Customer Email automatically bound to logged-in account -->
                     <input type="hidden" name="email" id="input_email" value="<?php echo htmlspecialchars($customerEmail, ENT_QUOTES, 'UTF-8'); ?>">
                     <div class="col-12">
                         <label class="form-label">Complete Delivery Address</label>
-                        <textarea name="full_address" id="input_full_address" class="form-control" rows="2" required></textarea>
+                        <textarea name="full_address" id="input_full_address" class="form-control" rows="2" required><?= htmlspecialchars((string)($checkout_draft['full_address'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></textarea>
                     </div>
                     <div class="col-12">
                         <label class="form-label">Landmark</label>
-                        <input type="text" name="landmark" id="input_landmark" class="form-control" required>
+                        <input type="text" name="landmark" id="input_landmark" class="form-control" value="<?= htmlspecialchars((string)($checkout_draft['landmark'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>" required>
                     </div>
                     
                     <!-- PAYMENT SECTION (GCASH & MAYA ONLY) -->
+                    <?php
+                        $draftScheme = (string)($checkout_draft['payment_scheme'] ?? '50_percent');
+                        $draftMethod = (string)($checkout_draft['payment_method'] ?? '');
+                    ?>
                     <div class="col-12">
                         <?php if ($grand_total >= 5000): ?>
                             <div id="payment_option_box" class="alert alert-info p-3">
                                 <p class="fw-bold small text-danger mb-2">Note: Orders ₱5,000+ require payment scheme selection.</p>
                                 <div class="form-check">
-                                    <input class="form-check-input" type="radio" name="payment_scheme" value="50_percent" checked id="opt1" onchange="updatePaymentDisplay()">
+                                    <input class="form-check-input" type="radio" name="payment_scheme" value="50_percent" <?= ($draftScheme !== 'full_payment') ? 'checked' : ''; ?> id="opt1" onchange="updatePaymentDisplay()">
                                     <label class="form-check-label" for="opt1">50% Downpayment</label>
                                 </div>
                                 <div class="form-check">
-                                    <input class="form-check-input" type="radio" name="payment_scheme" value="full_payment" id="opt2" onchange="updatePaymentDisplay()">
+                                    <input class="form-check-input" type="radio" name="payment_scheme" value="full_payment" <?= ($draftScheme === 'full_payment') ? 'checked' : ''; ?> id="opt2" onchange="updatePaymentDisplay()">
                                     <label class="form-check-label" for="opt2">Full Payment</label>
                                 </div>
                             </div>
                         <?php endif; ?>
                         <label class="form-label fw-bold">Mode of Payment</label>
                         <?php if ($grand_total < 5000): ?>
-                        <div class="form-check"><input class="form-check-input" type="radio" name="payment_method" value="Cash on Delivery (COD)" onclick="togglePaymentFields()" id="cod_radio" required><label class="form-check-label" for="cod_radio">Cash On Delivery</label></div>
+                        <div class="form-check"><input class="form-check-input" type="radio" name="payment_method" value="Cash on Delivery (COD)" <?= ($draftMethod === 'Cash on Delivery (COD)') ? 'checked' : ''; ?> onclick="togglePaymentFields()" id="cod_radio" required><label class="form-check-label" for="cod_radio">Cash On Delivery</label></div>
                         <?php endif; ?>
-                        <div class="form-check"><input class="form-check-input" type="radio" name="payment_method" value="GCash" onclick="togglePaymentFields()" id="gcash_radio"><label class="form-check-label" for="gcash_radio">GCash</label></div>
-                        <div class="form-check"><input class="form-check-input" type="radio" name="payment_method" value="Maya" onclick="togglePaymentFields()" id="maya_radio"><label class="form-check-label" for="maya_radio">Maya</label></div>
+                        <div class="form-check"><input class="form-check-input" type="radio" name="payment_method" value="GCash" <?= ($draftMethod === 'GCash') ? 'checked' : ''; ?> onclick="togglePaymentFields()" id="gcash_radio" <?= ($grand_total >= 5000) ? 'required' : ''; ?>><label class="form-check-label" for="gcash_radio">GCash</label></div>
+                        <div class="form-check"><input class="form-check-input" type="radio" name="payment_method" value="Maya" <?= ($draftMethod === 'Maya') ? 'checked' : ''; ?> onclick="togglePaymentFields()" id="maya_radio"><label class="form-check-label" for="maya_radio">Maya</label></div>
                         <div id="cod_message" class="alert alert-warning mt-2 d-none">Pay exact amount upon delivery.</div>
                     </div>
 
@@ -948,11 +1622,11 @@ if (isset($_POST['place_order'])) {
                         </div>
 
                         <!-- Hidden Inputs: Automatically saved to Database -->
-                        <input type="hidden" name="ref_no" id="ref_no_input">
-                        <input type="hidden" name="paid_amount" id="paid_amount_input">
-                        <input type="hidden" name="receiptdt" id="receiptdt_input">
-                        <input type="hidden" name="receipt_iso" id="receipt_iso_input">
-                        <input type="hidden" name="sent_to" id="sent_to_input">
+                        <input type="hidden" name="ref_no" id="ref_no_input" value="<?= htmlspecialchars((string)($checkout_draft['ref_no'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>">
+                        <input type="hidden" name="paid_amount" id="paid_amount_input" value="<?= htmlspecialchars((string)($checkout_draft['paid_amount'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>">
+                        <input type="hidden" name="receiptdt" id="receiptdt_input" value="<?= htmlspecialchars((string)($checkout_draft['receiptdt'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>">
+                        <input type="hidden" name="receipt_iso" id="receipt_iso_input" value="<?= htmlspecialchars((string)($checkout_draft['receipt_iso'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>">
+                        <input type="hidden" name="sent_to" id="sent_to_input" value="<?= htmlspecialchars((string)($checkout_draft['sent_to'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>">
 
                         <!-- OCR Status Message Box -->
                         <div id="ocr_status" class="alert alert-info py-2 d-none small">
@@ -965,20 +1639,25 @@ if (isset($_POST['place_order'])) {
                     </div>
 
                     <div class="col-12 form-check ps-4">
-                        <input type="checkbox" class="form-check-input" id="termsCheckbox" onclick="toggleSubmitButton()">
+                        <input type="checkbox" class="form-check-input" id="termsCheckbox" onclick="toggleSubmitButton()" <?= !empty($checkout_draft['terms_accepted']) ? 'checked' : ''; ?>>
                        <label class="form-check-label" for="termsCheckbox" style="font-size: 0.85rem;">
                            I have read and agree to the Terms and Conditions and Privacy Notice. <a href="tac.php" target="_blank" class="text-decoration-underline">Terms and Conditions</a> 
                         </label>
                     </div>
                     <div class="col-12">
-                        <button type="submit" name="place_order" id="submitBtn" class="btn btn-success w-100 py-2 mb-2" disabled>Confirm & Place Order</button>
-                        <button type="button" class="btn btn-secondary w-100" onclick="window.location.href='cart.php';">Cancel</button>
+                        <button type="submit" name="review_order" id="submitBtn" class="btn btn-primary w-100 py-2 mb-2 fw-semibold" <?= (!empty($checkout_draft['terms_accepted']) && !$min_order_unmet && $liveHydration['can_checkout']) ? '' : 'disabled'; ?>>
+                            <i class="bi bi-clipboard2-check me-1"></i> Place Order
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary w-100" onclick="window.location.href='<?= $checkout_source === 'buynow' ? 'dashboard.php' : 'cart.php'; ?>';">
+                            <i class="bi bi-arrow-left me-1"></i> <?= $checkout_source === 'buynow' ? 'Cancel' : 'Back to Edit Cart'; ?>
+                        </button>
                     </div>
                 </div>
             </form>
         </div>
     </div>
 </div>
+<?php endif; ?>
 
 <!-- QR ENLARGE MODAL (LIGHT THEME) -->
 <div class="modal fade" id="qrEnlargeModal" tabindex="-1" aria-hidden="true">
@@ -1004,11 +1683,52 @@ if (isset($_POST['place_order'])) {
     </div>
 </div>
 
+<!-- REVIEW RECEIPT PREVIEW MODAL -->
+<div class="modal fade" id="receiptPreviewModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow-lg bg-white" style="border-radius: 16px;">
+            <div class="modal-header border-bottom py-3">
+                <h6 class="modal-title fw-bold text-dark"><i class="bi bi-receipt me-2 text-primary"></i>Uploaded Payment Receipt</h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body text-center p-3">
+                <img id="receiptPreviewImg" src="" alt="Payment Receipt" class="img-fluid rounded border shadow-sm" style="max-height: 75vh;">
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Bootstrap JS Bundle -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
 <script>
-const grandTotal = <?php echo $grand_total; ?>;
+const grandTotal = <?php echo json_encode((float)$grand_total); ?>;
+const HAS_CHECKOUT_DRAFT = <?php echo $has_saved_draft ? 'true' : 'false'; ?>;
+const CAN_CHECKOUT_STEP1 = <?php echo (!$min_order_unmet && $liveHydration['can_checkout']) ? 'true' : 'false'; ?>;
+const CAN_FINALIZE_REVIEW = <?php echo $can_finalize_review ? 'true' : 'false'; ?>;
+const HAS_STAGED_PROOF = <?php echo ($staged_proof_rel !== '') ? 'true' : 'false'; ?>;
+const STAGED_PROOF_METHOD = <?php echo json_encode((string)($checkout_draft['payment_method'] ?? ''), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
+const STAGED_PROOF_AMOUNT = <?php echo json_encode((float)($checkout_draft['paid_amount'] ?? 0)); ?>;
+const STAGED_PROOF_REF = <?php echo json_encode((string)($checkout_draft['ref_no'] ?? ''), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
+
+function openReceiptPreviewModal(imgSrc) {
+    const imgEl = document.getElementById('receiptPreviewImg');
+    const modalEl = document.getElementById('receiptPreviewModal');
+    if (imgEl && modalEl) {
+        imgEl.src = imgSrc;
+        bootstrap.Modal.getOrCreateInstance(modalEl).show();
+    }
+}
+
+function canReuseStagedProofForSelection() {
+    if (!HAS_STAGED_PROOF) return false;
+    const proofInput = document.getElementById('proof_of_payment_input');
+    if (proofInput && proofInput.files && proofInput.files.length > 0) return false;
+    const selectedRadio = document.querySelector('input[name="payment_method"]:checked');
+    const method = selectedRadio ? selectedRadio.value : '';
+    if (!method || method !== STAGED_PROOF_METHOD) return false;
+    return Math.abs(getRequiredPaymentAmount() - STAGED_PROOF_AMOUNT) <= 0.05;
+}
 
 function getRequiredPaymentAmount() {
     if (grandTotal >= 5000) {
@@ -1092,7 +1812,6 @@ function togglePaymentFields() {
         if (onlineFields) onlineFields.classList.remove('d-none');
         if (codMessage) codMessage.classList.add('d-none');
         if (optionBox) optionBox.classList.remove('d-none');
-        if (proofInput) proofInput.required = true;
 
         if (selectedMethod === 'GCash') {
             if (gcashCard) gcashCard.classList.remove('d-none');
@@ -1103,7 +1822,25 @@ function togglePaymentFields() {
         }
 
         if (proofInput && proofInput.files && proofInput.files.length > 0) {
+            proofInput.required = true;
             processReceiptOCR(proofInput);
+        } else if (canReuseStagedProofForSelection()) {
+            if (proofInput) proofInput.required = false;
+            ocrValidationState = { scanning: false, passed: true, reasonTitle: '', reasonMessage: '' };
+            const statusBox = document.getElementById('ocr_status');
+            const statusText = document.getElementById('ocr_status_text');
+            if (statusBox && statusText) {
+                statusBox.classList.remove('d-none', 'alert-info', 'alert-warning', 'alert-danger');
+                statusBox.classList.add('alert-success');
+                statusText.innerHTML = `<div class="fw-bold text-success"><i class="bi bi-check-circle-fill me-1"></i>Previously Uploaded Receipt Ready (Ref: ${escapeOcrHtml(STAGED_PROOF_REF)})</div><div class="small">Upload a new image only if you want to replace your existing receipt.</div>`;
+            }
+        } else {
+            if (proofInput) proofInput.required = true;
+            const statusBox = document.getElementById('ocr_status');
+            if (statusBox && (!proofInput || !proofInput.files || proofInput.files.length === 0)) {
+                statusBox.classList.add('d-none');
+            }
+            if (typeof resetOcrValidationState === 'function') resetOcrValidationState();
         }
     } else if (selectedMethod === 'Cash on Delivery (COD)') {
         if (onlineFields) onlineFields.classList.add('d-none');
@@ -1148,6 +1885,8 @@ function updatePaymentDisplay() {
     const proofInput = document.getElementById('proof_of_payment_input');
     if (proofInput && proofInput.files.length > 0) {
         processReceiptOCR(proofInput);
+    } else {
+        togglePaymentFields();
     }
 }
 
@@ -1155,7 +1894,7 @@ function toggleSubmitButton() {
     const checkbox = document.getElementById("termsCheckbox");
     const submitBtn = document.getElementById("submitBtn");
     if (checkbox && submitBtn) {
-        submitBtn.disabled = !checkbox.checked;
+        submitBtn.disabled = (!checkbox.checked || !CAN_CHECKOUT_STEP1);
     }
 }
 
@@ -1927,24 +2666,52 @@ function selectSavedAddress(addressId) {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
-    togglePaymentFields();
+    if (document.getElementById('checkoutStepForm')) {
+        updatePaymentDisplay();
+        togglePaymentFields();
+        toggleSubmitButton();
 
-    if (Array.isArray(SAVED_ADDRESSES) && SAVED_ADDRESSES.length > 0) {
-        // Find default or first saved address
-        const defaultAddr = SAVED_ADDRESSES.find(a => a.is_default === true || a.is_default === 't' || a.is_default == 1) || SAVED_ADDRESSES[0];
-        if (defaultAddr) {
-            selectSavedAddress(defaultAddr.id);
+        if (!HAS_CHECKOUT_DRAFT && Array.isArray(SAVED_ADDRESSES) && SAVED_ADDRESSES.length > 0) {
+            const defaultAddr = SAVED_ADDRESSES.find(a => a.is_default === true || a.is_default === 't' || a.is_default == 1) || SAVED_ADDRESSES[0];
+            if (defaultAddr) {
+                selectSavedAddress(defaultAddr.id);
+            }
         }
+    }
+
+    const finalCheckbox = document.getElementById('finalConfirmCheckbox');
+    const finalBtn = document.getElementById('finalSubmitBtn');
+    const finalForm = document.getElementById('finalConfirmForm');
+    if (finalCheckbox && finalBtn) {
+        finalBtn.disabled = !(finalCheckbox.checked && CAN_FINALIZE_REVIEW);
+        finalCheckbox.addEventListener('change', function() {
+            finalBtn.disabled = !(finalCheckbox.checked && CAN_FINALIZE_REVIEW);
+        });
+    }
+    if (finalForm && finalBtn) {
+        let isSubmittingFinal = false;
+        finalForm.addEventListener('submit', function(e) {
+            if (isSubmittingFinal || !finalCheckbox || !finalCheckbox.checked || !CAN_FINALIZE_REVIEW) {
+                e.preventDefault();
+                return false;
+            }
+            isSubmittingFinal = true;
+            finalBtn.disabled = true;
+            finalBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Placing Order...';
+        });
     }
 });
 
-document.querySelector('form').addEventListener('submit', function(e) {
+document.getElementById('checkoutStepForm')?.addEventListener('submit', function(e) {
     const selectedRadio = document.querySelector('input[name="payment_method"]:checked');
     if (selectedRadio && (selectedRadio.value === 'GCash' || selectedRadio.value === 'Maya')) {
         const proofInput = document.getElementById('proof_of_payment_input');
-        if (!proofInput || !proofInput.files || proofInput.files.length === 0) {
+        const hasNewFile = Boolean(proofInput && proofInput.files && proofInput.files.length > 0);
+        const reusingStaged = canReuseStagedProofForSelection();
+
+        if (!hasNewFile && !reusingStaged) {
             e.preventDefault();
-            showAppAlert("Please upload your proof of payment receipt before submitting your order.", {
+            showAppAlert("Please upload your proof of payment receipt before proceeding to review your order.", {
                 title: 'Payment Proof Required',
                 type: 'warning',
                 onClose: function () {
@@ -1956,7 +2723,7 @@ document.querySelector('form').addEventListener('submit', function(e) {
 
         if (ocrValidationState.scanning) {
             e.preventDefault();
-            showAppAlert("Your payment receipt is still being verified. Please wait a moment before confirming your order.", {
+            showAppAlert("Your payment receipt is still being verified. Please wait a moment before proceeding.", {
                 title: 'Verification In Progress',
                 type: 'info'
             });
