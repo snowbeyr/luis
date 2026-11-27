@@ -401,7 +401,7 @@ try {
     } else if (isset($_GET['view'])) {
         echo "All Products";
     } else if ($is_home) {
-        echo "Top Selling Items";
+        echo "Recommended products";
     } else {
         echo "Product List";
     }
@@ -643,7 +643,7 @@ function liveSearch(onDone) {
                 } else if (isset($_GET['view'])) {
                     echo "All Products";
                 } else if ($is_home) {
-                    echo "Top Selling Items";
+                    echo "Recommended products";
                 } else {
                     echo "Product List";
                 }
