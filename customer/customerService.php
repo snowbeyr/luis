@@ -193,6 +193,22 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_items') {
                 ? 'automatic'
                 : ($norm_status === 'preparing' ? 'manual' : 'disallowed');
 
+            $can_exchange = false;
+            $received_date = null;
+            if (empty($order_data['is_pos'])) {
+                $tmpHydrate = [$order_data];
+                hydrateOrderTimelineTimestamps($pdo, $tmpHydrate);
+                $hydratedOrder = $tmpHydrate[0];
+                $received_date = getOrderReceivedManilaDate($hydratedOrder);
+                $exCheckStmt = $pdo->prepare("SELECT id FROM customer_requests WHERE order_number = :oid AND LOWER(TRIM(request_type)) IN ('exchange', 'return') LIMIT 1");
+                $exCheckStmt->execute([':oid' => (string)$order_id]);
+                $alreadyHasExchange = (bool)$exCheckStmt->fetchColumn();
+                $can_exchange = (!$alreadyHasExchange && isOrderEligibleForSameDayExchange($hydratedOrder));
+            } else {
+                $received_date = getOrderReceivedManilaDate(['status' => $ord_status, 'order_date' => $ord_date]);
+                $can_exchange = isOrderEligibleForSameDayExchange(['status' => $ord_status, 'order_date' => $ord_date]);
+            }
+
             // CHECK FOR EXISTING PENDING REQUEST (CASE-INSENSITIVE ANTI-SPAM CHECK)
             $has_pending_request = false;
             $pending_req_type = '';
@@ -300,6 +316,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'get_items') {
                     'paid_amount' => $paid_amount,
                     'normalized_status' => $norm_status,
                     'can_cancel' => $can_cancel,
+                    'can_exchange' => $can_exchange,
+                    'received_date' => $received_date,
                     'cancellation_mode' => $cancellation_mode,
                     'latest_cancel' => $latest_cancel,
                     'is_cancel_completed' => $is_cancel_completed,
@@ -423,15 +441,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
                     $message_type = "danger";
                 } elseif ($request_type === 'cancel' && $v_status === 'completed') {
                     $pdo->rollBack();
-                    $message = "❌ Cancellation is no longer available because Order #{$order_id_int} has already been COMPLETED. You may submit a Return / Exchange request within 24 hours if eligible.";
+                    $message = "❌ Cancellation is no longer available because Order #{$order_id_int} has already been COMPLETED. You may submit a Return / Exchange request on the same day the order was received if eligible.";
                     $message_type = "danger";
                 } elseif ($request_type === 'exchange' && $v_status !== 'completed') {
                     $pdo->rollBack();
                     $message = "❌ Cannot request exchange. Item Exchange is only allowed for COMPLETED orders.";
                     $message_type = "danger";
-                } elseif ($request_type === 'exchange' && ((time() - strtotime($v_ord_date_str)) > 86400)) {
+                } elseif ($request_type === 'exchange' && !isOrderEligibleForSameDayExchange((function () use ($pdo, $v_data) {
+                    $tmpExHydrate = [$v_data];
+                    hydrateOrderTimelineTimestamps($pdo, $tmpExHydrate);
+                    return $tmpExHydrate[0];
+                })())) {
                     $pdo->rollBack();
-                    $message = "❌ Item Exchange requests are only allowed within 24 hours (1 day) after order completion/date.";
+                    $message = "❌ Return / Exchange is no longer valid. Same-item exchange requests are only allowed within the exact same day the order was received.";
                     $message_type = "danger";
                 } elseif ($request_type !== 'cancel' && in_array($v_status, ['out_for_delivery', 'delivered'], true)) {
                     $pdo->rollBack();
@@ -1120,16 +1142,9 @@ function handleFormTypeSetup(status) {
         return;
     }
 
-    // Check if order date exceeds 24 hours (1 day)
-    let isExceeded1Day = false;
-    if (currentOrderInfo.order_date) {
-        const orderTimestamp = new Date(currentOrderInfo.order_date).getTime();
-        const nowTimestamp = new Date().getTime();
-        const hoursPassed = (nowTimestamp - orderTimestamp) / (1000 * 60 * 60);
-        if (hoursPassed > 24) {
-            isExceeded1Day = true;
-        }
-    }
+    // Check if completed order is still within the same calendar day it was received (Manila time)
+    const canExchangeToday = (currentOrderInfo.can_exchange !== undefined) ? Boolean(currentOrderInfo.can_exchange) : false;
+    let isExceeded1Day = !canExchangeToday;
 
     // 2. If order is already cancelled/declined
     if (currentStatus === 'cancelled' || currentStatus === 'declined' || currentOrderInfo.is_cancel_completed) {
@@ -1202,14 +1217,14 @@ function handleFormTypeSetup(status) {
             formFieldsContainer.classList.add('d-none');
 
             errorWrapper.classList.remove('d-none');
-            errorWrapper.innerHTML = `⚠️ <strong>Notice:</strong> Regular cancellation is not allowed for completed orders, and item exchange requests are strictly allowed within <strong>1 day (24 hours)</strong> after order completion.`;
+            errorWrapper.innerHTML = `⚠️ <strong>Notice:</strong> Regular cancellation is not allowed for completed orders, and same-item exchange requests are strictly allowed only within the <strong>same day the order was received</strong>.`;
         } else {
             reqExchange.disabled = false;
             lblExchange.classList.remove('disabled', 'btn-outline-secondary');
             lblExchange.classList.add('btn-outline-primary');
             reqExchange.checked = true;
             errorWrapper.classList.remove('d-none');
-            errorWrapper.innerHTML = `ℹ️ <strong>Completed Order:</strong> Regular cancellation is no longer available, but you may request an item Return / Exchange within 24 hours.`;
+            errorWrapper.innerHTML = `ℹ️ <strong>Completed Order:</strong> Regular cancellation is no longer available, but you may request a same-item exchange today (same day received).`;
         }
     } else {
         reqExchange.disabled = true;

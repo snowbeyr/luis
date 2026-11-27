@@ -143,8 +143,8 @@ if (isset($_POST['send_email_update'])) {
         }
     }
     
-    $pane_target = ($request_type == 'cancel') ? '#cancel-pane' : '#exchange-pane';
-    header("Location: ItemsRequest.php" . $pane_target);
+    $tabTarget = ($request_type == 'cancel') ? '?tab=cancel' : '?tab=exchange';
+    header("Location: ItemsRequest.php" . $tabTarget);
     exit();
 }
 
@@ -159,7 +159,8 @@ if (isset($_POST['update_status'])) {
     } else {
         $_SESSION['err'] = $res['message'];
     }
-    header("Location: ItemsRequest.php" . $res['pane']);
+    $tabTarget = ($res['pane'] === '#exchange-pane') ? '?tab=exchange' : '?tab=cancel';
+    header("Location: ItemsRequest.php" . $tabTarget);
     exit();
 }
 
@@ -174,11 +175,12 @@ if (isset($_GET['id']) && isset($_GET['status'])) {
         } else {
             $_SESSION['err'] = $res['message'];
         }
-        header("Location: ItemsRequest.php" . $res['pane']);
+        $tabTarget = ($res['pane'] === '#exchange-pane') ? '?tab=exchange' : '?tab=cancel';
+        header("Location: ItemsRequest.php" . $tabTarget);
         exit();
     }
     $_SESSION['err'] = "❌ Invalid quick status update request.";
-    header("Location: ItemsRequest.php#cancel-pane");
+    header("Location: ItemsRequest.php?tab=cancel");
     exit();
 }
 
@@ -316,7 +318,7 @@ if (isset($_POST['submit_refund'])) {
         $_SESSION['msg'] = "❌ Please upload a valid image for the refund receipt.";
     }
 
-    header("Location: ItemsRequest.php#cancel-pane");
+    header("Location: ItemsRequest.php?tab=cancel");
     exit();
 }
 
@@ -341,6 +343,15 @@ foreach ($cancel_rows as $crRow) {
     }
 }
 $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname, o.contact_number, o.full_address, o.landmark, o.cart, o.payment_method, o.payment_scheme, o.total_amount, o.ref_no, o.paid_amount, o.refund_reference, o.status as order_status FROM customer_requests cr LEFT JOIN orders o ON CAST(cr.order_number AS INTEGER) = o.id WHERE cr.request_type IN ('exchange', 'return', 'others') ORDER BY cr.id DESC");
+$exchange_rows = $exchange_result->fetchAll(PDO::FETCH_ASSOC);
+$openExchangeCount = 0;
+foreach ($exchange_rows as $exRow) {
+    $exStatus = strtolower(trim((string)($exRow['status'] ?? 'Pending')));
+    if (!in_array($exStatus, ['completed', 'declined'], true)) {
+        $openExchangeCount++;
+    }
+}
+$activeTab = (($_GET['tab'] ?? '') === 'exchange') ? 'exchange' : 'cancel';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -587,20 +598,27 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
 
         <ul class="nav nav-pills mb-4 bg-light p-2 rounded-3 flex-column flex-sm-row" id="requestCenterTabs" role="tablist">
             <li class="nav-item mb-2 mb-sm-0">
-                <button class="nav-link active w-100 text-center text-sm-start" id="cancel-tab" data-bs-toggle="pill" data-bs-target="#cancel-pane" type="button" role="tab">
+                <button class="nav-link <?php echo ($activeTab === 'cancel') ? 'active' : ''; ?> w-100 text-center text-sm-start" id="cancel-tab" data-bs-toggle="pill" data-bs-target="#cancel-pane" type="button" role="tab">
                     <i class="bi bi-x-circle"></i> Cancellations
                     <?php if ($pendingCancelCount > 0): ?>
                         <span class="badge bg-danger ms-1"><?php echo $pendingCancelCount; ?> Pending</span>
                     <?php endif; ?>
                 </button>
             </li>
-            <li class="nav-item"><button class="nav-link w-100 text-center text-sm-start" id="exchange-tab" data-bs-toggle="pill" data-bs-target="#exchange-pane" type="button" role="tab"><i class="bi bi-arrow-left-right"></i> Exchanges & Inquiries</button></li>
+            <li class="nav-item">
+                <button class="nav-link <?php echo ($activeTab === 'exchange') ? 'active' : ''; ?> w-100 text-center text-sm-start" id="exchange-tab" data-bs-toggle="pill" data-bs-target="#exchange-pane" type="button" role="tab">
+                    <i class="bi bi-arrow-left-right"></i> Exchanges & Inquiries
+                    <?php if ($openExchangeCount > 0): ?>
+                        <span class="badge bg-danger border border-light-subtle ms-1"><?php echo $openExchangeCount; ?> Pending</span>
+                    <?php endif; ?>
+                </button>
+            </li>
         </ul>
 
         <div class="tab-content" id="requestCenterTabsContent">
             
             <!-- CANCELLATIONS TAB -->
-            <div class="tab-pane fade show active" id="cancel-pane" role="tabpanel">
+            <div class="tab-pane fade <?php echo ($activeTab === 'cancel') ? 'show active' : ''; ?>" id="cancel-pane" role="tabpanel">
                 <div class="table-responsive">
                     <table class="table table-hover align-middle border-top text-nowrap">
                         <thead class="table-light">
@@ -839,7 +857,7 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
             </div>
 
             <!-- EXCHANGES & INQUIRIES TAB -->
-            <div class="tab-pane fade" id="exchange-pane" role="tabpanel">
+            <div class="tab-pane fade <?php echo ($activeTab === 'exchange') ? 'show active' : ''; ?>" id="exchange-pane" role="tabpanel">
                 <div class="table-responsive">
                     <table class="table table-hover align-middle border-top text-nowrap">
                         <thead class="table-light">
@@ -857,7 +875,6 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
                         </thead>
                         <tbody>
                             <?php 
-                            $exchange_rows = $exchange_result->fetchAll(PDO::FETCH_ASSOC);
                             if(count($exchange_rows) == 0): 
                             ?>
                                 <tr><td colspan="9" class="text-center text-muted py-3">No ticket requests found.</td></tr>
@@ -1043,38 +1060,108 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-document.addEventListener("DOMContentLoaded", function() {
-    let currentHash = window.location.hash;
-    if (currentHash) {
-        let targetTabButton = document.querySelector(`button[data-bs-target="${currentHash}"]`);
-        if (targetTabButton) {
-            let triggerEl = new bootstrap.Tab(targetTabButton);
-            triggerEl.show();
+if ('scrollRestoration' in history) {
+    history.scrollRestoration = 'manual';
+}
+
+(function preserveItemsRequestState() {
+    const KEY_Y = 'adminItemsReqScrollY';
+    const KEY_X = 'adminItemsReqScrollX';
+    const KEY_TBL_X = 'adminItemsReqTableScrollX';
+    const KEY_TS = 'adminItemsReqScrollTs';
+
+    function saveScroll() {
+        try {
+            sessionStorage.setItem(KEY_Y, String(window.scrollY || window.pageYOffset || 0));
+            sessionStorage.setItem(KEY_X, String(window.scrollX || window.pageXOffset || 0));
+            const activePaneTbl = document.querySelector('.tab-pane.active .table-responsive') || document.querySelector('.table-responsive');
+            sessionStorage.setItem(KEY_TBL_X, String(activePaneTbl ? activePaneTbl.scrollLeft : 0));
+            sessionStorage.setItem(KEY_TS, String(Date.now()));
+        } catch (e) {}
+    }
+
+    function restoreScroll() {
+        try {
+            const rawY = sessionStorage.getItem(KEY_Y);
+            const rawTs = parseInt(sessionStorage.getItem(KEY_TS) || '0', 10);
+            if (rawY === null || !rawTs || (Date.now() - rawTs) > 30000) return;
+
+            const y = parseFloat(rawY) || 0;
+            const x = parseFloat(sessionStorage.getItem(KEY_X) || '0') || 0;
+            const tblX = parseFloat(sessionStorage.getItem(KEY_TBL_X) || '0') || 0;
+
+            sessionStorage.removeItem(KEY_Y);
+            sessionStorage.removeItem(KEY_X);
+            sessionStorage.removeItem(KEY_TBL_X);
+            sessionStorage.removeItem(KEY_TS);
+
+            const apply = () => {
+                window.scrollTo({ top: y, left: x, behavior: 'instant' });
+                const activePaneTbl = document.querySelector('.tab-pane.active .table-responsive') || document.querySelector('.table-responsive');
+                if (activePaneTbl && tblX > 0) activePaneTbl.scrollLeft = tblX;
+            };
+            apply();
+            requestAnimationFrame(apply);
+        } catch (e) {}
+    }
+
+    document.addEventListener('submit', function(e) {
+        const form = e.target;
+        if (form && form.tagName === 'FORM') {
+            saveScroll();
         }
-    }
+    }, true);
 
-    document.querySelectorAll('button[data-bs-toggle="pill"]').forEach(button => {
-        button.addEventListener('shown.bs.tab', function(e) {
-            history.replaceState(null, null, e.target.getAttribute('data-bs-target'));
-        });
-    });
+    document.addEventListener('click', function(e) {
+        const actionLink = e.target.closest('a[href*="ItemsRequest.php?id="]');
+        if (actionLink) {
+            saveScroll();
+        }
+    }, true);
 
-    const sidebarToggle = document.getElementById('sidebarToggle');
-    const appSidebar = document.getElementById('appSidebar');
-    if(sidebarToggle && appSidebar) {
-        sidebarToggle.addEventListener('click', function() {
-            appSidebar.classList.toggle('show');
-        });
-        
-        document.addEventListener('click', function(event) {
-            if (window.innerWidth < 992) {
-                if (!appSidebar.contains(event.target) && !sidebarToggle.contains(event.target)) {
-                    appSidebar.classList.remove('show');
-                }
+    document.addEventListener("DOMContentLoaded", function() {
+        const hash = window.location.hash;
+        if (hash === '#exchange-pane' || hash === '#cancel-pane') {
+            const targetBtn = document.querySelector(`button[data-bs-target="${hash}"]`);
+            if (targetBtn && typeof bootstrap !== 'undefined') {
+                new bootstrap.Tab(targetBtn).show();
             }
+            const cleanUrl = new URL(window.location.href);
+            cleanUrl.searchParams.set('tab', hash === '#exchange-pane' ? 'exchange' : 'cancel');
+            cleanUrl.hash = '';
+            history.replaceState(null, '', cleanUrl.pathname + cleanUrl.search);
+        }
+
+        restoreScroll();
+
+        document.querySelectorAll('button[data-bs-toggle="pill"]').forEach(button => {
+            button.addEventListener('shown.bs.tab', function(e) {
+                const target = e.target.getAttribute('data-bs-target');
+                const tabVal = (target === '#exchange-pane') ? 'exchange' : 'cancel';
+                const u = new URL(window.location.href);
+                u.searchParams.set('tab', tabVal);
+                u.hash = '';
+                history.replaceState(null, '', u.pathname + u.search);
+            });
         });
-    }
-});
+
+        const sidebarToggle = document.getElementById('sidebarToggle');
+        const appSidebar = document.getElementById('appSidebar');
+        if(sidebarToggle && appSidebar) {
+            sidebarToggle.addEventListener('click', function() {
+                appSidebar.classList.toggle('show');
+            });
+            
+            document.addEventListener('click', function(event) {
+                if (window.innerWidth < 992) {
+                    if (!appSidebar.contains(event.target) && !sidebarToggle.contains(event.target)) {
+                        appSidebar.classList.remove('show');
+                    }
+                }
+            });
+        }
+    });
+})();
 
 // Helper: Extract Reference Number across GCash, Maya, and Bank refund receipts
 function extractReferenceNumber(text) {

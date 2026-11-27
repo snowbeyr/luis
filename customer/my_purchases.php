@@ -336,6 +336,7 @@ try {
         }
 
         $orderRef['has_exchange'] = isset($exchangeRequests[(int) $orderRef['id']]);
+        $orderRef['can_exchange'] = (!$orderRef['has_exchange'] && isOrderEligibleForSameDayExchange($orderRef));
         $orderRef['parsed_items'] = $parsedItems;
         $orderRef['proof_resolved'] = !empty($orderRef['proof_of_payment']) ? getProductImageSrc($orderRef['proof_of_payment']) : '';
     }
@@ -1145,7 +1146,7 @@ foreach ($allOrders as $o) {
                                             </button>
                                         <?php endif; ?>
 
-                                        <?php if ($rawStatus === 'completed' && !$hasEx): ?>
+                                        <?php if ($rawStatus === 'completed' && !empty($order['can_exchange'])): ?>
                                             <a href="customerService.php?order_id=<?php echo $order['id']; ?>&type=exchange&email=<?php echo urlencode($customerEmail); ?>" class="btn btn-outline-primary btn-sm fw-semibold">
                                                 <i class="bi bi-arrow-repeat me-1"></i> Return / Exchange
                                             </a>
@@ -1687,7 +1688,7 @@ foreach ($allOrders as $o) {
                     directBtn.onclick = null;
                     directBtn.innerHTML = '<i class="bi bi-x-circle me-1"></i> Cancel Request';
                     directBtn.classList.remove('d-none');
-                } else if (status === 'completed' && !order.has_exchange) {
+                } else if (status === 'completed' && Boolean(order.can_exchange)) {
                     directBtn.className = 'btn btn-outline-primary btn-sm fw-semibold';
                     directBtn.href = `customerService.php?order_id=${order.id}&type=exchange&email=${encodeURIComponent(custEmail)}`;
                     directBtn.onclick = null;

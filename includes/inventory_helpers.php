@@ -1362,3 +1362,58 @@ if (!function_exists('processCustomerTicketAction')) {
         }
     }
 }
+
+if (!function_exists('getOrderReceivedManilaDate')) {
+    /**
+     * Resolves the Asia/Manila calendar date (YYYY-MM-DD) when the customer received/completed an order.
+     */
+    function getOrderReceivedManilaDate(array $order): ?string
+    {
+        $rawCandidates = [
+            $order['timeline']['completed']['raw'] ?? null,
+            $order['completed_at'] ?? null,
+            $order['timeline']['delivered']['raw'] ?? null,
+            $order['delivered_at'] ?? null,
+            $order['timeline']['placed']['raw'] ?? null,
+            $order['order_date'] ?? null,
+        ];
+
+        foreach ($rawCandidates as $candidate) {
+            if (empty($candidate)) {
+                continue;
+            }
+            if (preg_match('/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/', (string)$candidate) && isset($order['timeline'])) {
+                return substr((string)$candidate, 0, 10);
+            }
+            $info = formatTimelineStepDateTime((string)$candidate);
+            if ($info !== null && !empty($info['raw'])) {
+                return substr($info['raw'], 0, 10);
+            }
+        }
+
+        return null;
+    }
+}
+
+if (!function_exists('isOrderEligibleForSameDayExchange')) {
+    /**
+     * Return / Exchange is valid strictly when the order is completed AND the received/completed
+     * date falls on the same Asia/Manila calendar day as today ("within the day" of receipt).
+     */
+    function isOrderEligibleForSameDayExchange(array $order, ?DateTimeImmutable $nowManila = null): bool
+    {
+        $status = strtolower(trim((string)($order['status'] ?? '')));
+        if ($status !== 'completed') {
+            return false;
+        }
+
+        $receivedDate = getOrderReceivedManilaDate($order);
+        if ($receivedDate === null) {
+            return false;
+        }
+
+        $tz = new DateTimeZone('Asia/Manila');
+        $today = ($nowManila ?? new DateTimeImmutable('now', $tz))->setTimezone($tz)->format('Y-m-d');
+        return $receivedDate === $today;
+    }
+}
