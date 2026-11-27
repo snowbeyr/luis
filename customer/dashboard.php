@@ -626,7 +626,7 @@ try {
         }
 
 // LIVE SEARCH ENGINE WITH NATIVE CLEAR (X BUTTON) & TITLE UPDATE HANDLER
-function liveSearch() {
+function liveSearch(onDone) {
     let searchInput = document.getElementById("searchInput");
     let searchValue = searchInput.value.trim();
     let titleHeader = document.getElementById("productSectionTitle");
@@ -659,6 +659,7 @@ function liveSearch() {
     xhr.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
     xhr.onload = function () {
         document.getElementById("productResults").innerHTML = this.responseText;
+        if (typeof onDone === 'function') onDone();
     };
     xhr.send("search=" + encodeURIComponent(searchValue));
 }
@@ -857,12 +858,13 @@ if (searchInputField) {
             var dropdownContainer = document.getElementById('variantDropdownContainer');
             var productId = select.getAttribute('data-product-id');
             var qty = document.getElementById('modalQtyInput').value;
+            var currentReturnUrl = encodeURIComponent(window.location.pathname + window.location.search);
 
             if (dropdownContainer.classList.contains('d-none') || select.value === "MAIN_PRODUCT") {
-                document.getElementById('modalAddToCartBtn').href = `addtocart.php?id=${productId}&qty=${qty}`;
+                document.getElementById('modalAddToCartBtn').href = `addtocart.php?id=${productId}&qty=${qty}&return_url=${currentReturnUrl}`;
             } else {
                 var variantId = select.value;
-                document.getElementById('modalAddToCartBtn').href = `addtocart.php?id=${productId}&variant_id=${variantId}&qty=${qty}`;
+                document.getElementById('modalAddToCartBtn').href = `addtocart.php?id=${productId}&variant_id=${variantId}&qty=${qty}&return_url=${currentReturnUrl}`;
             }
         }
 
@@ -880,6 +882,66 @@ if (searchInputField) {
             modal.show();
         }
 
+        if ('scrollRestoration' in history) {
+            history.scrollRestoration = 'manual';
+        }
+
+        (function preserveDashboardAddToCartState() {
+            const KEY_Y = 'custDashScrollY';
+            const KEY_X = 'custDashScrollX';
+            const KEY_SEARCH = 'custDashSearchQuery';
+            const KEY_TS = 'custDashStateTs';
+
+            const addBtn = document.getElementById('modalAddToCartBtn');
+            if (addBtn) {
+                addBtn.addEventListener('click', function () {
+                    try {
+                        sessionStorage.setItem(KEY_Y, String(window.scrollY || window.pageYOffset || 0));
+                        sessionStorage.setItem(KEY_X, String(window.scrollX || window.pageXOffset || 0));
+                        const sInput = document.getElementById('searchInput');
+                        sessionStorage.setItem(KEY_SEARCH, sInput ? sInput.value : '');
+                        sessionStorage.setItem(KEY_TS, String(Date.now()));
+                    } catch (e) {}
+                });
+            }
+
+            function restoreState() {
+                try {
+                    const rawY = sessionStorage.getItem(KEY_Y);
+                    const rawTs = parseInt(sessionStorage.getItem(KEY_TS) || '0', 10);
+                    if (rawY === null || !rawTs || (Date.now() - rawTs) > 30000) return;
+
+                    const y = parseFloat(rawY) || 0;
+                    const x = parseFloat(sessionStorage.getItem(KEY_X) || '0') || 0;
+                    const savedSearch = sessionStorage.getItem(KEY_SEARCH) || '';
+
+                    sessionStorage.removeItem(KEY_Y);
+                    sessionStorage.removeItem(KEY_X);
+                    sessionStorage.removeItem(KEY_SEARCH);
+                    sessionStorage.removeItem(KEY_TS);
+
+                    const applyScroll = () => {
+                        window.scrollTo({ top: y, left: x, behavior: 'instant' });
+                        requestAnimationFrame(() => window.scrollTo({ top: y, left: x, behavior: 'instant' }));
+                    };
+
+                    const sInput = document.getElementById('searchInput');
+                    if (sInput && savedSearch.trim() !== '') {
+                        sInput.value = savedSearch;
+                        liveSearch(applyScroll);
+                    } else {
+                        applyScroll();
+                    }
+                } catch (e) {}
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', restoreState);
+            } else {
+                restoreState();
+            }
+        })();
+
         const urlParams = new URLSearchParams(window.location.search);
         if (urlParams.has('notif') && urlParams.get('notif') === 'added') {
             const notif = document.getElementById('notif-box');
@@ -887,7 +949,9 @@ if (searchInputField) {
 
             setTimeout(() => {
                 notif.style.display = 'none';
-                window.history.replaceState({}, document.title, window.location.pathname);
+                const cleanUrl = new URL(window.location.href);
+                cleanUrl.searchParams.delete('notif');
+                window.history.replaceState({}, document.title, cleanUrl.pathname + (cleanUrl.search || ''));
             }, 3000);
         }
     </script>

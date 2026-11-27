@@ -118,6 +118,45 @@ if (!function_exists('handleInventoryImageUpload')) {
     }
 }
 
+if (!function_exists('buildInventoryRedirectUrl')) {
+    /**
+     * Preserves active Inventory filters (view, search, type, category, status, sort) across POST redirects.
+     */
+    function buildInventoryRedirectUrl(?string $overrideStatus = null, ?string $overrideView = null): string
+    {
+        $allowed = ['view', 'search', 'type', 'category', 'status', 'sort'];
+        $q = [];
+        $raw = trim((string)($_POST['return_query'] ?? ($_GET['return_query'] ?? ($_SERVER['QUERY_STRING'] ?? ''))));
+        if ($raw !== '') {
+            parse_str($raw, $parsed);
+            if (is_array($parsed)) {
+                foreach ($allowed as $key) {
+                    if (isset($parsed[$key]) && $parsed[$key] !== '') {
+                        $q[$key] = (string)$parsed[$key];
+                    }
+                }
+            }
+        }
+
+        if ($overrideStatus !== null) {
+            if ($overrideStatus === '') {
+                unset($q['status']);
+            } else {
+                $q['status'] = $overrideStatus;
+            }
+        }
+        if ($overrideView !== null) {
+            if ($overrideView === '') {
+                unset($q['view']);
+            } else {
+                $q['view'] = $overrideView;
+            }
+        }
+
+        return 'products.php' . (!empty($q) ? '?' . http_build_query($q) : '');
+    }
+}
+
 // ==========================================
 // HANDLE ACTIONS (POST & GET)
 // ==========================================
@@ -133,19 +172,19 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
 
     if ($parent_id <= 0 || $v_name === '') {
         $_SESSION['error_message'] = "Parent product and variant name are required.";
-        header("Location: products.php");
+        header("Location: " . buildInventoryRedirectUrl());
         exit();
     }
 
     if ($v_cost < 0 || $v_price < 0 || $v_stock < 0) {
         $_SESSION['error_message'] = "Negative values are not allowed.";
-        header("Location: products.php");
+        header("Location: " . buildInventoryRedirectUrl());
         exit();
     }
 
     if ($v_cost > $v_price) {
         $_SESSION['error_message'] = "Cost price cannot be higher than selling price.";
-        header("Location: products.php");
+        header("Location: " . buildInventoryRedirectUrl());
         exit();
     }
 
@@ -155,12 +194,12 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
         $parent = $p_check->fetch(PDO::FETCH_ASSOC);
         if (!$parent) {
             $_SESSION['error_message'] = "Parent product not found.";
-            header("Location: products.php");
+            header("Location: " . buildInventoryRedirectUrl());
             exit();
         }
         if ((int)($parent['is_archived'] ?? 0) === 1) {
             $_SESSION['error_message'] = "Cannot add a variant to an archived main product. Please restore '{$parent['product_name']}' first.";
-            header("Location: products.php");
+            header("Location: " . buildInventoryRedirectUrl());
             exit();
         }
 
@@ -170,7 +209,7 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
         $dup_err = checkInventoryItemNameExists($pdo, $v_name, 'variant', 0, (int)$parent_id);
         if ($dup_err !== null) {
             $_SESSION['error_message'] = $dup_err;
-            header("Location: products.php");
+            header("Location: " . buildInventoryRedirectUrl());
             exit();
         }
 
@@ -205,12 +244,12 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
         );
 
         $_SESSION['message'] = "Variant '{$v_name}' added successfully!";
-        header("Location: products.php");
+        header("Location: " . buildInventoryRedirectUrl());
         exit();
 
     } catch (Throwable $e) {
         $_SESSION['error_message'] = "Error adding variant: " . $e->getMessage();
-        header("Location: products.php");
+        header("Location: " . buildInventoryRedirectUrl());
         exit();
     }
 }
@@ -226,19 +265,19 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
 
     if ($v_id <= 0 || $v_name === '') {
         $_SESSION['error_message'] = "Valid variant ID and name are required.";
-        header("Location: products.php");
+        header("Location: " . buildInventoryRedirectUrl());
         exit();
     }
 
     if ($v_cost < 0 || $v_price < 0 || $v_stock < 0) {
         $_SESSION['error_message'] = "Negative values are not allowed.";
-        header("Location: products.php");
+        header("Location: " . buildInventoryRedirectUrl());
         exit();
     }
 
     if ($v_cost > $v_price) {
         $_SESSION['error_message'] = "Cost price cannot be higher than selling price.";
-        header("Location: products.php");
+        header("Location: " . buildInventoryRedirectUrl());
         exit();
     }
 
@@ -249,7 +288,7 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
 
         if (!$current_var) {
             $_SESSION['error_message'] = "Variant not found.";
-            header("Location: products.php");
+            header("Location: " . buildInventoryRedirectUrl());
             exit();
         }
 
@@ -263,7 +302,7 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
         $dup_err = checkInventoryItemNameExists($pdo, $v_name, 'variant', (int)$v_id, (int)$effective_pid);
         if ($dup_err !== null) {
             $_SESSION['error_message'] = $dup_err;
-            header("Location: products.php");
+            header("Location: " . buildInventoryRedirectUrl());
             exit();
         }
 
@@ -303,12 +342,12 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
         );
 
         $_SESSION['message'] = "Variant '{$v_name}' updated successfully!";
-        header("Location: products.php");
+        header("Location: " . buildInventoryRedirectUrl());
         exit();
 
     } catch (Throwable $e) {
         $_SESSION['error_message'] = "Error updating variant: " . $e->getMessage();
-        header("Location: products.php");
+        header("Location: " . buildInventoryRedirectUrl());
         exit();
     }
 }
@@ -325,19 +364,19 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
 
     if ($p_id <= 0 || $p_name === '') {
         $_SESSION['error_message'] = "Valid product ID and name are required.";
-        header("Location: products.php");
+        header("Location: " . buildInventoryRedirectUrl());
         exit();
     }
 
     if ($cost_price < 0 || $price < 0 || $stock < 0) {
         $_SESSION['error_message'] = "Negative values are not allowed.";
-        header("Location: products.php");
+        header("Location: " . buildInventoryRedirectUrl());
         exit();
     }
 
     if ($cost_price > $price) {
         $_SESSION['error_message'] = "Cost price cannot be higher than selling price.";
-        header("Location: products.php");
+        header("Location: " . buildInventoryRedirectUrl());
         exit();
     }
 
@@ -350,7 +389,7 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
         $dup_err = checkInventoryItemNameExists($pdo, $p_name, 'product', (int)$p_id);
         if ($dup_err !== null) {
             $_SESSION['error_message'] = $dup_err;
-            header("Location: products.php");
+            header("Location: " . buildInventoryRedirectUrl());
             exit();
         }
 
@@ -391,12 +430,12 @@ if ((($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') && isset($_POST['action']) &
         );
 
         $_SESSION['message'] = "Product '{$p_name}' updated successfully!";
-        header("Location: products.php");
+        header("Location: " . buildInventoryRedirectUrl());
         exit();
 
     } catch (Throwable $e) {
         $_SESSION['error_message'] = "Error updating product: " . $e->getMessage();
-        header("Location: products.php");
+        header("Location: " . buildInventoryRedirectUrl());
         exit();
     }
 }
@@ -678,8 +717,8 @@ if (in_array($action, ['archive_product', 'unarchive_product', 'archive_variant'
 
         $pdo->commit();
 
-        $redirect_status = $_POST['redirect_status'] ?? ($_GET['status'] ?? '');
-        header("Location: products.php" . ($redirect_status ? "?status=" . urlencode($redirect_status) : ""));
+        $redirect_status = $_POST['redirect_status'] ?? ($_GET['status'] ?? null);
+        header("Location: " . buildInventoryRedirectUrl($redirect_status !== null && $redirect_status !== '' ? (string)$redirect_status : null));
         exit();
 
     } catch (PDOException $e) {
@@ -688,7 +727,7 @@ if (in_array($action, ['archive_product', 'unarchive_product', 'archive_variant'
         }
         error_log("Archive/Unarchive error: " . $e->getMessage());
         $_SESSION['error_message'] = "Unable to update archive status.";
-        header("Location: products.php");
+        header("Location: " . buildInventoryRedirectUrl());
         exit();
     }
 }
@@ -3487,6 +3526,78 @@ if ($current_view === 'shared_stock') {
                 });
             }
         });
+
+        if ('scrollRestoration' in history) {
+            history.scrollRestoration = 'manual';
+        }
+
+        (function preserveInventoryFilterAndScroll() {
+            const KEY_Y = 'adminInvScrollY';
+            const KEY_X = 'adminInvScrollX';
+            const KEY_TBL_X = 'adminInvTableScrollX';
+            const KEY_TS = 'adminInvScrollTs';
+
+            function saveScroll() {
+                try {
+                    sessionStorage.setItem(KEY_Y, String(window.scrollY || window.pageYOffset || 0));
+                    sessionStorage.setItem(KEY_X, String(window.scrollX || window.pageXOffset || 0));
+                    const tblWrap = document.querySelector('.table-card .table-responsive');
+                    sessionStorage.setItem(KEY_TBL_X, String(tblWrap ? tblWrap.scrollLeft : 0));
+                    sessionStorage.setItem(KEY_TS, String(Date.now()));
+                } catch (e) {}
+            }
+
+            function restoreScroll() {
+                try {
+                    const rawY = sessionStorage.getItem(KEY_Y);
+                    const rawTs = parseInt(sessionStorage.getItem(KEY_TS) || '0', 10);
+                    if (rawY === null || !rawTs || (Date.now() - rawTs) > 30000) return;
+
+                    const y = parseFloat(rawY) || 0;
+                    const x = parseFloat(sessionStorage.getItem(KEY_X) || '0') || 0;
+                    const tblX = parseFloat(sessionStorage.getItem(KEY_TBL_X) || '0') || 0;
+
+                    sessionStorage.removeItem(KEY_Y);
+                    sessionStorage.removeItem(KEY_X);
+                    sessionStorage.removeItem(KEY_TBL_X);
+                    sessionStorage.removeItem(KEY_TS);
+
+                    window.scrollTo({ top: y, left: x, behavior: 'instant' });
+                    const tblWrap = document.querySelector('.table-card .table-responsive');
+                    if (tblWrap && tblX > 0) tblWrap.scrollLeft = tblX;
+
+                    requestAnimationFrame(() => {
+                        window.scrollTo({ top: y, left: x, behavior: 'instant' });
+                        if (tblWrap && tblX > 0) tblWrap.scrollLeft = tblX;
+                    });
+                } catch (e) {}
+            }
+
+            document.addEventListener('submit', function(e) {
+                const form = e.target;
+                if (!form || form.tagName !== 'FORM') return;
+                const method = (form.getAttribute('method') || 'GET').toUpperCase();
+                if (method === 'POST') {
+                    let rq = form.querySelector('input[name="return_query"]');
+                    if (!rq) {
+                        rq = document.createElement('input');
+                        rq.type = 'hidden';
+                        rq.name = 'return_query';
+                        form.appendChild(rq);
+                    }
+                    rq.value = window.location.search.replace(/^\?/, '');
+                    saveScroll();
+                } else if (form.id === 'filterForm') {
+                    saveScroll();
+                }
+            }, true);
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', restoreScroll);
+            } else {
+                restoreScroll();
+            }
+        })();
     </script>
 <?php require_once __DIR__ . '/../includes/app_modal.php'; ?>
 </body>

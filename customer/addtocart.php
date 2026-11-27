@@ -2,8 +2,53 @@
 session_start();
 require_once __DIR__ . '/../config/db.php';
 
+function resolveSafeCartReturnUrl(?string $candidate, bool $withAddedNotif = false): string
+{
+    $raw = trim((string)($candidate ?? ''));
+    if ($raw === '' && !empty($_SERVER['HTTP_REFERER'])) {
+        $raw = trim((string)$_SERVER['HTTP_REFERER']);
+    }
+
+    $targetBase = 'dashboard.php';
+    $safeQuery = [];
+
+    if ($raw !== '') {
+        $parts = @parse_url($raw);
+        if (is_array($parts)) {
+            $hostOk = empty($parts['host']) || (!empty($_SERVER['HTTP_HOST']) && strcasecmp((string)$parts['host'], (string)$_SERVER['HTTP_HOST']) === 0);
+            if ($hostOk) {
+                $path = strtolower(str_replace('\\', '/', (string)($parts['path'] ?? '')));
+                if ($path === '/login.php' || preg_match('/(?:^|\/)login\.php$/', $path)) {
+                    $targetBase = '../login.php';
+                } elseif (preg_match('/(?:^|\/)dashboard\.php$/', $path)) {
+                    $targetBase = 'dashboard.php';
+                }
+
+                if (!empty($parts['query'])) {
+                    parse_str($parts['query'], $parsedQuery);
+                    if (is_array($parsedQuery)) {
+                        foreach (['view', 'category', 'sort', 'q'] as $allowedKey) {
+                            if (isset($parsedQuery[$allowedKey]) && $parsedQuery[$allowedKey] !== '') {
+                                $safeQuery[$allowedKey] = (string)$parsedQuery[$allowedKey];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if ($withAddedNotif) {
+        $safeQuery['notif'] = 'added';
+    }
+
+    return $targetBase . (!empty($safeQuery) ? '?' . http_build_query($safeQuery) : '');
+}
+
+$returnCandidate = $_GET['return_url'] ?? ($_POST['return_url'] ?? null);
+
 if (!isset($_GET['id']) || empty($_GET['id'])) {
-    header("Location: dashboard.php");
+    header("Location: " . resolveSafeCartReturnUrl($returnCandidate, false));
     exit();
 }
 
@@ -19,7 +64,7 @@ $product_stmt->execute([':id' => $id]);
 $product_row = $product_stmt->fetch(PDO::FETCH_ASSOC);
 
 if (!$product_row) {
-    header("Location: dashboard.php");
+    header("Location: " . resolveSafeCartReturnUrl($returnCandidate, false));
     exit();
 }
 
@@ -59,7 +104,7 @@ if ($final_stock <= 0) {
         'message' => 'This item is currently out of stock.',
         'type' => 'warning'
     ];
-    header("Location: dashboard.php");
+    header("Location: " . resolveSafeCartReturnUrl($returnCandidate, false));
     exit();
 }
 
@@ -85,6 +130,6 @@ if (isset($_SESSION['cart'][$cart_key])) {
     ];
 }
 
-header("Location: dashboard.php?notif=added#product-" . $id);
+header("Location: " . resolveSafeCartReturnUrl($returnCandidate, true));
 exit();
 ?>
