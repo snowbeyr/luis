@@ -386,7 +386,7 @@ if (isset($_POST['update_status'])) {
             'message' => "This order has a pending cancellation request. Please approve or decline the cancellation request before proceeding with any order status updates.",
             'type' => 'warning'
         ];
-        header("Location: orders.php#order-" . $order_id);
+        header("Location: orders.php");
         exit();
     }
 
@@ -469,7 +469,7 @@ if (isset($_POST['update_status'])) {
                 'message' => "This order has a pending cancellation request. Please approve or decline the cancellation request before proceeding with any order status updates.",
                 'type' => 'warning'
             ];
-            header("Location: orders.php#order-" . $order_id);
+            header("Location: orders.php");
             exit();
         }
 
@@ -481,7 +481,7 @@ if (isset($_POST['update_status'])) {
                 'message' => "Order #{$order_id} is already " . strtoupper($old_status) . " and cannot be moved to another status.",
                 'type' => 'warning'
             ];
-            header("Location: orders.php#order-" . $order_id);
+            header("Location: orders.php");
             exit();
         }
 
@@ -539,7 +539,7 @@ if (isset($_POST['update_status'])) {
         ];
     }
 
-    header("Location: orders.php#order-" . $order_id);
+    header("Location: orders.php");
     exit();
 }
 
@@ -1632,6 +1632,70 @@ document.addEventListener("DOMContentLoaded", function() {
         });
     }
 });
+
+if ('scrollRestoration' in history) {
+    history.scrollRestoration = 'manual';
+}
+
+(function preserveAdminOrdersScroll() {
+    const KEY_Y = 'adminOrdersScrollY';
+    const KEY_X = 'adminOrdersScrollX';
+    const KEY_TBL_X = 'adminOrdersTableScrollX';
+    const KEY_TS = 'adminOrdersScrollTs';
+
+    function saveScrollPosition() {
+        try {
+            sessionStorage.setItem(KEY_Y, String(window.scrollY || window.pageYOffset || 0));
+            sessionStorage.setItem(KEY_X, String(window.scrollX || window.pageXOffset || 0));
+            const tblWrap = document.querySelector('.main-content .table-responsive');
+            sessionStorage.setItem(KEY_TBL_X, String(tblWrap ? tblWrap.scrollLeft : 0));
+            sessionStorage.setItem(KEY_TS, String(Date.now()));
+        } catch (e) {}
+    }
+
+    function restoreScrollPosition() {
+        try {
+            const rawY = sessionStorage.getItem(KEY_Y);
+            const rawTs = parseInt(sessionStorage.getItem(KEY_TS) || '0', 10);
+            if (rawY === null || !rawTs || (Date.now() - rawTs) > 30000) {
+                return;
+            }
+            const y = parseFloat(rawY) || 0;
+            const x = parseFloat(sessionStorage.getItem(KEY_X) || '0') || 0;
+            const tblX = parseFloat(sessionStorage.getItem(KEY_TBL_X) || '0') || 0;
+
+            sessionStorage.removeItem(KEY_Y);
+            sessionStorage.removeItem(KEY_X);
+            sessionStorage.removeItem(KEY_TBL_X);
+            sessionStorage.removeItem(KEY_TS);
+
+            window.scrollTo({ top: y, left: x, behavior: 'instant' });
+            const tblWrap = document.querySelector('.main-content .table-responsive');
+            if (tblWrap && tblX > 0) {
+                tblWrap.scrollLeft = tblX;
+            }
+            requestAnimationFrame(() => {
+                window.scrollTo({ top: y, left: x, behavior: 'instant' });
+                if (tblWrap && tblX > 0) {
+                    tblWrap.scrollLeft = tblX;
+                }
+            });
+        } catch (e) {}
+    }
+
+    document.addEventListener('submit', function(e) {
+        const form = e.target;
+        if (form && form.tagName === 'FORM') {
+            saveScrollPosition();
+        }
+    }, true);
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', restoreScrollPosition);
+    } else {
+        restoreScrollPosition();
+    }
+})();
 </script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <?php require_once __DIR__ . '/../includes/app_modal.php'; ?>

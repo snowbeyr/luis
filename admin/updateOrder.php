@@ -31,7 +31,7 @@ if (isset($_GET['id']) && isset($_GET['status'])) {
             'message' => 'This order has a pending cancellation request. Please approve or decline the cancellation request before proceeding with any order status updates.',
             'type' => 'warning'
         ];
-        header("Location: orders.php#order-" . $id);
+        header("Location: orders.php");
         exit();
     }
 
@@ -51,7 +51,7 @@ if (isset($_GET['id']) && isset($_GET['status'])) {
             'message' => "Order #{$id} is already " . strtoupper($old_status) . " and cannot be modified.",
             'type' => 'warning'
         ];
-        header("Location: orders.php#order-" . $id);
+        header("Location: orders.php");
         exit();
     }
 
@@ -82,7 +82,7 @@ if (isset($_GET['id']) && isset($_GET['status'])) {
         }
     }
 
-    header("Location: orders.php?success=1#order-" . $id);
+    header("Location: orders.php?success=1");
     exit();
 } else {
     echo "Invalid request parameters.";
