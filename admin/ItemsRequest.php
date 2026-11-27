@@ -95,14 +95,17 @@ if (isset($_POST['send_email_update'])) {
                 ";
             }
         } else {
-            if ($current_status == 'Approved') {
-                $item_to_replace_text = !empty($ticket_data['item_to_replace']) ? nl2br(htmlspecialchars($ticket_data['item_to_replace'])) : 'N/A';
+            $raw_replace = !empty($ticket_data['item_to_replace']) ? (string)$ticket_data['item_to_replace'] : '';
+            $cleaned_replace = preg_replace('/\s*[—\-]+\s*Exchange Credit:[^\r\n]*/iu', ' — Same-Item Replacement', $raw_replace);
+            $item_to_replace_text = trim((string)$cleaned_replace) !== '' ? nl2br(htmlspecialchars(trim((string)$cleaned_replace))) : 'N/A';
 
+            if ($current_status == 'Approved') {
                 $emailBody = "
                     <h3>Dear " . htmlspecialchars($customer_name) . ",</h3>
-                    <p>Your exchange item(s) request for <strong>Order #$order_number</strong> has been <strong>APPROVED</strong>.</p>
-                    <p><strong>Item(s) to be Replaced:</strong><br>$item_to_replace_text</p>
-                    <p>You may now bring the approved item to <strong>R. Taipan Hardware</strong> for exchange.</p>
+                    <p>Your <strong>same-item exchange request</strong> for <strong>Order #$order_number</strong> has been <strong>APPROVED</strong>.</p>
+                    <p><strong>Item(s) to be Replaced (Same-Item Replacement Only):</strong><br>$item_to_replace_text</p>
+                    <p>Please note that this exchange provides a <strong>new replacement unit of the exact same item</strong> and <strong>does not include a cash or monetary refund</strong>.</p>
+                    <p>You may now bring the approved item(s) along with your order receipt to <strong>R. Taipan Hardware</strong> to receive your same-item replacement.</p>
                     <br>
                     <p>Sincerely,<br><strong>R. Taipan Hardware Customer Service</strong></p>
                 ";
@@ -110,7 +113,10 @@ if (isset($_POST['send_email_update'])) {
                 $emailBody = "
                     <h3>Hi " . htmlspecialchars($customer_name) . ",</h3>
                     <p>Good day!</p>
-                    <p>Your request regarding Order Number <strong>#$order_number</strong> is now marked as <strong>COMPLETED</strong>.</p>
+                    <p>Your <strong>same-item exchange request</strong> for Order Number <strong>#$order_number</strong> has been marked as <strong>COMPLETED</strong>.</p>
+                    <p><strong>Replaced Item(s):</strong><br>$item_to_replace_text</p>
+                    <p>Your requested item(s) have been replaced with a new unit of the exact same item (no cash refund applies).</p>
+                    <p>Thank you for choosing R. Taipan Construction Supply and Services, OPC.</p>
                     <br>
                     <h4>Sincerely,<br>R. Taipan Hardware Customer Service</h4>
                 ";
@@ -118,7 +124,7 @@ if (isset($_POST['send_email_update'])) {
                 $emailBody = "
                     <h3>Hi " . htmlspecialchars($customer_name) . ",</h3>
                     <p>Good day!</p>
-                    <p>We regret to inform you that your request for Order Number <strong>#$order_number</strong> has been <strong>DECLINED</strong>.</p>
+                    <p>We regret to inform you that your <strong>same-item exchange request</strong> for Order Number <strong>#$order_number</strong> has been <strong>DECLINED</strong>.</p>
                     <p><strong>Reason:</strong><br>$decline_reason_text</p>
                     <br>
                     <h4>Sincerely,<br>R. Taipan Construction Supply and Services, OPC</h4>
@@ -906,8 +912,9 @@ $exchange_result = $pdo->query("SELECT cr.*, o.order_date, o.fullname, o.surname
                                     <td>
                                         <div class="p-2 bg-light border text-dark rounded font-monospace details-box">
                                             <?php 
-                                            $replace_text = $row['item_to_replace'] ?? '';
-                                            echo !empty(trim($replace_text)) ? nl2br(htmlspecialchars($replace_text)) : '<span class="text-muted italic">N/A</span>'; 
+                                            $replace_text = (string)($row['item_to_replace'] ?? '');
+                                            $replace_text = (string)preg_replace('/\s*[—\-]+\s*Exchange Credit:[^\r\n]*/iu', ' — Same-Item Replacement', $replace_text);
+                                            echo !empty(trim($replace_text)) ? nl2br(htmlspecialchars(trim($replace_text))) : '<span class="text-muted italic">N/A</span>'; 
                                           ?>
                                         </div>
                                     </td>

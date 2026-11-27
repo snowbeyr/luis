@@ -627,10 +627,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
                             for ($i = 0; $i < count($exchange_items); $i++) {
                                 $item_name = $exchange_items[$i];
                                 $item_qty = intval($exchange_qtys[$i] ?? 1);
-                                $unit_price = (float)($total_ordered_price_map[$item_name] ?? 0);
-                                $credit = round($unit_price * $item_qty, 2);
-                                $credit_info = $unit_price > 0 ? " — Exchange Credit: ₱" . number_format($credit, 2) . " (₱" . number_format($unit_price, 2) . "/unit)" : "";
-                                $readable_items_list .= "• {$item_name} (Qty: {$item_qty}x){$credit_info}\n";
+                                $readable_items_list .= "• {$item_name} (Qty: {$item_qty}x) — Same-Item Replacement\n";
                             }
 
                             $stmt_ins = $pdo->prepare("
@@ -839,7 +836,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_request'])) {
                                 <div id="exchangeItemsContainer"></div>
 
                                 <div class="alert alert-warning small mb-0 mt-3">
-                                    ℹ️ <strong>Same Item Exchange Only:</strong> Exchanges are only allowed for the same item. Replacement with a different item is not permitted.
+                                    ℹ️ <strong>Same-Item Replacement Only (No Cash Refund):</strong> Approved exchange requests will replace the selected item(s) with a brand-new unit of the exact same item. Money refunds or replacements with a different item are not permitted.
                                 </div>
                             </div>
 
@@ -1423,8 +1420,8 @@ function addExchangeItemRow(isFirstRow = false) {
                 <option value="" selected disabled hidden>Select Item</option>
             </select>
             <div class="small text-primary mt-1 exch-credit-display d-none">
-                <i class="bi bi-tag-fill me-1"></i>Eligible Exchange Credit: <strong class="exch-credit-amt">₱0.00</strong>
-                <span class="text-muted" style="font-size:0.75rem;">(Based strictly on item selling price; cash tendered is not exchange credit)</span>
+                <i class="bi bi-arrow-repeat me-1"></i>Replacement: <strong class="exch-credit-amt"></strong>
+                <span class="text-muted" style="font-size:0.75rem;">(Same-item new replacement only; no cash refund)</span>
             </div>
         </div>
         <div class="col-md-3">
@@ -1448,11 +1445,8 @@ function addExchangeItemRow(isFirstRow = false) {
             creditBox.classList.add('d-none');
             return;
         }
-        const item = verifiedItemsData.find(i => i.product_name === val);
-        const price = item ? parseFloat(item.price || 0) : 0;
         const qty = parseInt(qtyInput.value) || 1;
-        const totalCredit = price * qty;
-        creditAmt.textContent = `₱${totalCredit.toFixed(2)}`;
+        creditAmt.textContent = `${val} × ${qty} unit${qty > 1 ? 's' : ''}`;
         creditBox.classList.remove('d-none');
     }
 

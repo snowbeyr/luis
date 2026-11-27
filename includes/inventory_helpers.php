@@ -1272,11 +1272,51 @@ if (!function_exists('processCustomerTicketAction')) {
                     $checkDmg->execute([(string)$orderId, $ticket['account']]);
                     if ($checkDmg->rowCount() == 0) {
                         $itemDetails = !empty($ticket['item_to_replace']) ? $ticket['item_to_replace'] : $ticket['reason'];
+                        $itemDetails = (string)preg_replace('/\s*[—\-]+\s*Exchange Credit:[^\r\n]*/iu', ' — Same-Item Replacement', (string)$itemDetails);
                         if (!empty($ticket['details'])) {
                             $itemDetails .= "\nDetails: " . $ticket['details'];
                         }
                         $pdo->prepare("INSERT INTO damaged_items (order_number, account, product_image, item_details, date_logged) VALUES (?, ?, ?, ?, NOW())")
                             ->execute([(string)$orderId, $ticket['account'], $ticket['product_image'], $itemDetails]);
+                    }
+                }
+
+                // Notify customer in-app for exchange/replacement decisions (same-item replacement only, no cash refund)
+                $custEmailEx = trim((string)($ticket['email'] ?? ''));
+                if ($custEmailEx !== '' && $requestType === 'exchange') {
+                    if ($status === 'Approved') {
+                        createSystemNotification($pdo, [
+                            'recipient_role' => 'customer',
+                            'recipient_email' => $custEmailEx,
+                            'order_id' => $orderId,
+                            'request_id' => $reqId,
+                            'title' => "Exchange Request Approved (#{$orderId})",
+                            'message' => "Your same-item exchange request for Order #{$orderId} is approved. No cash refund applies — bring the item(s) to R. Taipan Hardware for a brand-new same-item replacement.",
+                            'type' => 'success',
+                            'unique_key' => "exchange_approved_{$reqId}",
+                        ]);
+                    } elseif ($status === 'Completed') {
+                        createSystemNotification($pdo, [
+                            'recipient_role' => 'customer',
+                            'recipient_email' => $custEmailEx,
+                            'order_id' => $orderId,
+                            'request_id' => $reqId,
+                            'title' => "Exchange Request Completed (#{$orderId})",
+                            'message' => "Your same-item exchange for Order #{$orderId} is now completed with a replacement of the same item.",
+                            'type' => 'success',
+                            'unique_key' => "exchange_completed_{$reqId}",
+                        ]);
+                    } elseif ($status === 'Declined') {
+                        createSystemNotification($pdo, [
+                            'recipient_role' => 'customer',
+                            'recipient_email' => $custEmailEx,
+                            'order_id' => $orderId,
+                            'request_id' => $reqId,
+                            'title' => "Exchange Request Declined (#{$orderId})",
+                            'message' => "Your exchange request for Order #{$orderId} was declined." . ($declineReason !== '' ? " Reason: {$declineReason}" : ''),
+                            'type' => 'warning',
+                            'unique_key' => "exchange_declined_{$reqId}",
+                        ]);
                     }
                 }
             }
