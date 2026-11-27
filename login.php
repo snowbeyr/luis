@@ -1173,7 +1173,7 @@ try {
                 } else if (isset($_GET['view'])) {
                     echo "All Products";
                 } else if ($is_home) {
-                    echo "Top Selling Items";
+                    echo "Recommended products";
                 } else {
                     echo "Product List";
                 }
@@ -1591,7 +1591,7 @@ try {
                         } else if (isset($_GET['view'])) {
                             echo "All Products";
                         } else if ($is_home) {
-                            echo "Top Selling Items";
+                            echo "Recommended products";
                         } else {
                             echo "Product List";
                         }
@@ -1889,41 +1889,48 @@ try {
         }
     </script>
 
-    <footer id="footer" class="bg-dark text-white mt-5 pt-5 pb-3">
+    <footer id="footer" class="bg-dark text-white mt-4 py-3">
         <div class="container">
-            <div class="row">
+            <div class="row g-3 align-items-start">
                 <div class="col-md-3 text-center text-md-start">
-                    <img src="assets/logo.jpg"
-                        style="width:70px; height:70px; border-radius:50%; border:2px solid #ccc;">
-                    <h5 class="mt-2">R. Taipan Construction Supply and Services</h5>
-                    <p class="text-muted small">Your trusted supplier of roofing and construction materials.</p>
+                    <div class="d-flex align-items-center justify-content-center justify-content-md-start gap-2 mb-1">
+                        <img src="assets/logo.jpg" alt="R. Taipan Logo"
+                            style="width:46px; height:46px; border-radius:50%; border:2px solid #ccc; object-fit:cover;">
+                        <h6 class="mb-0 fw-bold">R. Taipan Construction Supply and Services</h6>
+                    </div>
+                    <p class="text-white-50 small mb-0" style="font-size:0.8rem;">Your trusted supplier of roofing and construction materials.</p>
                 </div>
                 <div class="col-md-3">
-                    <h5>Contact Us</h5>
-                    <p class="small">0907 456 5632<br>rtaipancssopc@gmail.com</p><br>
-                    <h5>Store Hours</h5>
-                    <p class="small">8:00AM - 5PM | MON. - SAT.</p>
+                    <h6 class="fw-bold mb-1">Contact &amp; Hours</h6>
+                    <p class="small mb-1 text-light" style="font-size:0.82rem;">0907 456 5632<br>rtaipancssopc@gmail.com</p>
+                    <p class="small mb-0 text-white-50" style="font-size:0.8rem;">8:00AM - 5:00PM | MON. - SAT.</p>
                 </div>
-                <div class="col-md-3">
-                    <h5>Branches</h5>
-                    <p class="small mb-0">190 Cabrera Rd. Sitio Burol Brgy. San Juan Taytay, Rizal (Main Branch)</p>
-                    <a href="https://www.google.com/maps/place/Ronel+Steel+Roof+Trading+and+Hardware+Supply/@14.5602582,121.1374471,17z/data=!3m1!4b1!4m6!3m5!1s0x3397c727501f019b:0xe2dfa8a1b3aec65f!8m2!3d14.5602583!4d121.142318!16s%2Fg%2F11t2lf3b8r?entry=ttu&g_ep=EgoyMDI2MDQyOS4wIKXMDSoASAFQAw%3D%3D"
-                        target="_blank" class="text-info small d-block mb-2">View Map</a>
-                    <p class="small mb-0">Gerona-Guimba Rd. Purok Masagana Brgy. Abagon Gerona Tarlac</p>
-                    <a href="https://maps.app.goo.gl/EV3Bm6fdCaLFzzFi" target="_blank" class="text-info small">View
-                        Map</a>
-                    <p class="small mb-0">Sitio Bato-bato 1 Brgy. San Juan Taytay, Rizal</p>
-                    <a href="https://www.google.com/maps/place/R.+TAIPAN+CONSTRUCTION+SUPPLY+%26+SERVICES/@14.5644077,121.148692,149m/data=!3m1!1e3!4m15!1m8!3m7!1s0x3397c742f1b3202b:0x1fac35e429b5b598!2sCabrera+Rd,+Taytay,+1920+Rizal!3b1!8m2!3d14.5645132!4d121.1468918!16s%2Fg%2F1tg76l83!3m5!1s0x3397c70059cfff9b:0xd3229729a93f8cf5!8m2!3d14.5643595!4d121.1495273!16s%2Fg%2F11yrsfnwtl?entry=ttu&g_ep=EgoyMDI2MDQyOS4wIKXMDSoASAFQAw%3D%3D"
-                        class="text-info small">View Map</a>
+                <div class="col-md-4">
+                    <h6 class="fw-bold mb-1">Branches</h6>
+                    <div class="d-flex flex-column gap-1" style="font-size:0.82rem;">
+                        <a href="https://www.google.com/maps/place/Ronel+Steel+Roof+Trading+and+Hardware+Supply/@14.5602582,121.1374471,17z/data=!3m1!4b1!4m6!3m5!1s0x3397c727501f019b:0xe2dfa8a1b3aec65f!8m2!3d14.5602583!4d121.142318!16s%2Fg%2F11t2lf3b8r?entry=ttu&g_ep=EgoyMDI2MDQyOS4wIKXMDSoASAFQAw%3D%3D"
+                            target="_blank" rel="noopener noreferrer" class="link-info text-decoration-none link-opacity-75-hover">
+                            <i class="bi bi-geo-alt-fill me-1"></i>190 Cabrera Rd. Sitio Burol Brgy. San Juan Taytay, Rizal (Main Branch)
+                        </a>
+                        <a href="https://maps.app.goo.gl/EV3Bm6fdCaLFzzFi"
+                            target="_blank" rel="noopener noreferrer" class="link-info text-decoration-none link-opacity-75-hover">
+                            <i class="bi bi-geo-alt-fill me-1"></i>Gerona-Guimba Rd. Purok Masagana Brgy. Abagon Gerona Tarlac
+                        </a>
+                        <a href="https://www.google.com/maps/place/R.+TAIPAN+CONSTRUCTION+SUPPLY+%26+SERVICES/@14.5644077,121.148692,149m/data=!3m1!1e3!4m15!1m8!3m7!1s0x3397c742f1b3202b:0x1fac35e429b5b598!2sCabrera+Rd,+Taytay,+1920+Rizal!3b1!8m2!3d14.5645132!4d121.1468918!16s%2Fg%2F1tg76l83!3m5!1s0x3397c70059cfff9b:0xd3229729a93f8cf5!8m2!3d14.5643595!4d121.1495273!16s%2Fg%2F11yrsfnwtl?entry=ttu&g_ep=EgoyMDI2MDQyOS4wIKXMDSoASAFQAw%3D%3D"
+                            target="_blank" rel="noopener noreferrer" class="link-info text-decoration-none link-opacity-75-hover">
+                            <i class="bi bi-geo-alt-fill me-1"></i>Sitio Bato-bato 1 Brgy. San Juan Taytay, Rizal
+                        </a>
+                    </div>
                 </div>
-                <div class="col-md-3 mb-4">
-                    <h5>Follow Us on Facebook</h5>
-                    <a href="https://www.facebook.com/share/1Acq7mfhEZ/?mibextid=wwXIfr" class="text-info small">View
-                        Facebook Page</a><br><br>
+                <div class="col-md-2">
+                    <h6 class="fw-bold mb-1">Follow Us</h6>
+                    <a href="https://www.facebook.com/share/1Acq7mfhEZ/?mibextid=wwXIfr" target="_blank" rel="noopener noreferrer" class="text-info small text-decoration-none">
+                        <i class="bi bi-facebook me-1"></i>Facebook Page
+                    </a>
                 </div>
             </div>
-            <hr>
-            <div class="text-center small">© 2026 R. Taipan Hardware Store. All Rights Reserved.</div>
+            <hr class="my-2 border-secondary">
+            <div class="text-center text-white-50" style="font-size:0.78rem;">© 2026 R. Taipan Hardware Store. All Rights Reserved.</div>
         </div>
     </footer>
 <?php require_once __DIR__ . '/includes/app_modal.php'; ?>
