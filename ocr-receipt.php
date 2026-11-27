@@ -43,6 +43,42 @@ function ocrNormalizePhone(string $raw): string
 }
 
 /**
+ * Checks whether a candidate string (or OCR raw text) contains an official recipient
+ * number either in full or masked form showing its exact last 4 digits (e.g. "+63 9•• ••• 5023", "09......5023").
+ */
+function ocrMatchMaskedRecipient(string $rawTextOrSentTo, string $officialNumber): ?string
+{
+    $trimmed = trim($rawTextOrSentTo);
+    if ($trimmed === '' || $officialNumber === '') {
+        return null;
+    }
+
+    $last4 = substr($officialNumber, -4);
+    $off63 = '63' . substr($officialNumber, 1);
+
+    // 1. Exact full unmasked digits check
+    $allDigits = preg_replace('/\D+/', '', $trimmed);
+    if (is_string($allDigits) && (strpos($allDigits, $officialNumber) !== false || strpos($allDigits, $off63) !== false)) {
+        return $officialNumber;
+    }
+
+    // 2. If a different complete 10-12 digit PH mobile number was explicitly passed in sent_to, reject it
+    if (strlen((string)$allDigits) >= 10 && ocrNormalizePhone($trimmed) !== '') {
+        return null;
+    }
+
+    // 3. Explicit masked phone pattern (e.g. "+63 9•• ••• 5023", "09......5023", "••••5023")
+    if (preg_match('/(?:\+?63[\s\-]*9|0?9)[.*•●◦·∙°oOxX*\-\s_]{1,18}' . preg_quote($last4, '/') . '\b/u', $trimmed, $m)) {
+        return trim($m[0]);
+    }
+    if (preg_match('/[.*•●◦·∙°oOxX*]{2,}[\s\-]*' . preg_quote($last4, '/') . '\b/u', $trimmed, $m)) {
+        return trim($m[0]);
+    }
+
+    return null;
+}
+
+/**
  * Normalize a payment reference number and reject plain mobile numbers.
  */
 function ocrNormalizeRefNo(string $raw): string
@@ -312,7 +348,7 @@ Rules:
 - "provider": wallet or bank name if visible (e.g. "GCash", "Maya", "InstaPay", "Bank Transfer"), else "".
 - "ref_no": exact transaction Reference Number / Ref No. / Transaction ID / Trace No. / Confirmation No. with spaces removed (uppercase alphanumeric). NEVER return a mobile phone number (09XXXXXXXXX or +639XXXXXXXXX) as "ref_no". Use "" if not clearly visible.
 - "amount": exact primary amount sent or paid as plain numeric string with 2 decimals (e.g. "1250.00"), ignoring transfer fees, convenience fees, discounts, or remaining wallet balance. Use "" if not clearly visible.
-- "sent_to": recipient mobile number or recipient account number shown under Sent To / Recipient / Mobile Number / Account Number (if Philippine mobile number, return normalized 11 digits starting with 09 like "09073595023" when unmasked; if partially masked or not visible, keep what is visible or "").
+- "sent_to": recipient mobile number or recipient account number shown under Sent To / Recipient / Mobile Number / Account Number (if Philippine mobile number, return normalized 11 digits starting with 09 like "09073595023" when unmasked; if partially masked with dots/bullets/asterisks like "+63 9•• ••• 5023" or "09......5023", preserve the exact masked string with its visible prefix and last 4 digits; else "").
 - "receipt_dt": exact date and time string printed on the receipt (e.g. "Nov 26, 2026, 2:15 PM"), else "".
 - "receipt_iso": transaction timestamp converted to 24-hour "YYYY-MM-DD HH:MM" (or "YYYY-MM-DD" if time is not shown), else "".
 - "raw_text": faithful plain-text transcription of the main readable lines on the receipt separated by newlines.
@@ -355,13 +391,31 @@ if (!is_array($parsedData)) {
 $rawText = trim((string) ($parsedData['raw_text'] ?? ''));
 $sentToRaw = trim((string) ($parsedData['sent_to'] ?? ''));
 $normalizedSentTo = ocrNormalizePhone($sentToRaw);
-if ($normalizedSentTo === '' && $rawText !== '') {
-    $cleanDigits = preg_replace('/\D+/', '', $rawText);
-    if (is_string($cleanDigits)) {
-        if (strpos($cleanDigits, '09073595023') !== false || strpos($cleanDigits, '639073595023') !== false) {
-            $normalizedSentTo = '09073595023';
-        } elseif (strpos($cleanDigits, '09682770376') !== false || strpos($cleanDigits, '639682770376') !== false) {
-            $normalizedSentTo = '09682770376';
+$matchedMaskedSentTo = '';
+if ($normalizedSentTo === '') {
+    $officialNumbers = ['09073595023', '09682770376'];
+    foreach ($officialNumbers as $offNum) {
+        $mCandidate = ocrMatchMaskedRecipient($sentToRaw, $offNum);
+        if ($mCandidate !== null) {
+            if ($mCandidate === $offNum) {
+                $normalizedSentTo = $offNum;
+            } else {
+                $matchedMaskedSentTo = $mCandidate;
+            }
+            break;
+        }
+    }
+    if ($normalizedSentTo === '' && $matchedMaskedSentTo === '' && $rawText !== '') {
+        foreach ($officialNumbers as $offNum) {
+            $mCandidate = ocrMatchMaskedRecipient($rawText, $offNum);
+            if ($mCandidate !== null) {
+                if ($mCandidate === $offNum) {
+                    $normalizedSentTo = $offNum;
+                } else {
+                    $matchedMaskedSentTo = $mCandidate;
+                }
+                break;
+            }
         }
     }
 }
@@ -376,7 +430,7 @@ $outData = [
     'ref_no' => $refNoNorm,
     'is_duplicate_ref' => ($mode === 'payment' && $refNoNorm !== '') ? ocrIsDuplicateRefNo($pdo, $refNoNorm) : false,
     'amount' => ocrNormalizeAmount($parsedData['amount'] ?? ''),
-    'sent_to' => $normalizedSentTo !== '' ? $normalizedSentTo : (preg_replace('/\D+/', '', $sentToRaw) !== '' ? $sentToRaw : ''),
+    'sent_to' => $normalizedSentTo !== '' ? $normalizedSentTo : ($matchedMaskedSentTo !== '' ? $matchedMaskedSentTo : (preg_replace('/\D+/', '', $sentToRaw) !== '' ? $sentToRaw : '')),
     'receipt_dt' => $receiptDt,
     'receipt_iso' => $receiptIso,
     'raw_text' => $rawText,

@@ -108,6 +108,47 @@ function normalizeCheckoutPhoneDigits(string $raw): string {
 }
 
 /**
+ * Verifies whether a recipient string matches the expected official number either in full
+ * (e.g. 09073595023) or as a masked e-wallet receipt number ending in its last 4 digits
+ * (e.g. "09......5023" or "+63 9•• ••• 5023"). Returns normalized official number on match, else ''.
+ */
+function resolveMatchedCheckoutRecipient(string $rawSentTo, string $expectedRecipient): string {
+    $trimmed = trim($rawSentTo);
+    if ($trimmed === '' || $expectedRecipient === '') {
+        return '';
+    }
+
+    $normalizedFull = normalizeCheckoutPhoneDigits($trimmed);
+    if ($normalizedFull === $expectedRecipient) {
+        return $expectedRecipient;
+    }
+
+    // If an unmasked 10/11/12-digit mobile number was detected and differs, reject
+    if (preg_match('/^(?:09\d{9}|639\d{9}|9\d{9})$/', (string)preg_replace('/\D+/', '', $trimmed))) {
+        return '';
+    }
+
+    $last4 = substr($expectedRecipient, -4);
+    $digitsOnly = (string)preg_replace('/\D+/', '', $trimmed);
+
+    // Match masked e-wallet strings whose visible digits end in the expected last 4 (e.g., 5023)
+    if (
+        strlen($digitsOnly) >= 4 &&
+        strlen($digitsOnly) <= 9 &&
+        substr($digitsOnly, -4) === $last4
+    ) {
+        $prefixDigits = substr($digitsOnly, 0, -4);
+        $validPrefix = ($prefixDigits === '' || $prefixDigits === '09' || $prefixDigits === '639' || $prefixDigits === '9'
+            || strpos($expectedRecipient, $prefixDigits) === 0);
+        if ($validPrefix) {
+            return $expectedRecipient;
+        }
+    }
+
+    return '';
+}
+
+/**
  * Shared validation for payment method, scheme, OCR fields, and receipt screenshot.
  * Used identically on both Step 1 (Review staging) and Step 2 (Final confirmation).
  */
@@ -225,16 +266,17 @@ function validateCheckoutPaymentDetails(
         ];
     }
 
-    // 3. Enforce strict recipient number matching selected payment method
+    // 3. Enforce recipient number matching selected payment method (supports full & masked e-wallet numbers ending in last 4 digits)
     $expected_recipient = ($payment_method === 'GCash') ? '09073595023' : '09682770376';
-    $sent_digits = normalizeCheckoutPhoneDigits((string)($meta['sent_to'] ?? ''));
-    if ($sent_digits !== $expected_recipient) {
+    $matched_recipient = resolveMatchedCheckoutRecipient((string)($meta['sent_to'] ?? ''), $expected_recipient);
+    if ($matched_recipient === '') {
         return [
             'ok' => false,
             'title' => 'Incorrect Recipient Number',
-            'message' => 'You selected ' . $payment_method . '. Payment must be sent strictly to our official ' . $payment_method . ' number (' . $expected_recipient . ').'
+            'message' => 'You selected ' . $payment_method . '. Payment must be sent strictly to our official ' . $payment_method . ' number (' . $expected_recipient . ' / ending in ' . substr($expected_recipient, -4) . ').'
         ];
     }
+    $sent_digits = $matched_recipient;
 
     // 4. Enforce receipt date/time is within today (Asia/Manila) and not future-dated
     $manilaTz = new DateTimeZone('Asia/Manila');
@@ -2100,6 +2142,45 @@ function normalizePhMobileClient(raw) {
     return (digits.length === 11 && digits.startsWith('09')) ? digits : '';
 }
 
+function findMaskedRecipientMatch(textOrValue, officialNumber, isDirectField = false) {
+    if (!textOrValue || !officialNumber) return '';
+    const str = String(textOrValue).trim();
+    if (!str) return '';
+
+    const fullNorm = normalizePhMobileClient(str);
+    if (fullNorm) {
+        return (fullNorm === officialNumber) ? officialNumber : '';
+    }
+
+    const last4 = officialNumber.slice(-4);
+    const escapedLast4 = last4.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // Direct sent_to field from Gemini (e.g. "09......5023", "+63 9•• ••• 5023", "••••5023")
+    if (isDirectField) {
+        const digitsOnly = str.replace(/\D/g, '');
+        if (digitsOnly.length >= 4 && digitsOnly.length <= 9 && digitsOnly.endsWith(last4)) {
+            const prefix = digitsOnly.slice(0, -4);
+            if (!prefix || prefix === '09' || prefix === '639' || prefix === '9' || officialNumber.startsWith(prefix)) {
+                return str;
+            }
+        }
+    }
+
+    // Masked patterns inside full OCR raw_text (e.g. "+63 9•• ••• 5023", "09......5023", "•••• 5023")
+    const maskedPatterns = [
+        new RegExp('(?:\\+?63[\\s\\-]*9|09)[.*•●◦·∙°oOxX*\\-\\s_]{1,18}' + escapedLast4 + '\\b', 'i'),
+        new RegExp('[.*•●◦·∙°oOxX*]{2,}[\\s\\-]*' + escapedLast4 + '\\b', 'i')
+    ];
+    for (const pat of maskedPatterns) {
+        const m = str.match(pat);
+        if (m && m[0]) {
+            return m[0].trim();
+        }
+    }
+
+    return '';
+}
+
 async function checkDuplicateRefClient(refNo) {
     if (!refNo) return false;
     const controller = new AbortController();
@@ -2292,6 +2373,12 @@ function parseReceiptTextFields(text, requiredAmount, expectedRecipient) {
         ) {
             detectedSentTo = expectedRecipient;
             isExpectedRecipient = true;
+        } else {
+            const maskedMatch = findMaskedRecipientMatch(text || '', expectedRecipient, false);
+            if (maskedMatch) {
+                detectedSentTo = maskedMatch;
+                isExpectedRecipient = true;
+            }
         }
     }
 
@@ -2305,6 +2392,11 @@ function parseReceiptTextFields(text, requiredAmount, expectedRecipient) {
                 cleanDigitsOnly.includes(off63)
             ) {
                 detectedSentTo = offNum;
+                break;
+            }
+            const maskedOther = findMaskedRecipientMatch(text || '', offNum, false);
+            if (maskedOther) {
+                detectedSentTo = maskedOther;
                 break;
             }
         }
@@ -2428,13 +2520,20 @@ async function processReceiptOCR(fileInput) {
                 isDuplicateRef = await checkDuplicateRefClient(detectedRef);
             }
 
-            const gSentDigits = normalizePhMobileClient(gData.sent_to || '');
+            const gRawSent = (gData.sent_to || '').trim();
+            const gSentDigits = normalizePhMobileClient(gRawSent);
             if (gSentDigits) {
                 detectedSentTo = gSentDigits;
                 isExpectedRecipient = Boolean(expectedRecipient && gSentDigits === expectedRecipient);
+            } else if (expectedRecipient && findMaskedRecipientMatch(gRawSent, expectedRecipient, true)) {
+                detectedSentTo = gRawSent;
+                isExpectedRecipient = true;
+            } else if (parsedFromText.isExpectedRecipient) {
+                detectedSentTo = parsedFromText.detectedSentTo || gRawSent;
+                isExpectedRecipient = true;
             } else {
-                detectedSentTo = parsedFromText.detectedSentTo || (gData.sent_to || '').trim();
-                isExpectedRecipient = parsedFromText.isExpectedRecipient;
+                detectedSentTo = parsedFromText.detectedSentTo || gRawSent;
+                isExpectedRecipient = false;
             }
 
             console.log("Gemini OCR Extracted (" + (geminiRes.model || 'gemini') + "):", gData);
