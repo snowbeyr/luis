@@ -62,17 +62,35 @@ function ocrMatchMaskedRecipient(string $rawTextOrSentTo, string $officialNumber
         return $officialNumber;
     }
 
-    // 2. If a different complete 10-12 digit PH mobile number was explicitly passed in sent_to, reject it
-    if (strlen((string)$allDigits) >= 10 && ocrNormalizePhone($trimmed) !== '') {
-        return null;
+    // 2. Reject if an unmasked different full PH mobile number appears in this candidate
+    if (preg_match('/(?:\+?63\s*9\d{2}[\s\-]?\d{3}[\s\-]?\d{4}|\b09\d{2}[\s\-]?\d{3}[\s\-]?\d{4}\b)/', $trimmed, $fullM)) {
+        $normFull = ocrNormalizePhone($fullM[0]);
+        if ($normFull !== '' && $normFull !== $officialNumber) {
+            return null;
+        }
     }
 
-    // 3. Explicit masked phone pattern (e.g. "+63 9•• ••• 5023", "09......5023", "••••5023")
-    if (preg_match('/(?:\+?63[\s\-]*9|0?9)[.*•●◦·∙°oOxX*\-\s_]{1,18}' . preg_quote($last4, '/') . '\b/u', $trimmed, $m)) {
+    // 3. Explicit prefix + any non-digit masking/OCR-garbled characters + last 4 digits (e.g. "+63 9•• ••• 5023", "+63 9ee eee 5023", "09......5023")
+    if (preg_match('/(?:\+?63|463|\b0?9)[^\d\r\n]{1,24}' . preg_quote($last4, '/') . '\b/iu', $trimmed, $m)) {
         return trim($m[0]);
     }
-    if (preg_match('/[.*•●◦·∙°oOxX*]{2,}[\s\-]*' . preg_quote($last4, '/') . '\b/u', $trimmed, $m)) {
-        return trim($m[0]);
+
+    // 4. Line-level fallback: masking symbols or isolated last 4 digits outside Ref No / Amount / Date lines
+    $lines = preg_split('/\r?\n/', $trimmed) ?: [$trimmed];
+    foreach ($lines as $line) {
+        $lineTrim = trim($line);
+        if ($lineTrim === '') {
+            continue;
+        }
+        if (preg_match('/\b(?:ref|reference|amount|total|fee|php|balance|date|time|carbon|gco2)\b|₱/iu', $lineTrim)) {
+            continue;
+        }
+        if (preg_match('/(?:^|[^\d.,:])' . preg_quote($last4, '/') . '(?:$|[^\d])/u', $lineTrim)) {
+            if (preg_match('/(?:[.*•●◦·∙°oOxXeEcCgGqQ~_*+\-]{2,}[\s\-]*' . preg_quote($last4, '/') . ')\b/u', $lineTrim, $mMask)) {
+                return trim($mMask[0]);
+            }
+            return '••••' . $last4;
+        }
     }
 
     return null;
@@ -348,7 +366,7 @@ Rules:
 - "provider": wallet or bank name if visible (e.g. "GCash", "Maya", "InstaPay", "Bank Transfer"), else "".
 - "ref_no": exact transaction Reference Number / Ref No. / Transaction ID / Trace No. / Confirmation No. with spaces removed (uppercase alphanumeric). NEVER return a mobile phone number (09XXXXXXXXX or +639XXXXXXXXX) as "ref_no". Use "" if not clearly visible.
 - "amount": exact primary amount sent or paid as plain numeric string with 2 decimals (e.g. "1250.00"), ignoring transfer fees, convenience fees, discounts, or remaining wallet balance. Use "" if not clearly visible.
-- "sent_to": recipient mobile number or recipient account number shown under Sent To / Recipient / Mobile Number / Account Number (if Philippine mobile number, return normalized 11 digits starting with 09 like "09073595023" when unmasked; if partially masked with dots/bullets/asterisks like "+63 9•• ••• 5023" or "09......5023", preserve the exact masked string with its visible prefix and last 4 digits; else "").
+- "sent_to": recipient mobile number or recipient account number shown under Sent To / Recipient / Mobile Number / Account Number / recipient pill below recipient name (if Philippine mobile number, return normalized 11 digits starting with 09 like "09073595023" when unmasked; if partially masked with dots/bullets/asterisks like "+63 9•• ••• 5023" or "09......5023", ALWAYS extract and preserve the masked string with its visible last 4 digits — NEVER omit a masked recipient number; also include that exact line in "raw_text").
 - "receipt_dt": exact date and time string printed on the receipt (e.g. "Nov 26, 2026, 2:15 PM"), else "".
 - "receipt_iso": transaction timestamp converted to 24-hour "YYYY-MM-DD HH:MM" (or "YYYY-MM-DD" if time is not shown), else "".
 - "raw_text": faithful plain-text transcription of the main readable lines on the receipt separated by newlines.

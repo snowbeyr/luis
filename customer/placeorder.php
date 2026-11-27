@@ -273,7 +273,7 @@ function validateCheckoutPaymentDetails(
         return [
             'ok' => false,
             'title' => 'Incorrect Recipient Number',
-            'message' => 'You selected ' . $payment_method . '. Payment must be sent strictly to our official ' . $payment_method . ' number (' . $expected_recipient . ' / ending in ' . substr($expected_recipient, -4) . ').'
+            'message' => 'You selected ' . $payment_method . '. Payment must be sent to our official ' . $payment_method . ' number (' . $expected_recipient . ' / ending in ' . substr($expected_recipient, -4) . ').'
         ];
     }
     $sent_digits = $matched_recipient;
@@ -2152,10 +2152,19 @@ function findMaskedRecipientMatch(textOrValue, officialNumber, isDirectField = f
         return (fullNorm === officialNumber) ? officialNumber : '';
     }
 
+    // Reject if a full unmasked 10-12 digit PH mobile number appears that does NOT match officialNumber
+    const fullPhonesInText = str.match(/(?:\+?63\s*9\d{2}[\s\-]?\d{3}[\s\-]?\d{4}|\b09\d{2}[\s\-]?\d{3}[\s\-]?\d{4}\b)/g) || [];
+    if (fullPhonesInText.length > 0) {
+        const hasMatchFull = fullPhonesInText.some(p => normalizePhMobileClient(p) === officialNumber);
+        if (!hasMatchFull) {
+            return '';
+        }
+    }
+
     const last4 = officialNumber.slice(-4);
     const escapedLast4 = last4.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-    // Direct sent_to field from Gemini (e.g. "09......5023", "+63 9•• ••• 5023", "••••5023")
+    // Direct sent_to field from Gemini (e.g. "09......5023", "+63 9•• ••• 5023", "+63 9ee eee 5023", "••••5023", "5023")
     if (isDirectField) {
         const digitsOnly = str.replace(/\D/g, '');
         if (digitsOnly.length >= 4 && digitsOnly.length <= 9 && digitsOnly.endsWith(last4)) {
@@ -2166,16 +2175,25 @@ function findMaskedRecipientMatch(textOrValue, officialNumber, isDirectField = f
         }
     }
 
-    // Masked patterns inside full OCR raw_text (e.g. "+63 9•• ••• 5023", "09......5023", "•••• 5023")
-    const maskedPatterns = [
-        new RegExp('(?:\\+?63[\\s\\-]*9|09)[.*•●◦·∙°oOxX*\\-\\s_]{1,18}' + escapedLast4 + '\\b', 'i'),
-        new RegExp('[.*•●◦·∙°oOxX*]{2,}[\\s\\-]*' + escapedLast4 + '\\b', 'i')
-    ];
-    for (const pat of maskedPatterns) {
-        const m = str.match(pat);
-        if (m && m[0]) {
-            return m[0].trim();
-        }
+    // 1. Explicit PH prefix (+63 / 463 / 09 / 9) + any non-digit OCR noise/bullets up to 24 chars + last 4 digits
+    const prefixPat = new RegExp('(?:\\+?63|463|\\b0?9)[^\\d\\r\\n]{1,24}' + escapedLast4 + '\\b', 'i');
+    const pm = str.match(prefixPat);
+    if (pm && pm[0]) {
+        return pm[0].trim();
+    }
+
+    // 2. Line-by-line scan for masked recipient or standalone last4 outside Ref No / Amount / Date lines
+    const lines = str.split(/\r?\n/);
+    const skipLinePat = /\b(?:ref|reference|amount|total|fee|php|balance|date|time|carbon|gco2)\b|₱/i;
+    const maskLinePat = new RegExp('[.*•●◦·∙°oOxXeEcCgGqQ~_*+\\-]{2,}[\\s\\-]*' + escapedLast4 + '\\b', 'i');
+    const isolatedLast4Pat = new RegExp('(?:^|[^\\d.,:])' + escapedLast4 + '(?:$|[^\\d])');
+
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line || skipLinePat.test(line)) continue;
+        const mm = line.match(maskLinePat);
+        if (mm && mm[0]) return mm[0].trim();
+        if (isolatedLast4Pat.test(line)) return '••••' + last4;
     }
 
     return '';
@@ -2595,12 +2613,12 @@ async function processReceiptOCR(fileInput) {
             );
         } else if (!expectedRecipient || !isExpectedRecipient) {
             const methodLabel = selectedMethod || 'selected payment method';
-            const expectedText = expectedRecipient ? `our official ${methodLabel} number (${expectedRecipient})` : 'our official account number';
+            const expectedText = expectedRecipient ? `our official ${methodLabel} number (${expectedRecipient} / ending in ${expectedRecipient.slice(-4)})` : 'our official account number';
             failValidation(
                 'alert-danger',
                 'bi-exclamation-diamond-fill text-danger',
                 'Incorrect Recipient Number',
-                `You selected ${methodLabel}, so the receipt must show payment sent strictly to ${expectedText}. Please upload the correct receipt to continue.`,
+                `You selected ${methodLabel}, so the receipt must show payment sent to ${expectedText}. Please upload the correct receipt to continue.`,
                 detailsHtml
             );
         } else if (!detectedRef) {
