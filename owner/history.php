@@ -246,11 +246,11 @@ body{
                             <thead class="table-light text-secondary small text-uppercase">
                                 <tr>
                                     <th class="ps-4 py-3">Order ID</th>
-                                    <th>Order Status</th>
-                                    <th>Date</th>
                                     <th>Customer Email</th>
                                     <th>Customer Name</th>
                                     <th>Total Amount</th>
+                                    <th>Order Status</th>
+                                    <th>Date</th>
                                     <th class="text-end pe-4">Action</th>
                                 </tr>
                             </thead>
@@ -264,6 +264,9 @@ body{
                                 ?>
                                 <tr>
                                     <td class="ps-4 fw-bold">#<?php echo $row['id']; ?></td>
+                                    <td class="text-muted small"><?php echo htmlspecialchars($row['email'] ?? 'N/A'); ?></td>
+                                    <td><?php echo htmlspecialchars($row['fullname'] . " " . $row['surname']); ?></td>
+                                    <td class="fw-bold text-success">₱<?php echo number_format($row['total_amount'], 2); ?></td>
                                     <td><?php echo renderHistoryOrderStatusBadge($row['status'] ?? ''); ?></td>
                                     <td class="small">
                                         <?php if ($orderDateInfo): ?>
@@ -273,9 +276,6 @@ body{
                                             <span class="text-muted">N/A</span>
                                         <?php endif; ?>
                                     </td>
-                                    <td class="text-muted small"><?php echo htmlspecialchars($row['email'] ?? 'N/A'); ?></td>
-                                    <td><?php echo htmlspecialchars($row['fullname'] . " " . $row['surname']); ?></td>
-                                    <td class="fw-bold text-success">₱<?php echo number_format($row['total_amount'], 2); ?></td>
                                     <td class="text-end pe-4">
                                         <button class="btn btn-sm btn-outline-primary" onclick='viewOnlineItems(<?php echo htmlspecialchars(json_encode($row), ENT_QUOTES, "UTF-8"); ?>)'>
                                             <i class="bi bi-receipt"></i> View Receipt
@@ -296,9 +296,9 @@ body{
                             <thead class="table-light text-secondary small text-uppercase">
                                 <tr>
                                     <th class="ps-4 py-3">Transaction ID</th>
-                                    <th>Date</th>
                                     <th>Cashier Name</th>
                                     <th>Total Amount</th>
+                                    <th>Date</th>
                                     <th class="text-end pe-4">Action</th>
                                 </tr>
                             </thead>
@@ -314,6 +314,8 @@ body{
                                     <td class="ps-4 fw-bold">
                                         #<?php echo $row['id']; ?>
                                     </td>
+                                    <td><i class="bi bi-person me-1 text-muted"></i> <?php echo htmlspecialchars($row['cashier_name']); ?></td>
+                                    <td class="fw-bold text-success">₱<?php echo number_format($row['total_amount'], 2); ?></td>
                                     <td class="small">
                                         <?php if ($posDateInfo): ?>
                                             <div><?php echo htmlspecialchars($posDateInfo['date']); ?></div>
@@ -322,8 +324,6 @@ body{
                                             <span class="text-muted">N/A</span>
                                         <?php endif; ?>
                                     </td>
-                                    <td><i class="bi bi-person me-1 text-muted"></i> <?php echo htmlspecialchars($row['cashier_name']); ?></td>
-                                    <td class="fw-bold text-success">₱<?php echo number_format($row['total_amount'], 2); ?></td>
                                     <td class="text-end pe-4">
                                         <button class="btn btn-sm btn-outline-success" onclick='viewPOSitems(<?php echo htmlspecialchars(json_encode($row), ENT_QUOTES, "UTF-8"); ?>)'>
                                             <i class="bi bi-receipt"></i> View Receipt
