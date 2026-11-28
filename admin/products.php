@@ -1196,6 +1196,57 @@ if ($current_view === 'shared_stock') {
             opacity: 0.9;
         }
 
+        /* Clickable Product Name Trigger */
+        .product-name-trigger {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: transparent;
+            border: 0;
+            padding: 0;
+            text-align: left;
+            font-weight: 700;
+            color: #0f172a;
+            cursor: pointer;
+            transition: color 0.15s ease;
+        }
+
+        .product-name-trigger:hover {
+            color: #2563eb;
+            text-decoration: underline;
+        }
+
+        .product-name-trigger .product-name-icon {
+            font-size: 0.78rem;
+            color: #64748b;
+            opacity: 0.7;
+            transition: opacity 0.15s ease, color 0.15s ease;
+        }
+
+        .product-name-trigger:hover .product-name-icon {
+            color: #2563eb;
+            opacity: 1;
+        }
+
+        .product-detail-img-wrap {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 14px;
+            padding: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 240px;
+        }
+
+        .product-detail-img {
+            max-height: 260px;
+            width: 100%;
+            object-fit: contain;
+            border-radius: 10px;
+            cursor: zoom-in;
+        }
+
         /* Searchable Main Product Dropdown inside Add Variant Modal */
         .searchable-select-menu {
             max-height: 260px;
@@ -2290,7 +2341,6 @@ if ($current_view === 'shared_stock') {
                             <thead class="table-light text-secondary small text-uppercase">
                                 <tr>
                                     <th class="ps-4" style="width: 90px;">Item ID</th>
-                                    <th style="width: 80px;">Image</th>
                                     <th style="min-width: 240px;">Product Name</th>
                                     <th style="width: 110px;">Type</th>
                                     <th style="width: 140px;">Category</th>
@@ -2340,18 +2390,29 @@ if ($current_view === 'shared_stock') {
                                                 #<?= $item_id; ?>
                                             </td>
 
+                                            <?php
+                                                $detail_payload = [
+                                                    'item_id' => $item_id,
+                                                    'product_id' => $prod_id,
+                                                    'is_variant' => $is_variant,
+                                                    'parent_name' => (string)($row['parent_name'] ?? ''),
+                                                    'name' => $display_name,
+                                                    'category' => (string)($row['category'] ?: 'Uncategorized'),
+                                                    'price' => (float)$row['price'],
+                                                    'stock' => $item_stock,
+                                                    'description' => (string)($row['description'] ?? ''),
+                                                    'image_url' => $img_src,
+                                                    'shared_source_name' => (string)($row['shared_source_name'] ?? ''),
+                                                ];
+                                            ?>
                                             <td>
-                                                <img src="<?= htmlspecialchars($img_src, ENT_QUOTES, 'UTF-8'); ?>"
-                                                     alt="<?= htmlspecialchars($display_name); ?>"
-                                                     class="item-img"
-                                                     loading="lazy"
-                                                     onclick="openProductImageZoom(this.src)"
-                                                     title="Click to view large image"
-                                                     onerror="this.onerror=null; this.src='../assets/images/no-image.png';">
-                                            </td>
-
-                                            <td>
-                                                <span class="fw-bold text-dark"><?= htmlspecialchars($display_name); ?></span>
+                                                <button type="button"
+                                                    class="product-name-trigger"
+                                                    onclick="openProductDetailsModal(<?= htmlspecialchars(json_encode($detail_payload), ENT_QUOTES, 'UTF-8'); ?>)"
+                                                    title="Click to view product details">
+                                                    <span><?= htmlspecialchars($display_name); ?></span>
+                                                    <i class="bi bi-box-arrow-up-right product-name-icon"></i>
+                                                </button>
                                             </td>
 
                                             <td>
@@ -2450,7 +2511,7 @@ if ($current_view === 'shared_stock') {
                                 <?php endforeach; ?>
                             <?php else: ?>
                                 <tr>
-                                    <td colspan="9" class="text-center py-5 text-muted">
+                                    <td colspan="8" class="text-center py-5 text-muted">
                                         <i class="bi bi-box-seam display-4 d-block mb-2 text-secondary opacity-50"></i>
                                         <h5 class="fw-semibold">No products found</h5>
                                         <p class="small text-muted mb-0">Try adjusting your search or filter options to find what you are looking for.</p>
@@ -3009,6 +3070,86 @@ if ($current_view === 'shared_stock') {
 
     <?php endif; ?>
 
+    <!-- PRODUCT DETAILS FLOATING MODAL -->
+    <div class="modal fade" id="productDetailsModal" tabindex="-1" aria-labelledby="productDetailsModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content border-0 shadow-lg rounded-4 overflow-hidden">
+                <div class="modal-header bg-light border-bottom px-4 py-3">
+                    <div class="d-flex align-items-center gap-2">
+                        <i class="bi bi-box-seam-fill text-primary fs-5"></i>
+                        <h5 class="modal-title fw-bold mb-0" id="productDetailsModalLabel">Product Details</h5>
+                        <span id="detail_typeBadge" class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill ms-1">Main Product</span>
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body p-4">
+                    <div class="row g-4 align-items-start">
+                        <div class="col-md-5">
+                            <div class="product-detail-img-wrap">
+                                <img id="detail_image"
+                                     src="../assets/images/no-image.png"
+                                     alt="Product Image"
+                                     class="product-detail-img"
+                                     onclick="openProductImageZoom(this.src)"
+                                     title="Click to view full image"
+                                     onerror="this.onerror=null; this.src='../assets/images/no-image.png';">
+                            </div>
+                            <div class="text-center mt-2">
+                                <small class="text-muted"><i class="bi bi-zoom-in me-1"></i>Click image to zoom</small>
+                            </div>
+                        </div>
+                        <div class="col-md-7">
+                            <div class="row g-3">
+                                <div class="col-6">
+                                    <div class="p-3 bg-light rounded-3 border h-100">
+                                        <div class="text-uppercase text-muted fw-bold" style="font-size: 0.72rem;">Product ID</div>
+                                        <div id="detail_productId" class="fw-bold font-monospace text-dark fs-6 mt-1">-</div>
+                                        <div id="detail_variantIdNote" class="text-muted small d-none"></div>
+                                    </div>
+                                </div>
+                                <div class="col-6">
+                                    <div class="p-3 bg-light rounded-3 border h-100">
+                                        <div class="text-uppercase text-muted fw-bold" style="font-size: 0.72rem;">Category</div>
+                                        <div id="detail_category" class="fw-semibold text-dark mt-1">-</div>
+                                    </div>
+                                </div>
+                                <div class="col-12">
+                                    <div class="p-3 bg-light rounded-3 border">
+                                        <div class="text-uppercase text-muted fw-bold" style="font-size: 0.72rem;">Product Name</div>
+                                        <div id="detail_productName" class="fw-bold text-dark fs-5 mt-1">-</div>
+                                        <div id="detail_parentName" class="text-muted small mt-1 d-none"></div>
+                                    </div>
+                                </div>
+                                <div class="col-6">
+                                    <div class="p-3 bg-light rounded-3 border h-100">
+                                        <div class="text-uppercase text-muted fw-bold" style="font-size: 0.72rem;">Price</div>
+                                        <div id="detail_price" class="fw-bold text-success fs-5 mt-1">₱0.00</div>
+                                    </div>
+                                </div>
+                                <div class="col-6">
+                                    <div class="p-3 bg-light rounded-3 border h-100">
+                                        <div class="text-uppercase text-muted fw-bold" style="font-size: 0.72rem;">Stock</div>
+                                        <div id="detail_stock" class="fw-bold text-dark fs-5 mt-1">0</div>
+                                        <div id="detail_sharedNote" class="text-info small d-none"></div>
+                                    </div>
+                                </div>
+                                <div class="col-12">
+                                    <div class="p-3 bg-light rounded-3 border">
+                                        <div class="text-uppercase text-muted fw-bold" style="font-size: 0.72rem;">Product Description</div>
+                                        <div id="detail_description" class="text-secondary mt-1" style="white-space: pre-wrap; font-size: 0.92rem;">No description available.</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer bg-light border-top px-4 py-2">
+                    <button type="button" class="btn btn-secondary btn-sm px-4 fw-semibold" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- IMAGE ZOOM MODAL (Available in both views) -->
     <div class="modal fade" id="imageZoomModal" tabindex="-1" aria-hidden="true" style="z-index: 2060;">
         <div class="modal-dialog modal-dialog-centered modal-lg">
@@ -3098,6 +3239,81 @@ if ($current_view === 'shared_stock') {
         function openProductImageZoom(imgSrc) {
             document.getElementById('zoomImage').src = imgSrc;
             const modal = new bootstrap.Modal(document.getElementById('imageZoomModal'));
+            modal.show();
+        }
+
+        // Floating Product Details Modal
+        function openProductDetailsModal(item) {
+            const modalEl = document.getElementById('productDetailsModal');
+            if (!modalEl || !item) return;
+
+            const isVariant = Boolean(item.is_variant);
+            const typeBadge = document.getElementById('detail_typeBadge');
+            if (typeBadge) {
+                typeBadge.textContent = isVariant ? 'Variant' : 'Main Product';
+                typeBadge.className = isVariant
+                    ? 'badge bg-dark-subtle text-dark border border-secondary-subtle rounded-pill ms-1'
+                    : 'badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill ms-1';
+            }
+
+            document.getElementById('detail_productId').textContent = `#${item.product_id || item.item_id || '-'}`;
+
+            const varIdNote = document.getElementById('detail_variantIdNote');
+            if (varIdNote) {
+                if (isVariant && item.item_id) {
+                    varIdNote.textContent = `Variant ID: #${item.item_id}`;
+                    varIdNote.classList.remove('d-none');
+                } else {
+                    varIdNote.textContent = '';
+                    varIdNote.classList.add('d-none');
+                }
+            }
+
+            document.getElementById('detail_productName').textContent = item.name || '-';
+
+            const parentEl = document.getElementById('detail_parentName');
+            if (parentEl) {
+                if (isVariant && item.parent_name) {
+                    parentEl.textContent = `Parent Product: ${item.parent_name}`;
+                    parentEl.classList.remove('d-none');
+                } else {
+                    parentEl.textContent = '';
+                    parentEl.classList.add('d-none');
+                }
+            }
+
+            document.getElementById('detail_category').textContent = item.category || 'Uncategorized';
+
+            const priceNum = Number(item.price || 0);
+            document.getElementById('detail_price').textContent = '₱' + priceNum.toLocaleString('en-PH', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            });
+
+            document.getElementById('detail_stock').textContent = String(item.stock ?? 0);
+
+            const sharedNote = document.getElementById('detail_sharedNote');
+            if (sharedNote) {
+                if (item.shared_source_name) {
+                    sharedNote.textContent = `Shared Source: ${item.shared_source_name}`;
+                    sharedNote.classList.remove('d-none');
+                } else {
+                    sharedNote.textContent = '';
+                    sharedNote.classList.add('d-none');
+                }
+            }
+
+            const descText = String(item.description || '').trim();
+            const descEl = document.getElementById('detail_description');
+            descEl.textContent = descText !== '' ? descText : 'No product description provided.';
+            descEl.classList.toggle('text-muted', descText === '');
+            descEl.classList.toggle('fst-italic', descText === '');
+
+            const imgEl = document.getElementById('detail_image');
+            imgEl.src = item.image_url || '../assets/images/no-image.png';
+            imgEl.alt = item.name || 'Product Image';
+
+            const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
             modal.show();
         }
 
