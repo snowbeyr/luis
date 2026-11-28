@@ -298,8 +298,8 @@ body{
                                     <th class="ps-4 py-3">Transaction ID</th>
                                     <th>Cashier Name</th>
                                     <th>Total Amount</th>
-                                    <th>Action</th>
-                                    <th class="text-end pe-4">Date</th>
+                                    <th>Date</th>
+                                    <th class="text-end pe-4">Action</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -316,18 +316,18 @@ body{
                                     </td>
                                     <td><i class="bi bi-person me-1 text-muted"></i> <?php echo htmlspecialchars($row['cashier_name']); ?></td>
                                     <td class="fw-bold text-success">₱<?php echo number_format($row['total_amount'], 2); ?></td>
-                                    <td>
-                                        <button class="btn btn-sm btn-outline-success" onclick='viewPOSitems(<?php echo htmlspecialchars(json_encode($row), ENT_QUOTES, "UTF-8"); ?>)'>
-                                            <i class="bi bi-receipt"></i> View Receipt
-                                        </button>
-                                    </td>
-                                    <td class="small text-end pe-4">
+                                    <td class="small">
                                         <?php if ($posDateInfo): ?>
                                             <div><?php echo htmlspecialchars($posDateInfo['date']); ?></div>
                                             <div class="text-muted" style="font-size: 0.78rem;"><?php echo htmlspecialchars($posDateInfo['time']); ?></div>
                                         <?php else: ?>
                                             <span class="text-muted">N/A</span>
                                         <?php endif; ?>
+                                    </td>
+                                    <td class="text-end pe-4">
+                                        <button class="btn btn-sm btn-outline-success" onclick='viewPOSitems(<?php echo htmlspecialchars(json_encode($row), ENT_QUOTES, "UTF-8"); ?>)'>
+                                            <i class="bi bi-receipt"></i> View Receipt
+                                        </button>
                                     </td>
                                 </tr>
                                 <?php } } else { ?>
