@@ -1,23 +1,49 @@
 <?php
 session_start();
 require_once __DIR__ . '/../config/db.php';
+require_once __DIR__ . '/../includes/inventory_helpers.php';
 
 if (!isset($_SESSION['role']) || $_SESSION['role'] != "owner") {
     header("Location: ../login.php");
     exit();
 }
 $owner_name = isset($_SESSION['username']) ? $_SESSION['username'] : "owner";
-$date_selected = isset($_GET['filter_date']) ? $_GET['filter_date'] : ''; 
-$where_online = " WHERE 1=1 "; 
-$where_pos = " WHERE 1=1 "; 
+$date_selected = isset($_GET['filter_date']) ? trim((string)$_GET['filter_date']) : '';
+if ($date_selected !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $date_selected)) {
+    $date_selected = '';
+}
 
-if (!empty($date_selected)) { 
-    $where_online .= " AND DATE(order_date) = '$date_selected'"; 
-    $where_pos .= " AND DATE(transaction_date) = '$date_selected'"; 
-} 
+$params = [];
+$where_online = " WHERE 1=1 ";
+$where_pos = " WHERE 1=1 ";
 
-$orders = $pdo->query("SELECT * FROM orders $where_online ORDER BY id DESC"); 
-$pos = $pdo->query("SELECT * FROM pos_transaction $where_pos ORDER BY id DESC"); 
+if ($date_selected !== '') {
+    $where_online .= " AND DATE((order_date AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Manila') = :fdate ";
+    $where_pos .= " AND DATE((transaction_date AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Manila') = :fdate ";
+    $params[':fdate'] = $date_selected;
+}
+
+$orders = $pdo->prepare("SELECT * FROM orders $where_online ORDER BY id DESC");
+$orders->execute($params);
+
+$pos = $pdo->prepare("SELECT * FROM pos_transaction $where_pos ORDER BY id DESC");
+$pos->execute($params);
+
+function renderHistoryOrderStatusBadge(?string $status): string {
+    $raw = trim((string)$status);
+    $key = strtolower($raw);
+    $label = $raw !== '' ? ucwords(str_replace('_', ' ', $raw)) : 'Unknown';
+
+    $badgeClass = match ($key) {
+        'declined', 'cancelled', 'canceled' => 'bg-danger text-white',
+        'pending' => 'bg-warning text-dark',
+        'preparing', 'out_for_delivery', 'out for delivery', 'in_transit', 'in transit' => 'bg-info text-dark',
+        'approved', 'delivered', 'completed' => 'bg-success text-white',
+        default => 'bg-secondary text-white',
+    };
+
+    return '<span class="badge ' . $badgeClass . ' rounded-pill px-2 py-1">' . htmlspecialchars($label) . '</span>';
+}
 ?>
 
 <!DOCTYPE html>
@@ -220,6 +246,9 @@ body{
                             <thead class="table-light text-secondary small text-uppercase">
                                 <tr>
                                     <th class="ps-4 py-3">Order ID</th>
+                                    <th>Order Status</th>
+                                    <th>Date</th>
+                                    <th>Customer Email</th>
                                     <th>Customer Name</th>
                                     <th>Total Amount</th>
                                     <th class="text-end pe-4">Action</th>
@@ -230,9 +259,21 @@ body{
                                 $orderRows = $orders->fetchAll(PDO::FETCH_ASSOC);
                                 if(count($orderRows) > 0) {
                                     foreach($orderRows as $row) { 
+                                        $orderDateInfo = formatTimelineStepDateTime($row['order_date'] ?? null);
+                                        $row['order_date_display'] = $orderDateInfo['full'] ?? ($row['order_date'] ?? 'N/A');
                                 ?>
                                 <tr>
                                     <td class="ps-4 fw-bold">#<?php echo $row['id']; ?></td>
+                                    <td><?php echo renderHistoryOrderStatusBadge($row['status'] ?? ''); ?></td>
+                                    <td class="small">
+                                        <?php if ($orderDateInfo): ?>
+                                            <div><?php echo htmlspecialchars($orderDateInfo['date']); ?></div>
+                                            <div class="text-muted" style="font-size: 0.78rem;"><?php echo htmlspecialchars($orderDateInfo['time']); ?></div>
+                                        <?php else: ?>
+                                            <span class="text-muted">N/A</span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td class="text-muted small"><?php echo htmlspecialchars($row['email'] ?? 'N/A'); ?></td>
                                     <td><?php echo htmlspecialchars($row['fullname'] . " " . $row['surname']); ?></td>
                                     <td class="fw-bold text-success">₱<?php echo number_format($row['total_amount'], 2); ?></td>
                                     <td class="text-end pe-4">
@@ -242,7 +283,7 @@ body{
                                     </td>
                                 </tr>
                                 <?php } } else { ?>
-                                    <tr><td colspan="4" class="text-center py-5 text-muted"><i class="bi bi-folder-x d-block fs-3 mb-2"></i>No online orders found.</td></tr>
+                                    <tr><td colspan="7" class="text-center py-5 text-muted"><i class="bi bi-folder-x d-block fs-3 mb-2"></i>No online orders found.</td></tr>
                                 <?php } ?>
                             </tbody>
                         </table>
@@ -255,6 +296,7 @@ body{
                             <thead class="table-light text-secondary small text-uppercase">
                                 <tr>
                                     <th class="ps-4 py-3">Transaction ID</th>
+                                    <th>Date</th>
                                     <th>Cashier Name</th>
                                     <th>Total Amount</th>
                                     <th class="text-end pe-4">Action</th>
@@ -265,10 +307,20 @@ body{
                                 $posRows = $pos->fetchAll(PDO::FETCH_ASSOC);
                                 if(count($posRows) > 0) {
                                     foreach($posRows as $row) { 
+                                        $posDateInfo = formatTimelineStepDateTime($row['transaction_date'] ?? null);
+                                        $row['transaction_date_display'] = $posDateInfo['full'] ?? ($row['transaction_date'] ?? 'N/A');
                                 ?>
                                 <tr>
                                     <td class="ps-4 fw-bold">
                                         #<?php echo $row['id']; ?>
+                                    </td>
+                                    <td class="small">
+                                        <?php if ($posDateInfo): ?>
+                                            <div><?php echo htmlspecialchars($posDateInfo['date']); ?></div>
+                                            <div class="text-muted" style="font-size: 0.78rem;"><?php echo htmlspecialchars($posDateInfo['time']); ?></div>
+                                        <?php else: ?>
+                                            <span class="text-muted">N/A</span>
+                                        <?php endif; ?>
                                     </td>
                                     <td><i class="bi bi-person me-1 text-muted"></i> <?php echo htmlspecialchars($row['cashier_name']); ?></td>
                                     <td class="fw-bold text-success">₱<?php echo number_format($row['total_amount'], 2); ?></td>
@@ -279,7 +331,7 @@ body{
                                     </td>
                                 </tr>
                                 <?php } } else { ?>
-                                    <tr><td colspan="4" class="text-center py-5 text-muted"><i class="bi bi-folder-x d-block fs-3 mb-2"></i>No POS transactions found.</td></tr>
+                                    <tr><td colspan="5" class="text-center py-5 text-muted"><i class="bi bi-folder-x d-block fs-3 mb-2"></i>No POS transactions found.</td></tr>
                                 <?php } ?>
                             </tbody>
                         </table>
@@ -466,7 +518,7 @@ function viewOnlineItems(data) {
             </div>
 
             <p class="small mb-1"><b>Order ID:</b> #${orderData.id}</p>
-            <p class="small mb-1"><b>Date:</b> ${orderData.order_date || orderData.created_at || 'N/A'}</p>
+            <p class="small mb-1"><b>Date:</b> ${orderData.order_date_display || orderData.order_date || orderData.created_at || 'N/A'}</p>
             <p class="small mb-1"><b>Customer:</b> ${fullName}</p>
             <p class="small mb-1"><b>Contact:</b> ${orderData.contact_number || 'N/A'}</p>
             <p class="small mb-1"><b>Address:</b> ${orderData.full_address || 'N/A'}</p>
@@ -565,7 +617,7 @@ function viewPOSitems(data) {
 
         let soldTo = tx.customer_name || tx.sold_to || tx.customer || 'Walk-in Customer';
         let cashierName = tx.cashier_name || tx.cashier || data.cashier_name || 'Cashier';
-        let transactionDate = tx.transaction_date || tx.created_at || data.transaction_date || 'N/A';
+        let transactionDate = data.transaction_date_display || tx.transaction_date || tx.created_at || data.transaction_date || 'N/A';
 
         let fullReceiptHtml = `
             <div class="text-center mb-2">
